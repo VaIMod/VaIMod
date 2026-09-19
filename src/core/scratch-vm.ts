@@ -10,6 +10,7 @@ import {
 import { findVmViaFiber, isVMLike, normalizeValue, sleep, stringToListValue } from './utils';
 import { markNative } from '../dom-utils';
 import { ccwDataStore } from './ccwdata';
+import { installLoadProjectTap } from './lp-guard';
 import { getSecureGuard, SECURE_PREFIX } from './secure-guard';
 import { getSigGuard } from './sig-guard';
 import { VpnChannel } from './vpn';
@@ -868,59 +869,24 @@ export class ScratchVM {
 
   /**
    * 给 vm.loadProject 装捕获包装（幂等：WeakSet 防重复）。
-   * 包装做在 VPN 通道内的隔离 vm 实例上，且伪装到位：
-   *   - defineProperty 非枚举（Object.keys/for-in 扫不到）
-   *   - toString 返回原函数源码（String(vm.loadProject) 探不到包装痕迹）
-   *   - name 保持原函数名
+   * 安装位置交给 lp-guard：挂 vm 的直接原型而不是实例 —— 实例包装（哪怕
+   * defineProperty 非枚举）会被数字签名家的 _checkEnv 用 hasOwnProperty 判成
+   * 「loadProject 被篡改」→ stopAll + while(true) 死循环。原型包装下实例无自有属性，
+   * 且 vm.loadProject 恰等于原型链上第一个同名方法 → 环境判定恒为「未篡改」。
+   * 伪装细节仍由 lp-guard 保证：非枚举 / name 保持 / toString 返回原源码。
    * 捕获本身零 UI、纯内存环形缓冲（cap 8），仅在启用时记录。
    */
   private installProjectCapture(): void {
     this.ensureEarlyHarvest();
-    const vm = this.channel.getVm() as { loadProject?: (...a: unknown[]) => unknown } | null;
-    if (!vm || typeof vm.loadProject !== 'function' || this.captureWrapped.has(vm)) return;
+    const vm = this.channel.getVm() as { loadProject?: unknown } | null;
+    if (!vm || typeof vm !== 'object' || typeof vm.loadProject !== 'function' || this.captureWrapped.has(vm)) return;
     if (earlyWrapped(vm)) {
-      // 早期盯梢（capture-early）已包装：不再叠层，仅登记避免重复检查
+      // 早期盯梢（capture-early）已装 tap：不叠加第二个 tap，仅登记避免重复检查
       this.captureWrapped.add(vm);
       return;
     }
-    this.captureWrapped.add(vm);
-    const orig = vm.loadProject;
-    const bridge = this;
-    const wrapped = function (this: unknown, input: unknown, ...rest: unknown[]): unknown {
-      try {
-        bridge.recordCapture(input);
-      } catch {
-        /* 捕获失败不影响加载本身 */
-      }
-      return orig.apply(this, [input, ...rest]);
-    };
-    // 伪装三件套：name 保持 / toString 拟真 / 非枚举安装
-    try {
-      Object.defineProperty(wrapped, 'name', { value: orig.name, configurable: true });
-    } catch {
-      /* ignore */
-    }
-    try {
-      const origSrc = Function.prototype.toString.call(orig);
-      (wrapped as unknown as { toString: () => string }).toString = function (): string {
-        return origSrc;
-      };
-    } catch {
-      /* ignore */
-    }
-    try {
-      Object.defineProperty(vm, 'loadProject', {
-        value: wrapped,
-        writable: true,
-        configurable: true,
-        enumerable: false,
-      });
-    } catch {
-      try {
-        vm.loadProject = wrapped;
-      } catch {
-        /* 只读 vm：放弃捕获（不影响其它功能） */
-      }
+    if (installLoadProjectTap(vm, (input) => this.recordCapture(input))) {
+      this.captureWrapped.add(vm);
     }
   }
 

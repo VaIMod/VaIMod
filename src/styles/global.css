@@ -303,8 +303,6 @@
    所以每个页面都有明确的进入动效（不再只有变量/云数据有）。 */
 .svp-body-content {
   animation: svp-content-in 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
-  /* 动画只在首次绘制合成，不参与后续布局；避免长列表反复重排 */
-  will-change: opacity, transform;
 }
 @keyframes svp-content-in {
   from {
@@ -316,10 +314,13 @@
     transform: translateY(0);
   }
 }
-/* 动画结束后释放合成层，避免长驻 will-change 占用显存 */
-.svp-body-content {
-  animation-fill-mode: both;
-}
+/* 刻意不写 will-change：
+   纯 CSS 无法在动画结束后撤销它，写在这里就是「永久常驻合成层」——每个 Tab 的
+   内容容器（含成百上千个变量行）各自占一层，显存与栅格化开销长驻不去，还会让
+   容器成为 fixed/absolute 后代的包含块、文字在部分 GPU 上改走独立层渲染。
+   实测也不需要：transform/opacity 动画运行期间浏览器本就会自动提升为合成层，
+   动画结束自动释放。需要长驻层的只有拖拽驱动的那几个元素（.svp-fab / .svp-panel
+   / .svp-tab-row），它们各自声明。 */
 @media (prefers-reduced-motion: no-preference) {
   .svp-body-content {
     animation-name: svp-content-in;

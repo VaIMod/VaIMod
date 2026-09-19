@@ -9,6 +9,10 @@
 //
 // 与 Cave 事故铁律的边界：这里不做「伪装 loadProject / 拒载」——包装是纯旁路
 // 透传（记录入参后原样调用原函数），window.vm 属性形状零改动，站点行为不受影响。
+// 安装位置由 lp-guard 统一决定：挂 vm 的直接原型。若挂在实例上（哪怕 defineProperty
+// 非枚举），数字签名家的 _checkEnv 会用 hasOwnProperty 判成「loadProject 被篡改」
+// → 触发 stopAll + while(true) 死循环。
+import { installLoadProjectTap } from './lp-guard';
 import { captureFromLoadInput } from './project-export';
 
 export interface EarlyCaptureEntry {
@@ -66,50 +70,13 @@ function recordEarlyCapture(input: unknown): void {
   }
 }
 
-/** 给 vm.loadProject 装早期捕获包装（伪装三件套与 bridge 版一致）。 */
+/** 给 vm.loadProject 装早期捕获包装（原型级安装，伪装细节见 lp-guard）。 */
 export function wrapVmLoadProjectEarly(vm: object): boolean {
   if (stopped) return false;
   const holder = vm as { loadProject?: unknown };
   if (!holder || typeof holder.loadProject !== 'function' || wrappedVms.has(vm)) return false;
   wrappedVms.add(vm);
-  const orig = holder.loadProject as (...a: unknown[]) => unknown;
-  const wrapped = function (this: unknown, input: unknown, ...rest: unknown[]): unknown {
-    try {
-      recordEarlyCapture(input);
-    } catch {
-      /* 捕获失败不影响加载本身 */
-    }
-    return orig.apply(this, [input, ...rest]);
-  };
-  try {
-    Object.defineProperty(wrapped, 'name', { value: orig.name, configurable: true });
-  } catch {
-    /* ignore */
-  }
-  try {
-    const origSrc = Function.prototype.toString.call(orig);
-    (wrapped as unknown as { toString: () => string }).toString = function (): string {
-      return origSrc;
-    };
-  } catch {
-    /* ignore */
-  }
-  try {
-    Object.defineProperty(vm, 'loadProject', {
-      value: wrapped,
-      writable: true,
-      configurable: true,
-      enumerable: false,
-    });
-    return true;
-  } catch {
-    try {
-      holder.loadProject = wrapped;
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  return installLoadProjectTap(vm, (input) => recordEarlyCapture(input));
 }
 
 function scanOnce(): boolean {

@@ -35,6 +35,11 @@ const TAG_POOL = ['div', 'div', 'div', 'section', 'article', 'aside', 'main', 'n
 
 const protectedHosts = new Set<HTMLElement>();
 
+// 已创建 Shadow 根登记表：shadow 为 closed 模式，元素上查不到 shadowRoot，
+// 而 document.querySelectorAll 也不穿透 shadow 边界 —— 需要「在 VaIMod 自己 UI 内部
+// 回滚内联隐藏样式」这类跨边界操作时，只能靠创建时登记。
+const stealthRoots = new Set<ShadowRoot>();
+
 const ALNUM = cc(
   97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115,
   116, 117, 118, 119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, // a-z 0-9
@@ -898,6 +903,7 @@ export function createStealthHost(styles: string, options: StealthHostOptions = 
     root = host.attachShadow({ mode: 'closed' });
   }
   protectNode(host);
+  if (root) stealthRoots.add(root);
 
   applyHostAttrs(host);
   startAttrRotation(host);
@@ -945,4 +951,9 @@ export function createStealthHost(styles: string, options: StealthHostOptions = 
 
 export function isStealthHost(node: Node): boolean {
   return isProtected(node);
+}
+
+/** 已创建的全部 VaIMod Shadow 根（closed 模式无法从宿主元素反查，必须由创建处登记） */
+export function getStealthRoots(): ShadowRoot[] {
+  return Array.from(stealthRoots);
 }

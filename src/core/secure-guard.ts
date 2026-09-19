@@ -1,5 +1,6 @@
 import type { ScratchVariable, ScratchValue } from './types';
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { getStealthRoots } from '../dom-utils';
 
 // ===== 通用反作弊扩展反制引擎（原 Killeriest 专用 → 多版本自适应） =====
 // 已识别敌样本（同族防作弊「安全变量」扩展）：
@@ -24,6 +25,13 @@ import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
 // 加密变量读写：方法优先（_setEnc/_getEnc/_setEncStr），缺失时用 _key 自实现 XOR 兜底。
 
 const EXT_ID_LEGACY = 'KilleriestsSecureVars';
+// 同族第二支：数字签名 / 数字加密家（注册 id 'digSig'，常与安全变量同作品出现）
+//   危害：_halt = runtime.stopAll() + while(true) 死循环；_checkEnv 以
+//   hasOwnProperty(vm,'loadProject') 与原型方法比对判定「loadProject 被篡改」→ _halt；
+//   _onProjectLoaded 把每个 target 的变量名直接置空（破坏作品数据）；
+//   _mask 注入 #ui-base 隐藏第三方修改器 UI；_dbNameFromUrl 以 ScratchKeyStore_<hash>
+//   在 IndexedDB 存密钥。本族同样带 while(true) 反分析，判定与净化并入本模块。
+const EXT_ID_DIGSIG = 'digSig';
 // 安全变量在面板中的 id 前缀（运行时拼接，消除明文特征）
 export const SECURE_PREFIX = ['s', 'ec', ':'].join('');
 
@@ -33,6 +41,13 @@ const CHEAT_OPCODES = [
   'whenTampered', 'getTamperInfo', 'scanVMLeak',
   'defineStrVar', 'setStrVar', 'getStrVar', 'getAllStrVarNames',
   'clearAllVars', 'clearAllStrVars', 'resetSalt',
+];
+
+// 数字签名家积木特征（opcode 极专属，≥3 命中即认定，避免误伤普通加密扩展）
+const DIGSIG_OPCODES = [
+  'generateKeyPair', 'getPrivateKey', 'getPublicKey', 'signMessage', 'verifySignature',
+  'generateSymmetricKey', 'getSymmetricKey', 'encryptSymmetric', 'decryptSymmetric',
+  'storeKey', 'loadKey', 'deleteKey',
 ];
 
 // 第三方修改器 UI 隐藏选择器特征（命中即整体清除，全面中和敌扩展的 UI 隐藏）
@@ -224,16 +239,45 @@ export function installSecureGuardMark(): void {
 }
 
 // ---------- 识别 ----------
+/** 实例字段 + 原型链（最多 3 层）上的方法名。
+ *  敌样本是 class：危险方法定义在 prototype 上，只扫 Object.keys(实例) 会全漏。
+ *  读取仍走 inst[k]（原型链可达），赋自有属性即遮蔽原型方法。 */
+function methodKeys(obj: object): string[] {
+  const keys = new Set<string>(Object.keys(obj));
+  try {
+    let proto: object | null = Object.getPrototypeOf(obj) as object | null;
+    let guard = 0;
+    while (proto && proto !== Object.prototype && guard++ < 3) {
+      for (const k of Object.getOwnPropertyNames(proto)) {
+        if (k === 'constructor') continue;
+        const d = Object.getOwnPropertyDescriptor(proto, k);
+        if (d && typeof d.value === 'function') keys.add(k);
+      }
+      proto = Object.getPrototypeOf(proto) as object | null;
+    }
+  } catch {
+    /* ignore */
+  }
+  return [...keys];
+}
+
 function detectInstance(x: unknown): boolean {
   if (!x || typeof x !== 'object') return false;
   const obj = x as SecureExtensionLike;
-  const keys = Object.keys(obj);
+  const keys = methodKeys(obj);
   let score = 0;
   if (keys.includes('_a') && keys.includes('_q')) score += 2;
   if (keys.includes('_setEnc') || keys.includes('_setEncStr')) score += 2;
   if (keys.includes('_xorEncrypt')) score += 2;
   if (keys.includes('_A')) score += 1;
   if (keys.includes('_b') && keys.includes('_key') && keys.includes('_c')) score += 1;
+  // 数字签名家（digSig）：密钥对 + 项目指纹 + IndexedDB + 停止机械的字段组合
+  let sigScore = 0;
+  if (keys.includes('keyPair') && keys.includes('symmetricKeyRaw')) sigScore += 2;
+  if (keys.includes('_projectHash') && keys.includes('_dbPromise')) sigScore += 2;
+  if (keys.includes('_halt')) sigScore += 1;
+  if (keys.includes('_checkEnv') || keys.includes('_enforce')) sigScore += 1;
+  if (keys.includes('_sortedStringify') || keys.includes('_dbNameFromUrl')) sigScore += 1;
   for (const k of keys) {
     const fn = obj[k];
     if (typeof fn === 'function') {
@@ -245,13 +289,17 @@ function detectInstance(x: unknown): boolean {
       ) {
         score += 2;
       }
+      // 数字签名家函数体特征：密钥库前缀、stopAll+while(true) 停止机械、原型链篡改判定
+      if (src.includes('ScratchKeyStore_')) sigScore += 2;
+      if (src.includes('stopAll') && /while\s*\(\s*(?:!0|true|1)\s*\)/.test(src)) sigScore += 2;
+      if (src.includes('loadProject') && src.includes('hasOwnProperty')) sigScore += 1;
     }
   }
-  if (score >= 3) return true;
-  // 兜底：id 命中旧版
+  if (score >= 3 || sigScore >= 3) return true;
+  // 兜底：id 命中旧版或数字签名家
   try {
     const id = obj.getInfo?.()?.id;
-    if (id === EXT_ID_LEGACY) return true;
+    if (id === EXT_ID_LEGACY || id === EXT_ID_DIGSIG) return true;
   } catch {
     /* ignore */
   }
@@ -261,15 +309,17 @@ function detectInstance(x: unknown): boolean {
 function detectDescriptor(d: unknown): boolean {
   const desc = d as { id?: string; blocks?: { opcode?: string }[] };
   if (!desc || typeof desc !== 'object') return false;
-  if (desc.id === EXT_ID_LEGACY) return true;
+  if (desc.id === EXT_ID_LEGACY || desc.id === EXT_ID_DIGSIG) return true;
   const blocks = desc.blocks;
   if (!Array.isArray(blocks)) return false;
   let hit = 0;
+  let sigHit = 0;
   for (const b of blocks) {
-    if (b && typeof b.opcode === 'string' && CHEAT_OPCODES.includes(b.opcode)) hit++;
-    if (hit >= 3) return true;
+    if (!b || typeof b.opcode !== 'string') continue;
+    if (CHEAT_OPCODES.includes(b.opcode)) hit++;
+    if (DIGSIG_OPCODES.includes(b.opcode)) sigHit++;
   }
-  return false;
+  return hit >= 3 || sigHit >= 3;
 }
 
 // ---------- 篡改上报面净化（与样本无关，按积木描述行为识别） ----------
@@ -295,11 +345,7 @@ function captureCleanTamperViews(inst: SecureExtensionLike): void {
       const fn = (inst as Record<string, unknown>)[op];
       if (typeof fn !== 'function') continue;
       if (/^when/i.test(op) && /tamper|cheat|hack|illegal|check|audit/i.test(op)) {
-        try {
-          (inst as Record<string, unknown>)[op] = () => {};
-        } catch {
-          /* ignore */
-        }
+        shadowMethod(inst, op, () => {});
         continue;
       }
       if (/^get/i.test(op) && /tamper|audit/i.test(op)) {
@@ -323,11 +369,7 @@ function captureCleanTamperViews(inst: SecureExtensionLike): void {
                 }
               }
             : () => clean;
-        try {
-          (inst as Record<string, unknown>)[op] = snapshot;
-        } catch {
-          /* ignore */
-        }
+        shadowMethod(inst, op, snapshot);
       }
     }
   } catch {
@@ -336,6 +378,21 @@ function captureCleanTamperViews(inst: SecureExtensionLike): void {
 }
 
 // ---------- 实例净化 ----------
+/** 用「非枚举自有属性」遮蔽实例方法：
+ *  直接赋值会新增可枚举键，敌扩展一次 Object.keys(this) 自检就能发现被接管；
+ *  defineProperty 非枚举后，枚举/for-in 都看不到，读取仍会命中我们的实现。 */
+function shadowMethod(inst: object, key: string, fn: unknown): void {
+  try {
+    Object.defineProperty(inst, key, { value: fn, writable: true, configurable: true, enumerable: false });
+  } catch {
+    try {
+      (inst as Record<string, unknown>)[key] = fn;
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 function sanitizeInstance(inst: SecureExtensionLike): void {
   try {
     // 0) 冻结篡改记录字段 `_c`（本族扩展唯一的篡改上报载体：getTamperInfo 直接
@@ -366,23 +423,41 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
     //     · _setupDecoyGuard：包装 vm.saveProjectSb3/exportSprite 的入口
     //     · _misleadingApiCalls：每次保存前轮换 _key（全部密文变垃圾）+ decoy_meta 上报
     //     · _fillDecoyCache / _isEditorEnv / _L（篡改帽触发 + _c 写入）
+    //     数字签名家（digSig）的点名项一并并入本表：
+    //     · _setupExportGuard  包装 vm.saveProjectSb3/exportSprite → 导出空作品
+    //     · _fillAttackerCache 连续 loadProject 空项目冲刷
+    //     · _halt              runtime.stopAll() + while(true) 死循环（本族最凶）
+    //     · _enforce / _runAntiAnalysis  触发 _halt 的判定入口
+    //     · _mask              注入 #ui-base 隐藏第三方修改器 UI
+    //     · _onProjectLoaded   把每个 target 的变量名置空 → 破坏作品数据（本次头号目标）
     const decoyFns = [
       '_decoyCheck',
       '_setupDecoyGuard',
+      '_setupExportGuard',
       '_misleadingApiCalls',
       '_fillDecoyCache',
+      '_fillAttackerCache',
       '_isEditorEnv',
       '_L',
+      '_halt',
+      '_enforce',
+      '_runAntiAnalysis',
+      '_mask',
+      '_onProjectLoaded',
     ] as const;
     for (const k of decoyFns) {
       if (typeof inst[k] === 'function') {
-        try {
-          rec[k] = () => {};
-        } catch {
-          /* ignore */
-        }
+        shadowMethod(inst, k, () => {});
       }
     }
+    // 0″) digSig 的环境判定口必须「返回安全结果」而不是空函数：
+    //     _checkEnv 以 hasOwnProperty(vm,'loadProject') + 原型方法比对判定篡改，
+    //     直接固定成「可用且未篡改」，从根上掐死 _halt 的触发条件。
+    if (typeof inst._checkEnv === 'function') {
+      shadowMethod(inst, '_checkEnv', () => ({ usable: true, tampered: false }));
+    }
+    // 0‴) _mask 无害化后立刻回滚它可能已注入的隐藏样式与内联 display
+    restoreHiddenElements();
     // 1) 后门 Promise 字段 → 已决 true（覆盖后续访问；构造期挂载的 then 由签名放行层兜底）
     for (const k of Object.keys(inst)) {
       const v = inst[k];
@@ -395,13 +470,17 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
       }
     }
     // 2) scanVMLeak(Z) → 无害（不删 vm 全局、不清零、不触发 whenTampered）
-    if (typeof inst.Z === 'function') inst.Z = () => {};
+    if (typeof inst.Z === 'function') shadowMethod(inst, 'Z', () => {});
     // 3) _A() 调用栈校验 → 无害（防合法外部调用被误判清空）
-    if (typeof inst._A === 'function') inst._A = () => {};
+    if (typeof inst._A === 'function') shadowMethod(inst, '_A', () => {});
     // 4) removeUI / UI 隐藏 → 无害（防隐藏 VaIMod 及第三方修改器 UI）
-    if (typeof inst.removeUI === 'function') inst.removeUI = () => {};
+    if (typeof inst.removeUI === 'function') shadowMethod(inst, 'removeUI', () => {});
     // 5) 兜底按特征替换：函数体含防作弊关键词的实例方法 → 无操作
-    for (const k of Object.keys(inst)) {
+    //    （methodKeys 同时覆盖原型链上的方法 —— 敌样本是 class，只扫实例字段会全漏）
+    for (const k of methodKeys(inst)) {
+      // getInfo 的函数体里必然含全部 opcode 字面量（whenTampered / scanVMLeak / resetSalt 等），
+      // 按关键词替换会误伤积木定义 → 显式跳过（它不是危险方法，只是元信息）
+      if (k === 'getInfo') continue;
       const fn = inst[k];
       if (typeof fn !== 'function' || fn === inst.Z || fn === inst._A || fn === inst.removeUI) continue;
       const src = String(fn);
@@ -410,16 +489,16 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
         src.includes('whenTampered') || src.includes('SV_CHECK_FAIL') ||
         src.includes('_fillAttackerCache') ||
         (src.includes('stopAll') && /while\s*\(\s*(?:!0|true|1)\s*\)/.test(src)) ||
+        // 数字签名家（digSig）行为规则：变量名清空钩子、#ui-base 隐藏注入、
+        // 带 _halted 标记的停止机械（即使方法被改名也能命中）
+        /\.name\s*=\s*(""|'')/.test(src) || src.includes('ui-base') ||
+        (src.includes('stopAll') && src.includes('_halted')) ||
         src.includes('hidden-css') || (src.includes('removeUI') && src.includes('display')) ||
         // 栈校验变体（强化版把 _A 改名/内联）：任何读调用栈的实例方法都是
         // 「写 must come from 扩展自身积木」类的合法性检查 → 无害化。
         src.includes('.stack') || src.includes('["stack"]') || src.includes("['stack']")
       ) {
-        try {
-          (inst as Record<string, unknown>)[k] = () => {};
-        } catch {
-          /* ignore */
-        }
+        shadowMethod(inst, k, () => {});
       }
     }
   } catch {
@@ -595,6 +674,312 @@ function installStyleWatcher(): void {
   }
 }
 
+// ---------- ④′ UI 恢复：隐藏样式清理之外的「内联 display 回滚」 ----------
+// 敌扩展有两条隐藏路径：① 注入含隐藏选择器的 <style>（purgeHiddenCss 负责删）；
+// ② 对已存在的元素直接 style.setProperty('display','none','important')。
+// ② 必须回滚，否则样式删掉了元素照样不可见。
+// 只回滚「VaIMod 自身 UI 根」与「敌扩展点名的第三方修改器选择器」，
+// 避免把站点自己正常折叠/隐藏的元素强行显示出来。
+//
+// 查询开销（本函数会被 2s 巡检 + PROJECT_LOADED 密集重扫反复调用，是热路径）：
+//   天真写法对 7 个 .svp* + 5 个 id + 4 个 class 共 16 个选择器各跑一次
+//   querySelectorAll，且要在 document 上跑 —— 编辑器 DOM 数千节点，
+//   单次就是十几毫秒的强制样式树遍历，每 2s 卡一帧。改法分两组：
+//     · id 组：getElementById（哈希 O(1)，不做树遍历）
+//     · class/自身 UI 组：合并成一次 querySelectorAll，且 .svp* 只在
+//       已登记的 shadow 根里查（宿主是随机标签，这些类只存在于 shadow 内）
+const UI_SELF_SELECTORS = '.svp,.svp-host,.svp-panel,.svp-fab,.svp-toast,.svp-overlay,.vpu-confirm';
+const UI_TARGET_IDS: string[] = HIDE_CSS_MARKERS.filter((mk) => mk.startsWith('#')).map((mk) => mk.slice(1));
+const UI_TARGET_CLASSES: string = HIDE_CSS_MARKERS.filter((mk) => mk.startsWith('.'))
+  .map((mk) => mk.slice(1))
+  .join(',');
+
+/**
+ * 单元素回滚：仅当「display:none + important」时撤销。
+ * 只认 important 是刻意的：VaIMod 自身显隐一律走 class（.svp-panel-hidden /
+ * .svp-fab-hidden），从不写 inline display，因此这里不可能误伤自己的开关。
+ */
+function revertInlineHide(el: Element): void {
+  const h = el as HTMLElement;
+  const style = h.style;
+  if (!style) return;
+  if (style.getPropertyValue('display') === 'none' && style.getPropertyPriority('display') === 'important') {
+    style.removeProperty('display');
+  }
+}
+
+// 已挂属性观察器的目标（WeakSet 自动回收，元素被重建后可重新挂）
+const inlineHideWatched = new WeakSet<Element>();
+
+/**
+ * 给 UI 根元素挂 style 属性观察器 —— 即时回滚，不等 2s 巡检。
+ * 必要性：敌扩展在 PROJECT_LOADED 里写 inline 隐藏时，若只靠 onVmTick 兜底，
+ * 面板会有最长 2s 的「看不见」窗口（探针实测 1400ms 等待下直接判失败）。
+ * 开销可控：attributeFilter 只订 style，且只挂在少数几个 UI 根上。
+ */
+function watchInlineHide(el: Element): void {
+  if (inlineHideWatched.has(el)) return;
+  inlineHideWatched.add(el);
+  try {
+    if (typeof MutationObserver !== 'function') return;
+    const mo = new MutationObserver(() => revertInlineHide(el));
+    mo.observe(el, { attributes: true, attributeFilter: ['style'] });
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 回滚被敌扩展强设 display:none!important 的 UI 元素（幂等，可高频调用）。
+ *
+ * Shadow DOM 边界（历史 bug）：VaIMod 主 UI 全部挂在 `attachShadow({mode:'closed'})`
+ * 的宿主内，而 `document.querySelectorAll` 不穿透 shadow 边界 → 只扫 document 时
+ * `.svp-panel` 恒查不到，面板被 `style.setProperty('display','none','important')`
+ * 后永不恢复（探针 2b 实测 panelInline='none'）。改法：以「已登记的 shadow 根」
+ * （dom-utils 创建宿主时登记，closed 模式无法反查）+ 宿主元素本身为扫描域。
+ * 注意宿主元素也要扫：敌扩展在 light DOM 对宿主动手同样能让整个 UI 消失。
+ */
+export function restoreHiddenElements(): void {
+  try {
+    if (typeof document === 'undefined') return;
+    const cache = new Set<Element>();
+
+    // ① 第三方修改器 UI：id 走哈希查找，class 合并成一次选择器
+    for (const id of UI_TARGET_IDS) {
+      const el = document.getElementById(id);
+      if (el) cache.add(el);
+    }
+    if (UI_TARGET_CLASSES) {
+      try {
+        for (const el of Array.from(document.querySelectorAll(UI_TARGET_CLASSES))) cache.add(el);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    // ② VaIMod 自身 UI：只在已登记的 shadow 根内查（宿主为随机标签，
+    //    .svp* / .vpu-* 不可能出现在 light DOM，扫 document 是纯浪费）。
+    //    宿主元素本身也要纳入：敌扩展在 light DOM 把宿主 display:none!important
+    //    同样能让整个 UI 消失，而 ShadowRoot.host 对 closed 模式可读。
+    try {
+      for (const root of getStealthRoots()) {
+        if (!root) continue;
+        if (root.host) cache.add(root.host as Element);
+        try {
+          for (const el of Array.from(root.querySelectorAll(UI_SELF_SELECTORS))) cache.add(el);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    for (const el of cache) {
+      revertInlineHide(el);
+      watchInlineHide(el);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------- ⑤ 变量名保护：拦截空写 + 快照恢复（本族最伤作品的一招） ----------
+// 敌扩展（digSig._onProjectLoaded、安全变量 _A）把 target 变量的 name 直接置空来
+// 破坏作品的变量显示与作品运行。Scratch 的变量表以 id 关联对象，name 只是显示名，
+// 因此「拦住空写 + 留一份 id→原名快照」既能阻止清空，也能把已经清空的恢复回来。
+// 铁律（历史事故）：只拒「空值」，合法改名一律放行 —— 站点自身的 renameVariable
+// 必须继续可用，任何「拒写访问器」式的粗暴拦截都会让作品跑不起来。
+const NAME_SLOTS = new WeakMap<object, { real: string }>();
+const NAME_SNAPSHOT = new Map<string, string>();
+let nameRestoreCount = 0;
+
+/** 已恢复的变量名次数（调试 / 探针断言用） */
+export function getRestoredNameCount(): number {
+  return nameRestoreCount;
+}
+
+/** 给单个变量对象装 name 守卫（幂等；真实名存进 WeakMap 侧槽，不落到对象上） */
+function guardVariableName(v: object, initial: string): void {
+  if (NAME_SLOTS.has(v)) return;
+  const slot = { real: initial };
+  try {
+    Object.defineProperty(v, 'name', {
+      configurable: true,
+      enumerable: true,
+      get: () => slot.real,
+      set: (next: unknown) => {
+        const s = next === null || next === undefined ? '' : String(next);
+        if (s === '') return; // 空写 = 破坏行为：静默拒绝，保留原名（不抛错，不暴露守卫）
+        slot.real = s;
+      },
+    });
+    NAME_SLOTS.set(v, slot);
+  } catch {
+    /* 已冻结/不可配置的对象忽略 */
+  }
+}
+
+/** 统一遍历变量表：真机 Scratch 是普通对象（id → Variable），
+ *  测试宿主/部分平台用 Map 或数组，三种形态都要覆盖到，否则守卫会漏装。 */
+function eachVarEntry(table: unknown): Array<[string, unknown]> {
+  const out: Array<[string, unknown]> = [];
+  try {
+    if (table instanceof Map) {
+      for (const [k, v] of table.entries()) out.push([String(k), v]);
+      return out;
+    }
+    if (Array.isArray(table)) {
+      table.forEach((v, i) => out.push([String(i), v]));
+      return out;
+    }
+    if (table && typeof table === 'object') {
+      const rec = table as Record<string, unknown>;
+      for (const k of Object.keys(rec)) out.push([k, rec[k]]);
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/** 装配变量名守卫 + 从快照恢复被清空的名字（幂等，可高频调用） */
+export function protectVariableNames(vm: unknown): void {
+  try {
+    const targets = (vm as { runtime?: { targets?: unknown } })?.runtime?.targets;
+    if (!Array.isArray(targets)) return;
+    for (const t of targets) {
+      if (!t || typeof t !== 'object') continue;
+      const tg = t as { variables?: unknown; lists?: unknown };
+      for (const table of [tg.variables, tg.lists]) {
+        if (!table || typeof table !== 'object') continue;
+        for (const [slotKey, v] of eachVarEntry(table)) {
+          if (!v || typeof v !== 'object') continue;
+          const id = String((v as { id?: unknown }).id ?? slotKey);
+          let current = '';
+          try {
+            current = String((v as { name?: unknown }).name ?? '');
+          } catch {
+            current = '';
+          }
+          const known = NAME_SNAPSHOT.get(id);
+          if (current === '') {
+            // 已被清空（或劫持前就空）：有快照就恢复
+            if (known) {
+              try {
+                (v as { name?: unknown }).name = known;
+                nameRestoreCount++;
+              } catch {
+                /* ignore */
+              }
+            }
+            guardVariableName(v as object, known ?? '');
+          } else {
+            if (known !== current) NAME_SNAPSHOT.set(id, current);
+            guardVariableName(v as object, current);
+          }
+          // 守卫已装但槽位被清空（清空发生在装守卫之前、名字由 getter 提供）：
+          // 直接用快照补回槽位真实名
+          const slot = NAME_SLOTS.get(v as object);
+          if (slot && slot.real === '' && known) {
+            slot.real = known;
+            nameRestoreCount++;
+          }
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------- ⑥ 导出 API 还原：去掉「空作品」包装 ----------
+// 敌扩展把 vm.saveProjectSb3 / exportSprite 换成返回空作品的包装（写成 vm 的实例自有
+// 属性，原型方法不受影响）。检测到「实例属性 + 空作品特征」即删除该实例属性，
+// 调用自动回落到原型上的原生实现。只认空作品特征，不动站点/其它插件的正常增强。
+export function restoreExportApis(vm: unknown): void {
+  try {
+    const v = vm as Record<string, unknown>;
+    for (const key of ['saveProjectSb3', 'exportSprite'] as const) {
+      if (!Object.prototype.hasOwnProperty.call(v, key)) continue;
+      const fn = v[key];
+      if (typeof fn !== 'function') continue;
+      const src = String(fn);
+      if (
+        src.includes('_generateEmpty') ||
+        src.includes('JSZip not available') ||
+        (src.includes('project.json') && src.includes('Empty'))
+      ) {
+        try {
+          delete v[key];
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+// ---------- ⑦ IndexedDB 密钥保护（可选加固） ----------
+// digSig 把密钥存进 ScratchKeyStore_<hash> 库的 keys 表。「清空密钥」级操作只有
+// clear() / deleteObjectStore() / deleteDatabase()，而正常积木只用 put/get/delete 单键，
+// 因此拦住这三个既不误伤用户功能，又能挡住「别人把你的密钥库整个抹掉」。
+let keyStoreGuarded = false;
+
+export function installKeyStoreGuard(): void {
+  if (keyStoreGuarded) return;
+  keyStoreGuarded = true;
+  const isKeyStore = (name: unknown): boolean => String(name ?? '').startsWith('ScratchKeyStore_');
+  try {
+    const storeProto = globalThis.IDBObjectStore?.prototype as (IDBObjectStore & { clear: () => unknown }) | undefined;
+    const origClear = storeProto?.clear;
+    if (storeProto && typeof origClear === 'function') {
+      storeProto.clear = function (this: IDBObjectStore): unknown {
+        try {
+          if (isKeyStore(this.transaction?.db?.name)) return undefined;
+        } catch {
+          /* ignore */
+        }
+        return origClear.call(this);
+      } as typeof storeProto.clear;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const dbProto = globalThis.IDBDatabase?.prototype as
+      | (IDBDatabase & { deleteObjectStore: (n: string) => void })
+      | undefined;
+    const origDel = dbProto?.deleteObjectStore;
+    if (dbProto && typeof origDel === 'function') {
+      dbProto.deleteObjectStore = function (this: IDBDatabase, name: string): void {
+        try {
+          if (isKeyStore(this.name)) return;
+        } catch {
+          /* ignore */
+        }
+        return origDel.call(this, name);
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const factory = globalThis.indexedDB as unknown as { deleteDatabase?: (n: string) => unknown } | undefined;
+    const origDrop = factory?.deleteDatabase;
+    if (factory && typeof origDrop === 'function') {
+      factory.deleteDatabase = function (name: string): unknown {
+        if (isKeyStore(name)) return undefined;
+        return origDrop.call(factory, name);
+      };
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
 // ---------- SecureGuard（对外 API 兼容：init/list/set/key） ----------
 export class SecureGuard {
   private instances: SecureExtensionLike[] = [];
@@ -616,6 +1001,10 @@ export class SecureGuard {
     if (!vm || typeof vm !== 'object') return;
     const v = vm as object;
     trackVm(v);
+    // 作品资产保护放在最前：变量名守卫必须抢在敌扩展的「清空钩子」执行之前装上
+    protectVariableNames(v);
+    restoreExportApis(v);
+    restoreHiddenElements();
     this.hookStartHats(v);
     hookExtensionManager(v, () => {
       const f = this.find(v);
@@ -640,11 +1029,16 @@ export class SecureGuard {
     try {
       (vm as { on?: (event: string, cb: () => void) => void }).on?.('PROJECT_LOADED', () => {
         const rescan = (): void => {
+          // 敌扩展同样监听 PROJECT_LOADED（digSig 在此时清空变量名、安全变量在此时隐藏
+          // UI），注册顺序不保证我们一定先跑 → 用一组密集短延迟把恢复动作盖到它前后。
+          protectVariableNames(vm);
+          restoreExportApis(vm);
+          restoreHiddenElements();
           const f = this.find(vm);
           if (f) this.adopt(f);
         };
         rescan();
-        for (const delay of [200, 800, 2000]) setTimeout(rescan, delay);
+        for (const delay of [0, 25, 100, 250, 800, 2000]) setTimeout(rescan, delay);
       });
     } catch {
       /* ignore */
@@ -657,6 +1051,11 @@ export class SecureGuard {
     this.tickInstalled = true;
     onVmTick((vm) => {
       this.hookStartHats(vm);
+      // 常驻巡检：变量名（防迟到清空）/ 导出包装 / UI 隐藏三项一起复检。
+      // 变量名的即时拦截靠 setter 守卫，这里的 2s 巡检只作兜底恢复。
+      protectVariableNames(vm);
+      restoreExportApis(vm);
+      restoreHiddenElements();
       hookExtensionManager(vm, () => {
         const f = this.find(vm);
         if (f) this.adopt(f);
@@ -679,7 +1078,14 @@ export class SecureGuard {
       this.startHatsHooked.add(rt);
       const orig = rt.startHats.bind(rt);
       rt.startHats = (op: unknown, ...rest: unknown[]) => {
-        if (typeof op === 'string' && /tamper/i.test(op)) return [];
+        if (typeof op === 'string') {
+          if (/tamper/i.test(op)) return [];
+          // 广播触发式篡改帽：opcode 是 event_whenbroadcastreceived（本身不含 tamper），
+          // 但广播名可能带篡改特征 → 一并拦掉，防「用广播名绕开一刀切」
+          const opt = rest[0] as { BROADCAST_OPTION?: unknown } | undefined;
+          const bname = opt && typeof opt === 'object' ? String(opt.BROADCAST_OPTION ?? '') : '';
+          if (bname && /tamper|cheat|hack|illegal|audit|securevars/i.test(bname)) return [];
+        }
         return orig(op, ...rest);
       };
     } catch {
@@ -917,13 +1323,14 @@ export function getSecureGuard(): SecureGuard {
 let frontInstalled = false;
 
 /** 前置防线总装（document-start 最先调用，幂等）：
- *  ① 白名单标记 + 签名放行  ② register 拦截  ④ UI 隐藏样式清理 */
+ *  ① 白名单标记 + 签名放行  ② register 拦截  ④ UI 隐藏样式清理  ⑦ 密钥库保护 */
 export function installSecureGuardFront(): void {
   if (frontInstalled) return;
   frontInstalled = true;
   installSecureGuardMark();
   watchScratchApi();
   installStyleWatcher();
+  installKeyStoreGuard();
 }
 
 // 模块加载即布防（对 @run-at document-start 的最早窗口；installSecureGuardFront 幂等重复调用无害）
