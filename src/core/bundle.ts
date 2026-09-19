@@ -83,12 +83,12 @@ export type BundleKind = 'bundle' | 'legacy-vars' | 'unknown';
 export function detectBundleKind(raw: unknown): BundleKind {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'unknown';
   const o = raw as Record<string, unknown>;
-  // 新品牌包 + 旧 VaIMod 品牌包（更名前导出的文件）都识别为 bundle
+  // 新品牌包 + 旧 ValMod 品牌包（更名前导出的文件）都识别为 bundle
   if (
     o.app === 'VaIMod' ||
-    o.app === 'VaIMod' ||
+    o.app === 'ValMod' ||
     (typeof o.version === 'string' &&
-      (String(o.version).startsWith('vaimod-bundle') || String(o.version).startsWith('vaimod-bundle')))
+      (String(o.version).startsWith('vaimod-bundle') || String(o.version).startsWith('valmod-bundle')))
   ) {
     return 'bundle';
   }

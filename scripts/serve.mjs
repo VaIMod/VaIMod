@@ -20,8 +20,9 @@ const MIME = {
 createServer(async (req, res) => {
   try {
     const url = (req.url || '/').split('?')[0];
-    // 旧文件名兼容：更名前安装的脚本仍请求 /VaIMod.user.js，改发新产物
-    const rel = url === '/' ? '/VaIMod.user.js' : url === '/VaIMod.user.js' ? '/VaIMod.user.js' : url;
+    // 旧文件名兼容：更名前安装的脚本仍请求 /ValMod.user.js（或小写），改发新产物
+    const LEGACY_NAMES = ['/ValMod.user.js', '/valmod.user.js'];
+    const rel = url === '/' ? '/VaIMod.user.js' : LEGACY_NAMES.includes(url) ? '/VaIMod.user.js' : url;
     const file = join(DIST, rel.replace(/^\/+/, ''));
     // 防目录穿越
     if (!file.startsWith(DIST)) {

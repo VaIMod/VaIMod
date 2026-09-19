@@ -15,7 +15,7 @@ import { migrateBrandKeys } from './core/brand-migrate';
 import VaIModPanel from './ui/VaIModPanel.svelte';
 import globalCss from './styles/global.css?inline';
 
-// 品牌更名数据迁移（VaIMod → VaIMod 旧键 → 新键）：必须在任何模块读存储之前
+// 品牌更名数据迁移（ValMod 旧键 → VaIMod 新键）：必须在任何模块读存储之前
 migrateBrandKeys();
 
 // 引用障眼模块（不可达代码，与业务一同被混淆；仅阻止 tree-shaking，零运行开销）

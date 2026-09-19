@@ -23,8 +23,9 @@
 // });
 // ```
 //
-// 解析策略：用 `new Function('VaIMod', src)` 把整段源码执行一次，由
-// `VaIMod.plugin(def)` 收集定义（比正则抠字段稳得多：模板字符串 / `${}` / 注释
+// 解析策略：用 `new Function('VaIMod', 'ValMod', src)` 把整段源码执行一次（第一个参数是
+// 新全局名，第二个是更名前的旧全局名，二者指向同一收集器 —— 更名前写的插件文件不改也能装），
+// 由 `VaIMod.plugin(def)` 收集定义（比正则抠字段稳得多：模板字符串 / `${}` / 注释
 // 等边界情形都不会解析错）。代价是要如实承认：执行作用域是全局作用域，插件文件
 // 属于「与页面脚本同级的可信代码」，**不是**安全沙箱（详见 parsePluginSource 注释）。
 // 可信来源由「用户主动上传 + 安装确认」把关，存储态另有完整性指纹校验兜底。
@@ -365,8 +366,8 @@ export function parsePluginSource(src: string): PluginDef {
   };
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    // 双全局：新插件用 VaIMod.plugin(...)；更名前写的 VaIMod.plugin(...) 依旧可安装
-    const factory = new Function('VaIMod', 'VaIMod', `"use strict";\n${src}\n`);
+    // 双全局：新插件用 VaIMod.plugin(...)；更名前写的 ValMod.plugin(...) 依旧可安装
+    const factory = new Function('VaIMod', 'ValMod', `"use strict";\n${src}\n`);
     factory.call(undefined, registry, registry);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
