@@ -398,6 +398,25 @@ function applyPatch(target: object, prop: string, factory: PatchFactory): void {
 
 let stealthInstalled = false;
 let healTimer: number | null = null;
+let healVisBound = false;
+
+/**
+ * 在浏览器空闲时段修复被页面/其它扩展覆盖掉的原生 patch。
+ * 后台标签页直接不跑：自我修复是兜底手段，没人看界面时晚几秒没有任何影响，
+ * 而页面繁忙时 rIC 本就会自动延后（1s 超时兜底），避免与页面主线程抢时间。
+ */
+function scheduleHeal(): void {
+  try {
+    if (document.visibilityState === 'hidden') return;
+  } catch {
+    /* ignore */
+  }
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, opt?: { timeout: number }) => void;
+  }).requestIdleCallback;
+  if (typeof ric === 'function') ric(healPatches, { timeout: 1000 });
+  else healPatches();
+}
 
 function healPatches(): void {
   if (!stealthInstalled) return;
@@ -817,15 +836,18 @@ export function installStealth(): void {
   patchTraversalProperties();
   patchDetectionApis();
   if (healTimer === null) {
-    // 低频 + 空闲调度：只在浏览器空闲时段做 patch 修复，页面繁忙时自动延后（1s 超时兜底），
-    // 避免与页面主线程抢时间
-    healTimer = window.setInterval(() => {
-      const ric = (window as unknown as {
-        requestIdleCallback?: (cb: () => void, opt?: { timeout: number }) => void;
-      }).requestIdleCallback;
-      if (typeof ric === 'function') ric(healPatches, { timeout: 1000 });
-      else healPatches();
-    }, 4000);
+    healTimer = window.setInterval(scheduleHeal, 4000);
+  }
+  if (!healVisBound) {
+    healVisBound = true;
+    try {
+      // 回到前台立刻补一次（后台期间若被覆盖了 patch，回来第一帧就该是修好的状态）
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') scheduleHeal();
+      });
+    } catch {
+      /* ignore */
+    }
   }
 }
 

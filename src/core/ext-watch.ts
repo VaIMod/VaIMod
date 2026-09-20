@@ -29,27 +29,58 @@ const vmCallbacks = new Set<(vm: object) => void>();
 // 已挂钩子的原型 → 该原型上的回调集合（多个反制模块共用一份钩子，回调全部保留）
 const hookedProtos = new WeakMap<object, Set<() => void>>();
 let vmTicker: ReturnType<typeof setInterval> | null = null;
+let visBound = false;
+
+/** 页面是否在后台（标签页不可见）。非 DOM 环境（极少数宿主）按可见处理。 */
+function pageHidden(): boolean {
+  try {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 一趟巡检：回收失活引用 → 依次喂给全部回调。
+ *
+ * 后台标签页直接跳过（真机实测：隐藏状态下每 8s 仍全量遍历变量表 8 圈、
+ * 主线程被占用 1.5%）。巡检做的事——变量名守卫复检、导出 API 复检、UI 复检——
+ * 全是「界面可见才有意义」的防御性复核，人不在屏幕前跑它纯属空转。
+ * 定时器本身照常滴答（成本≈0，也不会让「页面是不是活的」产生可观测差异），
+ * 回到前台由 visibilitychange 立刻补跑一趟，后台期间错过的检查不会丢。
+ */
+function runTick(): void {
+  if (pageHidden()) return;
+  for (let i = vmRefs.length - 1; i >= 0; i--) {
+    if (vmRefs[i].deref() === undefined) vmRefs.splice(i, 1);
+  }
+  if (vmRefs.length === 0) return;
+  for (const cb of [...vmCallbacks]) {
+    for (const ref of vmRefs) {
+      const vm = ref.deref();
+      if (!vm) continue;
+      try {
+        cb(vm);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
 
 function ensureTicker(): void {
   if (vmTicker !== null) return;
-  vmTicker = setInterval(() => {
-    // 回收已失活引用（页面导航后旧 vm 可被 GC）
-    for (let i = vmRefs.length - 1; i >= 0; i--) {
-      if (vmRefs[i].deref() === undefined) vmRefs.splice(i, 1);
+  if (!visBound) {
+    visBound = true;
+    try {
+      document.addEventListener('visibilitychange', () => {
+        if (!pageHidden()) runTick();
+      });
+    } catch {
+      /* ignore */
     }
-    if (vmRefs.length === 0) return;
-    for (const cb of [...vmCallbacks]) {
-      for (const ref of vmRefs) {
-        const vm = ref.deref();
-        if (!vm) continue;
-        try {
-          cb(vm);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-  }, 2000);
+  }
+  vmTicker = setInterval(runTick, 2000);
 }
 
 /** 把 vm 加入常驻扫描池（幂等；上限 8 个，超出丢最旧 —— 同页 vm 数量级就是个位数） */

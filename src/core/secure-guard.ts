@@ -1,6 +1,6 @@
 import type { ScratchVariable, ScratchValue } from './types';
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
-import { getStealthRoots } from '../dom-utils';
+import { getStealthRoots, markNative } from '../dom-utils';
 
 // ===== 通用反作弊扩展反制引擎（原 Killeriest 专用 → 多版本自适应） =====
 // 已识别敌样本（同族防作弊「安全变量」扩展）：
@@ -923,27 +923,192 @@ export function restoreExportApis(vm: unknown): void {
 }
 
 // ---------- ⑦ IndexedDB 密钥保护（可选加固） ----------
-// digSig 把密钥存进 ScratchKeyStore_<hash> 库的 keys 表。「清空密钥」级操作只有
-// clear() / deleteObjectStore() / deleteDatabase()，而正常积木只用 put/get/delete 单键，
-// 因此拦住这三个既不误伤用户功能，又能挡住「别人把你的密钥库整个抹掉」。
+// digSig 把密钥存进 ScratchKeyStore_<hash> 库的 keys 表。破坏方式有两类：
+//   ① 整库级清空：clear() / deleteObjectStore() / deleteDatabase() —— 直接拒掉。
+//      （正常积木只用 put/get/delete 单键，拦住这三个不误伤任何用户功能）
+//   ② 覆盖式清空：put(空值) 把已有的非空密钥盖成空 —— 拦不掉调用，但可以「改写」：
+//      把写入值换成此前读到/写过的原值再交给原生 put。这样密钥保住了，
+//      调用方拿到的仍是一个真实的 IDBRequest（不像 ① 那样返回 undefined，
+//      避免「put 之后读 .onsuccess 的代码」被我们弄崩）。
+// 两类都不改变库/表结构，因此对 digSig 自身的正常加解密完全透明。
+//
+// 伪装：这几个包装函数一律过 markNative（name 复原 + toString 走原生源码），
+// 否则 readPatching 式的自检只要 IDBObjectStore.prototype.clear.toString() 就穿帮。
 let keyStoreGuarded = false;
+
+/** 「空密钥载荷」判定：只认明确为空的东西；CryptoKey / Blob / Date 等一律视为有效载荷 */
+function isEmptySecret(v: unknown): boolean {
+  if (v === null || v === undefined) return true;
+  if (typeof v === 'string') return v.trim() === '';
+  if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'bigint') return false;
+  if (v instanceof ArrayBuffer) return v.byteLength === 0;
+  if (ArrayBuffer.isView(v)) return (v as ArrayBufferView).byteLength === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  if (typeof v === 'object') {
+    // 只有「普通对象且自有键为 0」才算空。CryptoKey（structured-clone 后仍是对象，
+    // 但没有可枚举自有键）绝不能误判为空，否则会把合法密钥写入也改掉。
+    let proto: object | null;
+    try {
+      proto = Object.getPrototypeOf(v) as object | null;
+    } catch {
+      return false;
+    }
+    if (proto !== Object.prototype && proto !== null) return false;
+    try {
+      return Object.keys(v as object).length === 0;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// 密钥镜像：仅记录「读到过非空」或「写入过非空」的值，用于把「覆盖成空」还原回去。
+// 上限 128 条（同类密钥数量级是个位数），满了丢最旧，不会无限增长。
+const keyMirror = new Map<string, unknown>();
+const KEY_MIRROR_MAX = 128;
+
+function mirrorKeyOf(store: IDBObjectStore, key: unknown): string {
+  let db = '';
+  let sn = '';
+  try {
+    db = String(store.transaction?.db?.name ?? '');
+    sn = String(store.name ?? '');
+  } catch {
+    /* ignore */
+  }
+  return db + '\u0000' + sn + '\u0000' + String(key);
+}
+
+function noteSecret(store: IDBObjectStore, key: unknown, value: unknown): void {
+  if (isEmptySecret(value)) return;
+  try {
+    if (keyMirror.size >= KEY_MIRROR_MAX) {
+      const oldest = keyMirror.keys().next();
+      if (!oldest.done) keyMirror.delete(oldest.value as string);
+    }
+    keyMirror.set(mirrorKeyOf(store, key), value);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 逐字段还原被「写空」的密钥材料：镜像里有值、写入值里被改成空的字段，用镜像值补回。
+ *
+ * 为什么不能只做整值判空：digSig 的记录形态是 `{name, key}` —— 把 key 字段清空
+ * 之后整个对象仍是个「有 2 个字段的普通对象」，整值判空完全看不出来。
+ * 这条规则的不变式是「**非空字段不会被改空**」，因此：
+ *   · 正常轮换（写新的非空密钥）原样放行；
+ *   · 只有「把已有材料抹成空」这一类写入会被改写；
+ *   · 其余形态（CryptoKey / 数组 / 二进制 / 数字）一律不动。
+ */
+function restoreBlankedFields(prev: unknown, next: unknown): unknown {
+  if (isEmptySecret(next) && !isEmptySecret(prev)) return prev;
+  if (
+    prev !== null &&
+    next !== null &&
+    typeof prev === 'object' &&
+    typeof next === 'object' &&
+    !Array.isArray(prev) &&
+    !Array.isArray(next) &&
+    Object.getPrototypeOf(prev) === Object.prototype &&
+    Object.getPrototypeOf(next) === Object.prototype
+  ) {
+    const src = prev as Record<string, unknown>;
+    const out: Record<string, unknown> = { ...(next as Record<string, unknown>) };
+    let changed = false;
+    for (const k of Object.keys(src)) {
+      if (!(k in out)) continue;
+      const fixed = restoreBlankedFields(src[k], out[k]);
+      if (fixed !== out[k]) {
+        out[k] = fixed;
+        changed = true;
+      }
+    }
+    return changed ? out : next;
+  }
+  return next;
+}
 
 export function installKeyStoreGuard(): void {
   if (keyStoreGuarded) return;
   keyStoreGuarded = true;
   const isKeyStore = (name: unknown): boolean => String(name ?? '').startsWith('ScratchKeyStore_');
   try {
-    const storeProto = globalThis.IDBObjectStore?.prototype as (IDBObjectStore & { clear: () => unknown }) | undefined;
+    const storeProto = globalThis.IDBObjectStore?.prototype as
+      | (IDBObjectStore & {
+          clear: () => unknown;
+          put: (v: unknown, k?: unknown) => unknown;
+          add: (v: unknown, k?: unknown) => unknown;
+          get: (k?: unknown) => unknown;
+        })
+      | undefined;
     const origClear = storeProto?.clear;
+    const origPut = storeProto?.put;
+    const origAdd = storeProto?.add;
+    const origGet = storeProto?.get;
     if (storeProto && typeof origClear === 'function') {
-      storeProto.clear = function (this: IDBObjectStore): unknown {
+      const wrapped = function (this: IDBObjectStore): unknown {
         try {
           if (isKeyStore(this.transaction?.db?.name)) return undefined;
         } catch {
           /* ignore */
         }
         return origClear.call(this);
-      } as typeof storeProto.clear;
+      };
+      markNative(wrapped, 'clear');
+      storeProto.clear = wrapped as typeof storeProto.clear;
+    }
+    // 覆盖式清空：镜像里非空、这次写入被改空的字段 → 用镜像值补回
+    const guardWrite = (orig: (v: unknown, k?: unknown) => unknown) =>
+      function (this: IDBObjectStore, value: unknown, key?: unknown): unknown {
+        let out = value;
+        try {
+          if (isKeyStore(this.transaction?.db?.name)) {
+            const known = keyMirror.get(mirrorKeyOf(this, key));
+            if (known !== undefined) out = restoreBlankedFields(known, value);
+            noteSecret(this, key, out);
+          }
+        } catch {
+          /* ignore */
+        }
+        return orig.call(this, out, key);
+      };
+    if (storeProto && typeof origPut === 'function') {
+      const wrappedPut = guardWrite(origPut);
+      markNative(wrappedPut, 'put');
+      storeProto.put = wrappedPut as typeof storeProto.put;
+    }
+    if (storeProto && typeof origAdd === 'function') {
+      const wrappedAdd = guardWrite(origAdd);
+      markNative(wrappedAdd, 'add');
+      storeProto.add = wrappedAdd as typeof storeProto.add;
+    }
+    if (storeProto && typeof origGet === 'function') {
+      const wrappedGet = function (this: IDBObjectStore, key?: unknown): unknown {
+        const req = origGet.call(this, key);
+        try {
+          if (isKeyStore(this.transaction?.db?.name) && req) {
+            const r = req as IDBRequest;
+            if (typeof r.addEventListener === 'function') {
+              // 用 addEventListener 而不是覆写 onsuccess：不侵占调用方的回调
+              r.addEventListener('success', () => {
+                try {
+                  noteSecret(this, key, r.result);
+                } catch {
+                  /* ignore */
+                }
+              });
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        return req;
+      };
+      markNative(wrappedGet, 'get');
+      storeProto.get = wrappedGet as typeof storeProto.get;
     }
   } catch {
     /* ignore */
@@ -954,7 +1119,7 @@ export function installKeyStoreGuard(): void {
       | undefined;
     const origDel = dbProto?.deleteObjectStore;
     if (dbProto && typeof origDel === 'function') {
-      dbProto.deleteObjectStore = function (this: IDBDatabase, name: string): void {
+      const wrapped = function (this: IDBDatabase, name: string): void {
         try {
           if (isKeyStore(this.name)) return;
         } catch {
@@ -962,6 +1127,8 @@ export function installKeyStoreGuard(): void {
         }
         return origDel.call(this, name);
       };
+      markNative(wrapped, 'deleteObjectStore');
+      dbProto.deleteObjectStore = wrapped;
     }
   } catch {
     /* ignore */
@@ -970,10 +1137,12 @@ export function installKeyStoreGuard(): void {
     const factory = globalThis.indexedDB as unknown as { deleteDatabase?: (n: string) => unknown } | undefined;
     const origDrop = factory?.deleteDatabase;
     if (factory && typeof origDrop === 'function') {
-      factory.deleteDatabase = function (name: string): unknown {
+      const wrapped = function (name: string): unknown {
         if (isKeyStore(name)) return undefined;
         return origDrop.call(factory, name);
       };
+      markNative(wrapped, 'deleteDatabase');
+      factory.deleteDatabase = wrapped;
     }
   } catch {
     /* ignore */

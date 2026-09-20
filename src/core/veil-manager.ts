@@ -18,6 +18,15 @@ export const VEIL_CSS = `
 const DEFAULT_COOKIE = 'svp_tk';
 const GUARD_MS = 5000;
 
+/** 页面是否在后台（标签页不可见）；非 DOM 环境按可见处理 */
+function pageHidden(): boolean {
+  try {
+    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 遮罩 VPN 通道（独立管辖）：
  * - 每实例独立 root + 独立 cookie 命名空间（多遮罩互不干扰）
@@ -29,6 +38,7 @@ export class VeilChannel {
   private root: ShadowRoot | null = null;
   private readonly cookieName: string;
   private timer: number | null = null;
+  private visBound = false;
   private seq = 0;
   private divInited = false;
 
@@ -43,7 +53,23 @@ export class VeilChannel {
     this.writeCookie();
     this.ensureDiv();
     if (this.timer === null) {
-      this.timer = window.setInterval(() => this.ensure(), GUARD_MS);
+      // 后台标签页不跑：ensure() 要读 document.cookie（整串序列化 + 正则匹配），
+      // 没人看界面时纯属空转。定时器照常滴答，回前台由 visibilitychange 立即补一次，
+      // 与主链路 vpnPatrol 的「隐藏即停 + 回前台立即巡检」保持一致。
+      this.timer = window.setInterval(() => {
+        if (pageHidden()) return;
+        this.ensure();
+      }, GUARD_MS);
+    }
+    if (!this.visBound) {
+      this.visBound = true;
+      try {
+        document.addEventListener('visibilitychange', () => {
+          if (!pageHidden()) this.ensure();
+        });
+      } catch {
+        /* ignore */
+      }
     }
   }
 
