@@ -466,6 +466,12 @@
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
+  /* 长列表滚动优化：content-visibility 让浏览器跳过视口外行的布局与绘制，
+     每行含多个内联 SVG，全量绘制是掉帧主因。contain-intrinsic-size 的 auto
+     关键字会记住每行真实高度，首次用 104px 估值 —— 列表容器自身是
+     flex:1 + overflow-y:auto（高度由容器决定），所以这里的估值不会引起面板高度抖动。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 104px;
 }
 .svp-item:hover {
   border-color: rgba(255, 255, 255, 0.22);

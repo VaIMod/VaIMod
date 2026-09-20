@@ -471,19 +471,45 @@
     if (q.startsWith(VALUE_TAG)) return { nq: '', vq: q.slice(VALUE_TAG.length).trim() };
     return { nq: q, vq: '' };
   };
+  // 模板里读这个派生值而不是直接调 splitSearch(varSearch)：避免每次组件更新都重跑一遍解析
+  const searchParts = $derived(splitSearch(varSearch));
   const valueText = (v: ScratchVaIMod): string => {
     if (v == null || v.value == null) return '';
     if (Array.isArray(v.value)) return v.value.map(String).join('\n');
     return String(v.value);
   };
+  // 变量项引用稳定化（大列表性能关键）：
+  // 桥接层每次轮询都会产出**全新的变量对象**，即使值完全没变。若把新对象直接喂给
+  // keyed each，900 行列表每 1.2s 就要全量重渲染一遍（实测：可见空间转 5s 脚本耗时 30.7ms，
+  // 满列表单键 30.3ms）。这里按「渲染相关字段」算签名，签名未变就复用上一轮的对象引用，
+  // Svelte 对引用未变的行直接跳过更新 —— 只处理真正变化的行，行为完全一致。
+  const varSigOf = (v: ScratchVaIMod): string =>
+    [
+      v.name,
+      String(v.kind ?? ''),
+      v.isCloud ? 1 : 0,
+      v.isLocked ? 1 : 0,
+      v.targetId ?? '',
+      v.targetName ?? '',
+      Array.isArray(v.value) ? v.value.join('\u0001') : String(v.value ?? ''),
+    ].join('\u0002');
+  // 只保留本轮出现过的键（被删除的变量自然淘汰，缓存不会无限增长）
+  let varRefCache = new Map<string, { sig: string; v: ScratchVaIMod }>();
+
   const groups = $derived.by(() => {
     void monitorTick;
     const { nq, vq } = splitSearch(varSearch);
     const map = new Map<string, ScratchVaIMod[]>();
-    for (const v of variables) {
+    const nextCache = new Map<string, { sig: string; v: ScratchVaIMod }>();
+    for (const raw of variables) {
       // 清洗无效数据：缺 id / 非字符串名 的条目跳过，
       // 避免 keyed each 出现重复/缺失 key 抛异常导致渲染中断
-      if (!v || typeof v.id !== 'string' || !v.id || typeof v.name !== 'string') continue;
+      if (!raw || typeof raw.id !== 'string' || !raw.id || typeof raw.name !== 'string') continue;
+      const ck = raw.targetId + ':' + raw.id;
+      const sig = varSigOf(raw);
+      const cached = varRefCache.get(ck);
+      const v = cached && cached.sig === sig ? cached.v : raw;
+      nextCache.set(ck, { sig, v });
       if (vq) {
         if (!valueText(v).toLowerCase().includes(vq)) continue;
       } else if (nq) {
@@ -496,6 +522,7 @@
       list.push(v);
       map.set(key, list);
     }
+    varRefCache = nextCache;
     return [...map.entries()].map(([name, items]) => ({ name, items }));
   });
 
@@ -1769,7 +1796,7 @@
                     <button class="svp-search-clear" onclick={() => (varSearch = '')} aria-label="清除搜索">×</button>
                   {/if}
                 </div>
-                {#if splitSearch(varSearch).vq}
+                {#if searchParts.vq}
                   <div class="svp-search-mode">按变量值匹配</div>
                 {/if}
                 {#key varsAnimKey}
