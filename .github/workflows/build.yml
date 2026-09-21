@@ -33,6 +33,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # 类型/模板检查门禁：svelte-check 报错就直接失败，绝不把坏产物部署上线
+      # （本地 npm run check 与这里同一条命令，绿灯即代表可构建）
+      - name: Type check
+        run: npm run check
+
       - name: Build userscript
         run: npm run build
         env:
@@ -40,6 +45,15 @@ jobs:
           GITHUB_PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
           # 注入递增版本号（run_number 每次构建 +1），保证 Tampermonkey 能识别新版本
           SCRIPT_VERSION: 0.1.${{ github.run_number }}
+
+      # 尽力自动启用 Pages：仓库尚未开启 Pages 时尝试代开（需要 token 具备相应权限，
+      # 权限不足会被忽略 —— 这一步失败不阻断后续，deploy 步骤会给出明确报错，
+      # 而上面的构建产物与本 job 的 artifact 不受影响）。
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+        continue-on-error: true
+        with:
+          enablement: true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -64,6 +78,85 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+  # 诊断自报（独立 job，不依赖 build，构建失败也照跑）：
+  # 本机（开发机）拿不到 GitHub API token（凭据由 GCM 托管、无交互会话），
+  # 无法直接查「仓库可见性 / 计划 / Pages 是否启用 / 最近运行结论」。
+  # 这里让 CI 用自带的 GITHUB_TOKEN 把真实状态写成报告推到 ci-report 分支，
+  # 本地 fetch 该分支即可读到 —— 不依赖任何外部凭据，也不会有落盘密钥。
+  diagnose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect status via API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          REPO="${GITHUB_REPOSITORY}"
+          API="https://api.github.com/repos/${REPO}"
+          H1="Authorization: Bearer ${GH_TOKEN}"
+          H2="Accept: application/vnd.github+json"
+          mkdir -p ci-report
+          {
+            echo "# CI 诊断报告"
+            echo
+            echo "- 生成时间：$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- 触发事件：${{ github.event_name }}"
+            echo "- 提交：${GITHUB_SHA:0:7}"
+            echo "- 仓库：${REPO}"
+            echo
+            echo "## 仓库元信息（private / visibility / has_pages / default_branch）"
+            echo '```json'
+            curl -sS -H "$H1" -H "$H2" "$API" \
+              | grep -E '"(private|visibility|has_pages|default_branch|owner)":' | head -20
+            curl -sS -H "$H1" -H "$H2" "$API" | head -c 1200
+            echo
+            echo '```'
+            echo
+            echo "## 账号计划（Free 私有仓库不支持 Pages）"
+            echo '```json'
+            curl -sS -H "$H1" -H "$H2" "https://api.github.com/user" | head -c 1200
+            echo
+            echo '```'
+            echo
+            echo "## Pages 当前状态（HTTP 404 = 从未启用）"
+            echo '```'
+            curl -sS -o /tmp/pages.json -w 'GET /pages -> HTTP %{http_code}\n' \
+              -H "$H1" -H "$H2" "$API/pages" || true
+            head -c 1500 /tmp/pages.json || true
+            echo
+            echo '```'
+            echo
+            echo "## 尝试启用 Pages（build_type=workflow，失败原因写在响应体里）"
+            echo '```'
+            curl -sS -o /tmp/pages-post.json -w 'POST /pages -> HTTP %{http_code}\n' -X POST \
+              -H "$H1" -H "$H2" -H 'Content-Type: application/json' \
+              -d '{"build_type":"workflow"}' "$API/pages" || true
+            head -c 1500 /tmp/pages-post.json || true
+            echo
+            echo '```'
+            echo
+            echo "## 最近 5 次工作流运行"
+            echo '```json'
+            curl -sS -H "$H1" -H "$H2" "$API/actions/runs?per_page=5" \
+              | grep -E '"(name|event|status|conclusion|created_at|head_sha)":' | head -40
+            echo '```'
+          } > ci-report/status.md
+
+      - name: Push report branch
+        run: |
+          set -e
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f ci-report/status.md
+          git commit -q -m "ci: status report $(date -u +%Y-%m-%dT%H:%M:%SZ)" || echo "no changes"
+          git push --force origin HEAD:ci-report
 
   # 打 tag（如 v0.1.0）时自动发布 Release，附带构建产物
   release:
