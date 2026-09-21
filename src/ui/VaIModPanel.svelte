@@ -135,6 +135,25 @@
     void plugVer;
     return pluginRegistry.get(pid);
   });
+  /**
+   * 常驻扩展（`async.lazy === false`）：不打开标签页也要跑 code。
+   *
+   * 用 headless 实例（游离 root，零面板 DOM）承载 —— 插件照常执行，只是没有可见
+   * 界面；这样既兑现 lazy 语义，又不给面板加节点、不影响既有布局与命中测试。
+   *
+   * 必须排除**当前激活的那个**：它已经有可见实例在跑，再来一个会双跑
+   * （定时器翻倍、toast 重复、写变量双发）。
+   */
+  const headlessPlugins = $derived.by(() => {
+    void plugVer;
+    const activeId = pluginIdOfTab(activeTab);
+    return pluginRegistry
+      .list()
+      .filter(
+        (p) =>
+          p.def.type !== 'patch' && p.enabled && p.def.async.lazy === false && p.def.id !== activeId,
+      );
+  });
   // 补丁差量同步：挂载后立即对齐一次；插件安装/卸载/启停（plugVer 变化）后再对齐。
   // 幂等：已对齐状态下重复调用零副作用（无 DOM 重建、无钩子重注册）。
   $effect(() => {
@@ -168,6 +187,8 @@
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   // 刷新图标旋转时长：给用户明确反馈（真刷新数据重取在后面紧接着发生）
   const REFRESH_SPIN_MS = 420;
+  // 插件 async.waitVm 声明 timeout: 0（不限制）时面板侧的兜底上限：见 waitVm()
+  const VM_WAIT_MAX_MS = 120_000;
   let ccwPanel: { animateRefresh: () => void } | null = $state(null);
   let toolsPanel: { refresh: () => void } | null = $state(null);
   let feishuPanel: { refresh: () => void } | null = $state(null);
@@ -1209,6 +1230,37 @@
   }
 
   /**
+   * Promise 版「等 vm 就绪」——供插件 async.load / async.waitVm 使用
+   * （runPluginBoot 是 await 语义，需要明确结论，不能像 whenReady 那样静默放弃）。
+   *
+   * 与 whenReady 的分工：whenReady 是「就绪后做某事」的回调式（面板自身刷新用，
+   * 超时就悄悄收工）；这里必须 resolve 一个布尔值——true=就绪、false=超时/桥接出错，
+   * 插件侧据此决定是否执行 code（见 runPluginBoot 的契约）。
+   *
+   * timeoutMs <= 0（插件清单里 timeout: 0 = 不限制）时按 VM_WAIT_MAX_MS 兜底：
+   * 桥接从未就绪时无限挂起会留下永不清理的定时器，这里给一个「实际等于不限制、
+   * 但一定会终止」的上限。
+   */
+  function waitVm(timeoutMs: number): Promise<boolean> {
+    if (bridge.getStatus() === BridgeStatus.Connected) return Promise.resolve(true);
+    if (bridge.getStatus() === BridgeStatus.Error) return Promise.resolve(false);
+    const limit = timeoutMs > 0 ? timeoutMs : VM_WAIT_MAX_MS;
+    return new Promise<boolean>((resolve) => {
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const st = bridge.getStatus();
+        if (st === BridgeStatus.Connected) {
+          clearInterval(timer);
+          resolve(true);
+        } else if (st === BridgeStatus.Error || Date.now() - startedAt >= limit) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 150);
+    });
+  }
+
+  /**
    * 进入某页时的「数据真刷新」——静默版（不转圈、不重播动画）。
    *
    * 面板从收起状态展开、或切换到某个标签页时调用。之所以必须真读 vm：
@@ -1446,7 +1498,10 @@
           : {},
         // 机器人不传：由 bundle 层从本地登记表读取，保证导出即完整备份
         settings,
+        // 项目原始值基线（连接后首次读取时由桥接层记下）→ 用于导出「哪些变量被改过、原值多少」
+        origins: bridge.getOriginValues(),
       });
+      // 插件源码 / 装机清单 / 各插件自己的设置由 bundle 层从 registry 现读，导出即完整备份
       const sum = summarizeBundle(bundle);
       showToast(`已导出配置 · ${summaryText(sum)}`);
     });
@@ -1514,7 +1569,7 @@
         if (
           !confirm(
             `即将导入插件包：\n${summaryText(sum)}${plugTip}\n\n` +
-              '仅安装插件，不改动变量 / 别名 / 云数据 / 快照 / 回收站 / 设置，是否继续？',
+              '仅安装插件并还原插件设置与启用态，不改动变量 / 别名 / 云数据 / 还原点 / 回收站 / 设置，是否继续？',
           )
         ) {
           showToast('已取消导入');
@@ -1524,6 +1579,8 @@
           const local = applyVaIModBundleLocal(bundle);
           const plugDetail = pluginInstallDetail(bundle);
           const parts: string[] = [`插件 ${local.plugins}`];
+          if (local.pluginSettings) parts.push(`插件设置 ${local.pluginSettings}`);
+          if (local.pluginState) parts.push(`启用态 ${local.pluginState}`);
           if (plugDetail.skipped) parts.push(`跳过重复 ${plugDetail.skipped}`);
           if (plugDetail.failed.length > 0) parts.push(`插件失败 ${plugDetail.failed.length}`);
           showToast(
@@ -1536,7 +1593,7 @@
       if (
         !confirm(
           `即将导入配置：\n${summaryText(sum)}${legacyTip}${wildTip}${plugTip}\n\n` +
-            '变量/别名/快照/回收站/机器人/设置/插件将被覆盖，是否继续？',
+            '变量/别名/还原点/回收站/机器人/设置/插件(含插件设置与启用态)将被覆盖，是否继续？',
         )
       ) {
         showToast('已取消导入');
@@ -1595,12 +1652,14 @@
       variables = decodeVariables(bridge.getVariables());
       const parts: string[] = [`变量 ${matched}`];
       if (local.plugins) parts.push(`插件 ${local.plugins}${plugDetail.skipped ? `（跳过重复 ${plugDetail.skipped}）` : ''}`);
+      if (local.pluginSettings) parts.push(`插件设置 ${local.pluginSettings}`);
+      if (local.pluginState) parts.push(`启用态 ${local.pluginState}`);
       if (wildApplied) parts.push(`通配套用 ${wildApplied}`);
       if (unmatched) parts.push(`未匹配 ${unmatched}`);
       if (local.displayNames > 0) parts.push(`别名 ${local.displayNames}`);
       if (cloudWritten) parts.push(`云数据 ${cloudWritten}`);
       if (local.robots) parts.push(`机器人 ${local.robots}`);
-      if (local.markers) parts.push(`快照 ${local.markers}`);
+      if (local.markers) parts.push(`还原点 ${local.markers}`);
       if (local.trash) parts.push(`回收站 ${local.trash}`);
       if (plugDetail.failed.length > 0) parts.push(`插件失败 ${plugDetail.failed.length}`);
       showToast(
@@ -1882,7 +1941,7 @@
                 <!-- 键只含插件 id：其它插件的注册表事件（安装/启停）不重建本页；
                      同 id 升级时 registry.get 返回新对象 → plugin prop 替换 → 组件内部 effect 重建 -->
                 {#key activePlugin.def.id}
-                  <PluginTab bind:this={pluginTabRef} plugin={activePlugin} {variables} {projectApi} defer={settings.loadMode !== 'sync'} onToast={showToast} onWrite={writeById} />
+                  <PluginTab bind:this={pluginTabRef} plugin={activePlugin} {variables} {projectApi} {waitVm} defer={settings.loadMode !== 'sync'} onToast={showToast} onWrite={writeById} />
                 {/key}
               {:else if !isBuiltinTab(activeTab)}
                 <p class="svp-empty">该插件已卸载或未启用。</p>
@@ -1892,6 +1951,11 @@
           </div>
         {/if}
       </div>
+      <!-- 常驻扩展（async.lazy === false）：headless 实例不产生任何 DOM，
+           放在内容区之外，连接状态变化/标签页切换都不会卸载它们。 -->
+      {#each headlessPlugins as hp (hp.def.id)}
+        <PluginTab plugin={hp} {variables} {projectApi} {waitVm} headless onToast={showToast} onWrite={writeById} />
+      {/each}
       <button class="svp-resize-handle" onmousedown={startResize} aria-label="拖拽调整面板大小"></button>
       {#if showSettings}
         <SettingsOverlay

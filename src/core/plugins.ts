@@ -69,6 +69,64 @@ export type PluginSettingDef = PluginSettingToggle | PluginSettingText | PluginS
  */
 export type PluginType = 'patch' | 'ext';
 
+/**
+ * 异步加载定义 —— 由**插件自己在清单里填写**（`async: {...}`），决定这份插件
+ * 什么时候加载、要不要等 vm、以及异步期间怎么表现。
+ *
+ * 全部字段可选，缺省为「保守同步」：装到就执行、不等待、不超时。
+ * 填写示例：
+ *   VaIMod.plugin({
+ *     ...
+ *     async: {
+ *       code: true,                     // code 是异步的（返回 Promise）
+ *       waitVm: true,                   // 等 vm 就绪（桥接连接）后再执行 code
+ *       lazy: true,                      // 打开该标签页时才执行（扩展默认如此）
+ *       timeout: 15000,                 // 异步超时（ms），超时按加载失败处理
+ *       load: `await fetch(...);`,      // 预加载钩子：在 code 之前执行，可异步
+ *     },
+ *   });
+ * 简写：`async: true` 等价于 `{ code: true }`（只声明 code 是异步的）。
+ */
+/**
+ * 插件市场元信息 —— 同样由**插件自己在清单里填写**，供市场/设置页展示与检索。
+ *
+ * 优先从 `market: {...}` 对象读取，其次读 `@market.*` 命名空间标签
+ * （例：`@market.category 工具`、`@market.tags 变量,批量`）。
+ * 未列出的 `@market.xxx` 会原样收进 `extra.marketTags`，市场侧新增字段
+ * 不需要改本体代码。
+ */
+export interface PluginMarketDef {
+  /** 上架分类（如 工具 / 视觉 / 数据 / 安全） */
+  category: string;
+  /** 检索关键词 */
+  tags: string[];
+  /** 图标：emoji 或图片 URL */
+  icon: string;
+  /** 项目主页 / 仓库 */
+  homepage: string;
+  /** 许可协议（如 MIT） */
+  license: string;
+  /** 要求的最低 VaIMod 版本 */
+  minApp: string;
+  /** 版本更新说明 */
+  changelog: string;
+  /** 截图 / 示例链接 */
+  screenshots: string[];
+}
+
+export interface PluginAsyncDef {
+  /** code 是异步的（返回 Promise）。清理函数在 Promise 落定后才接管 */
+  code: boolean;
+  /** 等到 vm 就绪后再执行 code；未就绪期间标签页显示等待态而不是空面板 */
+  waitVm: boolean;
+  /** 懒加载：标签页未打开就不执行 code。扩展默认 true；补丁强制 false（必须常驻） */
+  lazy: boolean;
+  /** 预加载钩子：在 code 之前执行，可异步。用于按需拉取远程资源 / 初始化大依赖 */
+  load: string;
+  /** 异步加载超时（ms）；0 = 不限制。超时按失败处理并在标签页内提示 */
+  timeout: number;
+}
+
 /** 解析后的插件定义（可直接用于渲染与执行） */
 export interface PluginDef {
   id: string;
@@ -99,6 +157,10 @@ export interface PluginDef {
   settingsCss: string;
   /** 该插件在设置页的功能项定义 */
   settings: PluginSettingDef[];
+  /** 异步加载定义（插件清单里填写，缺省保守同步；见 PluginAsyncDef） */
+  async: PluginAsyncDef;
+  /** 市场元信息（插件清单里填写；见 PluginMarketDef） */
+  market: PluginMarketDef;
   /** 其它内容（任意 JSON 可序列化数据；原样透传给 code） */
   extra: Record<string, unknown>;
 }
@@ -348,6 +410,77 @@ function functionCodeToString(fn: (...args: unknown[]) => unknown): string {
  * 加固：存储态在 plugin-registry 侧做完整性指纹校验（bodySig），条目被外部
  * 改写或写坏即拒绝加载 —— 阻断「页面脚本直接往 localStorage 塞插件」的注入路径。
  */
+/**
+ * 剥掉注释装饰，让标签行与块值都能原样取出。
+ * 支持 `//  @html`、`/* @html`、` * @html`、纯 `@html` 四种写法。
+ */
+function stripCommentDecoration(line: string): string {
+  return line
+    .replace(/^\s*\/\*+\s?/, '')
+    .replace(/\*\/\s*$/, '')
+    .replace(/^\s*\*+\s?/, '')
+    .replace(/^\s*\/\/+\s?/, '');
+}
+
+/**
+ * 解析插件前的「标签式声明区」（`@key value` / `@key: value`），与
+ * `VaIMod.plugin({...})` 对象写法**并存**；两边都写时**对象优先**
+ * （对象表达力更强、有类型检查，标签更适合写 `@html` 这类大块内容）。
+ *
+ * 只扫**文件开头的注释区**，扫到第一行真实代码即停止 —— 这样插件正文里出现的
+ * `@`（装饰器、邮箱、字符串）不会被误判成标签。
+ *
+ * 标签形态：
+ *   单行值：`@id my-tool` / `@name: 我的工具`
+ *   布尔开关：`@async`（裸写即 true）/ `@async false`
+ *   块值：`@html` 之后的每一行都算它的内容，直到下一个 `@` 标签为止（可多行）
+ *   未识别的标签原样收进 extra.tags —— 插件可以自行扩展新标签而不必改本体
+ */
+export function parsePluginTags(src: string): Map<string, string> {
+  const tags = new Map<string, string>();
+  const lines = src.split(/\r?\n/);
+  // 只取开头连续的注释/空行作为声明区
+  const region: string[] = [];
+  let started = false;
+  for (const line of lines) {
+    const t = line.trim();
+    const isComment = t === '' || t.startsWith('//') || t.startsWith('/*') || t.startsWith('*');
+    if (!isComment) break;
+    started = true;
+    region.push(stripCommentDecoration(line));
+  }
+  if (!started) return tags;
+  let cur: string | null = null;
+  const buf: string[] = [];
+  const flush = () => {
+    if (cur) tags.set(cur, buf.join('\n').replace(/\s+$/, ''));
+    cur = null;
+    buf.length = 0;
+  };
+  for (const line of region) {
+    // 允许点号 → 支持 `@market.category` 这类命名空间标签
+    const m = /^@([A-Za-z][\w.-]*)\s*:?\s?([\s\S]*)$/.exec(line.trim());
+    if (m) {
+      flush();
+      cur = m[1].toLowerCase();
+      buf.push(m[2]);
+      continue;
+    }
+    if (cur) buf.push(line);
+  }
+  flush();
+  return tags;
+}
+
+/** 标签布尔值：裸写（无值）视为 true；'false'/'0'/'no'/'off' 视为 false */
+function tagBool(v: string | undefined): boolean | undefined {
+  if (v === undefined) return undefined;
+  const s = v.trim().toLowerCase();
+  if (s === '' || s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+  if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+  return undefined;
+}
+
 export function parsePluginSource(src: string): PluginDef {
   if (typeof src !== 'string' || src.trim() === '') {
     throw new PluginParseError('插件文件为空');
@@ -378,15 +511,28 @@ export function parsePluginSource(src: string): PluginDef {
     throw new PluginParseError('插件未调用 VaIMod.plugin({...})，无法识别');
   }
 
-  const id = asString(def.id).trim();
+  // 标签式声明作为对象写法的**回退**：对象里写了就用对象（优先），没写才看 @标签。
+  // 这样两种格式可以混用，例如对象里写 code、标签里写 @html。
+  const tags = parsePluginTags(src);
+  const pick = (key: string): unknown => {
+    const v = def[key];
+    if (v !== undefined && v !== null) return v;
+    return tags.has(key) ? tags.get(key) : undefined;
+  };
+  const pickStr = (key: string): string => {
+    const v = pick(key);
+    return typeof v === 'string' ? v : v === undefined ? '' : String(v);
+  };
+
+  const id = asString(pick('id')).trim();
   if (!ID_RE.test(id)) {
     throw new PluginParseError('插件 id 缺失或格式非法（要求 2–48 位小写字母/数字/短横线/下划线）');
   }
-  const name = asString(def.name).trim();
+  const name = asString(pick('name')).trim();
   if (!name) throw new PluginParseError('插件 name（标签页标题）不能为空');
 
   // 插件类型：缺省按扩展兼容（旧格式插件）；显式声明必须是 'patch' 或 'ext'
-  const rawType = def.type;
+  const rawType = pick('type');
   let type: PluginType = 'ext';
   if (rawType !== undefined) {
     if (rawType !== 'patch' && rawType !== 'ext') {
@@ -395,39 +541,151 @@ export function parsePluginSource(src: string): PluginDef {
     type = rawType;
   }
   // 补丁优先级：0–10000，默认 100（越小越先过管道链）
-  const rawPriority = def.priority;
+  const rawPriority = pick('priority');
   const priority =
     typeof rawPriority === 'number' && Number.isFinite(rawPriority)
       ? Math.min(10000, Math.max(0, Math.round(rawPriority)))
       : 100;
 
-  const extra =
+  // ---------- 标签分区：市场命名空间标签 / 未识别标签 ----------
+  // 已知标签一览（其余一律当作用户自定义标签保留，市场侧加字段不必改本体）
+  const KNOWN_TAGS = new Set([
+    'id', 'name', 'version', 'author', 'desc', 'type', 'priority',
+    'css', 'html', 'code', 'refresh', 'settingscss', 'settings',
+    'async', 'waitvm', 'lazy', 'timeout', 'load', 'document', 'market',
+  ]);
+  const marketTags: Record<string, string> = {};
+  const otherTags: Record<string, string> = {};
+  for (const [k, v] of tags) {
+    if (k.startsWith('market.')) {
+      marketTags[k.slice('market.'.length)] = v;
+      continue;
+    }
+    if (!KNOWN_TAGS.has(k)) otherTags[k] = v;
+  }
+
+  const baseExtra =
     def.extra && typeof def.extra === 'object' && !Array.isArray(def.extra)
       ? (def.extra as Record<string, unknown>)
       : {};
+  const extra: Record<string, unknown> = { ...baseExtra };
+  // 未识别的 @标签 与全部 @market.* 一并保留：前者便于作者自行扩展，后者便于
+  // 市场侧新增字段时无需改本体（已知键在 marketDef 里另有一份规整后的值）。
+  if (Object.keys(otherTags).length > 0) extra.tags = otherTags;
+  if (Object.keys(marketTags).length > 0) extra.marketTags = marketTags;
+
+  // ---------- 市场元信息：`market: {...}` 对象 + `@market.*` 标签（标签键全小写） ----------
+  const rawMarket = pick('market');
+  const marketObjLower: Record<string, unknown> = {};
+  if (rawMarket && typeof rawMarket === 'object' && !Array.isArray(rawMarket)) {
+    for (const [k, v] of Object.entries(rawMarket as Record<string, unknown>)) {
+      marketObjLower[k.toLowerCase()] = v;
+    }
+  }
+  const mStr = (key: string): string => {
+    const fromObj = marketObjLower[key];
+    if (typeof fromObj === 'string') return fromObj;
+    if (typeof fromObj === 'number') return String(fromObj);
+    const fromTag = marketTags[key];
+    return typeof fromTag === 'string' ? fromTag : '';
+  };
+  const mList = (key: string): string[] => {
+    const fromObj = marketObjLower[key];
+    if (Array.isArray(fromObj)) return fromObj.filter((x): x is string => typeof x === 'string');
+    if (typeof fromObj === 'string') return [fromObj];
+    const fromTag = marketTags[key];
+    // 标签里用逗号/空格分隔多个值（中英文逗号都认）
+    return fromTag ? fromTag.split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean) : [];
+  };
+  const marketDef: PluginMarketDef = {
+    category: mStr('category'),
+    tags: mList('tags'),
+    icon: mStr('icon'),
+    homepage: mStr('homepage'),
+    license: mStr('license'),
+    minApp: mStr('minapp'),
+    changelog: mStr('changelog'),
+    screenshots: mList('screenshots'),
+  };
+
+  // 异步加载定义（插件清单内填写）：对象写法 + `async: true` 简写。
+  // 容错优先：字段类型不对就回落到默认值，不让一份写歪的 async 阻断整个插件安装。
+  const rawAsync = pick('async');
+  const hasAsyncObj = !!rawAsync && typeof rawAsync === 'object' && !Array.isArray(rawAsync);
+  const asyncObj = hasAsyncObj ? (rawAsync as Record<string, unknown>) : {};
+  // 标签回退：`@async` / `@waitVm` / `@lazy` / `@timeout` / `@load`
+  // （`pick('load')` 已自动覆盖「对象没写、标签写了」的情形）
+  const tagAsync = hasAsyncObj ? undefined : tagBool(tags.get('async'));
+  const tagTimeout = Number.parseInt((tags.get('timeout') ?? '').trim(), 10);
+  const rawLoad = pick('load');
+  const asyncDef: PluginAsyncDef = {
+    // `async: true` 简写，或 async.code 写成 true / 函数 / 字符串，都视为「code 是异步的」
+    code:
+      rawAsync === true ||
+      tagAsync === true ||
+      asyncObj.code === true ||
+      typeof asyncObj.code === 'function' ||
+      typeof asyncObj.code === 'string',
+    waitVm: asyncObj.waitVm === true || tagBool(tags.get('waitvm')) === true,
+    // 扩展默认懒加载（本来就是打开标签页才跑）；写 false 可关掉；补丁稍后强制 false
+    lazy: asyncObj.lazy !== false && tagBool(tags.get('lazy')) !== false,
+    load:
+      typeof rawLoad === 'function'
+        ? functionCodeToString(rawLoad as (...args: unknown[]) => unknown)
+        : asString(rawLoad),
+    timeout: Number.isFinite(tagTimeout) && tagTimeout > 0
+      ? Math.round(tagTimeout)
+      : typeof asyncObj.timeout === 'number' && Number.isFinite(asyncObj.timeout)
+        ? Math.max(0, Math.round(asyncObj.timeout))
+        : 0,
+  };
+  if (type === 'patch') {
+    // 补丁是 headless 常驻的，不能懒加载
+    asyncDef.lazy = false;
+  }
+
+  // 内容字段同样「对象优先、@标签回退」——尤其 `@html` / `@css` / `@code` 这类
+  // 大块内容写在注释区更好维护（见 parsePluginTags 的块值规则）。
+  const rawCode = pick('code');
+  const rawRefresh = pick('refresh');
+  // `@settingscss` 标签键是全小写的，对象键是 settingsCss，两边对不上，单独取一次
+  const rawSettingsCss = def.settingsCss ?? (tags.has('settingscss') ? tags.get('settingscss') : undefined);
+  const rawSettings = pick('settings');
+  let settingsInput: unknown = rawSettings;
+  if (typeof rawSettings === 'string' && rawSettings.trim()) {
+    // 标签写法只能是字符串，按 JSON 解析；解析不出来就当作没写（不让一份写歪的
+    // @settings 阻断整个插件安装）
+    try {
+      settingsInput = JSON.parse(rawSettings);
+    } catch {
+      settingsInput = undefined;
+    }
+  }
 
   return {
     id,
     name,
-    version: asString(def.version, '1.0.0'),
-    author: asString(def.author),
-    desc: asString(def.desc),
+    version: asString(pick('version'), '1.0.0'),
+    author: asString(pick('author')),
+    desc: asString(pick('desc')),
     type,
     priority,
-    css: asString(def.css),
-    html: asString(def.html),
+    css: asString(pick('css')),
+    html: asString(pick('html')),
     // 功能代码：允许写成函数（规整为可执行语句串）或字符串（直接用）
     code:
-      typeof def.code === 'function'
-        ? functionCodeToString(def.code as (...args: unknown[]) => unknown)
-        : asString(def.code),
+      typeof rawCode === 'function'
+        ? functionCodeToString(rawCode as (...args: unknown[]) => unknown)
+        : asString(rawCode),
     // 刷新钩子：与 code 同样的规整方式（方法简写自动补 function 关键字）
     refresh:
-      typeof def.refresh === 'function'
-        ? functionCodeToString(def.refresh as (...args: unknown[]) => unknown)
-        : asString(def.refresh),
-    settingsCss: asString(def.settingsCss),
-    settings: normalizeSettingsDefs(def.settings),
+      typeof rawRefresh === 'function'
+        ? functionCodeToString(rawRefresh as (...args: unknown[]) => unknown)
+        : asString(rawRefresh),
+    settingsCss: asString(rawSettingsCss),
+    settings: normalizeSettingsDefs(settingsInput),
+    async: asyncDef,
+    market: marketDef,
     extra,
   };
 }
@@ -469,6 +727,17 @@ export function serializePluginDef(def: PluginDef): string {
   if (def.refresh) lines.push(`  refresh: ${q(def.refresh)},`);
   if (def.settingsCss) lines.push(`  settingsCss: ${q(def.settingsCss)},`);
   if (def.settings.length > 0) lines.push(`  settings: ${JSON.stringify(def.settings, null, 2)},`);
+  // 异步加载定义：只写非默认项，导出的插件源码保持精简且与解析端往返一致
+  const a = def.async;
+  if (a && (a.code || a.waitVm || a.load || a.timeout > 0 || a.lazy !== (def.type !== 'patch'))) {
+    const parts: string[] = [];
+    if (a.code) parts.push('code: true');
+    if (a.waitVm) parts.push('waitVm: true');
+    if (a.lazy !== (def.type !== 'patch')) parts.push(`lazy: ${a.lazy}`);
+    if (a.timeout > 0) parts.push(`timeout: ${a.timeout}`);
+    if (a.load) parts.push(`load: ${q(a.load)}`);
+    lines.push(`  async: { ${parts.join(', ')} },`);
+  }
   if (Object.keys(def.extra).length > 0) {
     lines.push(`  extra: ${JSON.stringify(def.extra, null, 2)},`);
   }

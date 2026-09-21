@@ -7,7 +7,7 @@
   //   ④ 设置项变化时重建（settings 作为 ctx 的输入，变化即重跑 code）
   import { onDestroy, untrack } from 'svelte';
   import type { InstalledPlugin, PluginContext, PluginProjectApi } from '../core/plugins';
-  import { runPluginCode, runPluginRefresh, makePluginStore, pluginRegistry } from '../core/plugin-registry';
+  import { runPluginBoot, runPluginRefresh, makePluginStore, pluginRegistry } from '../core/plugin-registry';
   import { createPluginUI } from '../core/plugin-ui';
   import type { ScratchVaIMod } from '../core';
 
@@ -18,6 +18,8 @@
     projectApi,
     onToast,
     onWrite,
+    waitVm,
+    headless = false,
   }: {
     plugin: InstalledPlugin;
     variables: ScratchVaIMod[];
@@ -27,10 +29,26 @@
     projectApi: PluginProjectApi;
     onToast?: (text: string, kind: 'ok' | 'err') => void;
     onWrite?: (variableId: string, value: unknown, targetId?: string) => void;
+    /**
+     * 等 vm 就绪（供插件 async.waitVm 使用）；true=就绪、false=超时/出错。
+     * 未注入时声明了 waitVm 的插件按加载失败处理（宁可不跑，也不带着空数据产生副作用）。
+     */
+    waitVm?: (timeoutMs: number) => Promise<boolean>;
+    /**
+     * 常驻无界面模式（供 async.lazy === false 的扩展使用）：不渲染宿主节点、
+     * 不注入 html/css，root 用游离 div —— code 照常执行（订阅 / 定时器 / 写变量
+     * 都走同一套 ctx 通道），只是没有可见界面。
+     */
+    headless?: boolean;
   } = $props();
 
   let hostEl: HTMLElement | undefined = $state();
   let runtimeFailed = $state('');
+  /** 异步装载中（async.waitVm / async.load 阶段）：标签页内显示等待态而非空面板 */
+  let pluginBooting = $state(false);
+  // headless：root 是游离节点（不进文档树），因此不产生任何面板 DOM。
+  // 用 $derived 包一层：headless 是 props 常量，这样做只是避免在模块初始化期就读 props。
+  const headlessRoot = $derived(headless ? document.createElement('div') : undefined);
 
   /**
    * 净化插件 HTML（防御性）：插件 html 可能来自分享的配置包 / 被篡改的 localStorage，
@@ -312,22 +330,36 @@
   // 挂载/设置变化/插件替换时：重建内容并重跑 code
   $effect(() => {
     // 依赖：宿主元素、插件定义、设置快照
-    const el = hostEl;
+    const el = headless ? headlessRoot : hostEl;
     void plugin.def;
     void pluginSettings;
     if (!el) return;
     teardown();
     runtimeFailed = '';
     const boot = () => {
-      // 搬运清洗后的节点（不经过 innerHTML 字符串回写，见 sanitizePluginHtml 说明）
-      const frag = sanitizePluginHtml(plugin.def.html || '');
+      // 搬运清洗后的节点（不经过 innerHTML 字符串回写，见 sanitizePluginHtml 说明）。
+      // headless 模式没有可见界面，html 一律不注入（只跑 code）。
+      const frag = headless ? null : sanitizePluginHtml(plugin.def.html || '');
       el.replaceChildren();
       if (frag) el.appendChild(frag);
       alive = true;
       try {
         const ctx = buildCtx(el);
         bootCtx = ctx;
-        cleanupFn = runPluginCode(plugin.def, ctx);
+        // 异步加载定义（def.async：waitVm → load → code）。未声明 async 时
+        // runPluginBoot 内部直接走 runPluginCode，时序与旧版完全一致（不引入异步边界）。
+        cleanupFn = runPluginBoot(plugin.def, ctx, {
+          waitVm,
+          onBooting(booting) {
+            // teardown 之后（迟到落定）不再改 UI 状态
+            if (!alive) return;
+            pluginBooting = booting;
+          },
+          onFail(msg) {
+            if (!alive) return;
+            runtimeFailed = msg;
+          },
+        });
       } catch (err) {
         runtimeFailed = err instanceof Error ? err.message : String(err);
       }
@@ -372,9 +404,13 @@
   });
 </script>
 
-<div class="svp-plugin-host" id={scopeId} bind:this={wrapEl}>
-  {#if runtimeFailed}
-    <p class="svp-plugin-fail">插件运行失败：{runtimeFailed}</p>
-  {/if}
-  <div bind:this={hostEl} class="svp-plugin-root"></div>
-</div>
+{#if !headless}
+  <div class="svp-plugin-host" id={scopeId} bind:this={wrapEl}>
+    {#if runtimeFailed}
+      <p class="svp-plugin-fail">插件运行失败：{runtimeFailed}</p>
+    {:else if pluginBooting}
+      <p class="svp-plugin-loading">插件加载中…</p>
+    {/if}
+    <div bind:this={hostEl} class="svp-plugin-root"></div>
+  </div>
+{/if}

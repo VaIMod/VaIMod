@@ -15,7 +15,9 @@ import { robotList, setRobots } from './feishu';
 import { normalizeSettings, type Settings } from './settings';
 import { pluginRegistry } from './plugin-registry';
 
-const BUNDLE_VERSION = 'vaimod-bundle-v1';
+// v2 相对 v1 新增：pluginState / pluginSettings / modified。
+// 解析端对缺字段一律给默认值，因此 **v1 的老包依旧能正常导入**（不需要迁移脚本）。
+const BUNDLE_VERSION = 'vaimod-bundle-v2';
 
 /**
  * 变量条目的「自动检测」占位。
@@ -40,6 +42,42 @@ export interface BundleVariable {
   lockInterval?: number;
 }
 
+/**
+ * 已安装插件清单（插件相关元信息；源码另见 VaIModBundle.plugins）。
+ * 与源码分开存的原因：源码用于「自动安装」，本清单用于「还原启用态与装机信息」——
+ * 只带着源码导入会得到一堆默认启用的插件，用户之前关掉的那些会被重新打开。
+ */
+export interface BundlePluginState {
+  id: string;
+  name: string;
+  version: string;
+  type: 'patch' | 'ext';
+  enabled: boolean;
+  installedAt: number;
+  /** 源码指纹：与 plugins 里的源码一一对应 */
+  sig: string;
+}
+
+/**
+ * 「被本工具改过的变量 → 对应哪个变量」。
+ *
+ * 与 variables 的区别：variables 是**配置层面**要施加的目标值（含通配模板），
+ * 本数组是**运行事实**——当前项目里确实与原始值不同、或正被锁定强制写回的变量，
+ * 并尽量带上项目里的原始值，便于「按变量还原」而不必整包回滚。
+ */
+export interface BundleModified {
+  name: string;
+  targetName: string;
+  kind: 'variable' | 'list';
+  /** VaIMod 当前施加的值 */
+  value: ScratchValue;
+  /** 施加来源：lock=锁定持续写回；changed=被本工具改过 */
+  origin: 'lock' | 'changed';
+  /** 项目里的原始值（连接后首次读取时记下的基线；未知则缺省） */
+  original?: ScratchValue;
+  lockInterval?: number;
+}
+
 /** 完整配置包：覆盖 VaIMod 全部可导出项 */
 export interface VaIModBundle {
   app: 'VaIMod';
@@ -56,6 +94,15 @@ export interface VaIModBundle {
   settings: Settings;
   /** 已安装插件的源码（导入时自动解析安装；代码完全一致则跳过） */
   plugins: string[];
+  /** 已安装插件清单（启用态 / 版本 / 装机信息） */
+  pluginState: BundlePluginState[];
+  /**
+   * 每个插件自己的设置：键 = 插件 id，值 = **该插件在清单里定义的格式**，原样存取。
+   * VaIMod 不解释这些内容（只做 JSON 序列化），因此插件加字段无需改本体。
+   */
+  pluginSettings: Record<string, unknown>;
+  /** 被本工具改过的变量（含原始值），用于「按变量还原」与导出报告 */
+  modified: BundleModified[];
   /**
    * 只含插件的包（设置页「导出全部插件」产物）。
    * 置真时导入方**只安装插件**，其余字段（变量/别名/云数据/机器人/快照/回收站/设置）
@@ -108,6 +155,8 @@ export function exportVaIModBundle(args: {
   cloudUser: Record<string, unknown>;
   robots?: FeishuRobot[];
   settings: Settings;
+  /** 项目原始值基线（键 = `targetId:id`），用于导出「改过哪些变量」 */
+  origins?: ReadonlyMap<string, ScratchValue>;
 }): VaIModBundle {
   const bundle = buildVaIModBundle(args);
   const body = JSON.stringify(bundle, null, 2);
@@ -143,8 +192,32 @@ export function buildPluginsOnlyBundle(): VaIModBundle {
     trash: [],
     settings: normalizeSettings(undefined),
     plugins: pluginRegistry.exportSources(),
+    // 「导出全部插件」也算插件备份：装机清单与各插件自己的设置一并带走
+    pluginState: pluginStateSnapshot(),
+    pluginSettings: settingsOfAllPlugins(),
+    modified: [],
     pluginsOnly: true,
   };
+}
+
+/** 已安装插件清单快照（装机信息 + 启用态），两处导出共用同一份映射避免走样 */
+function pluginStateSnapshot(): BundlePluginState[] {
+  return pluginRegistry.list().map((p) => ({
+    id: p.def.id,
+    name: p.def.name,
+    version: p.def.version,
+    type: p.def.type,
+    enabled: p.enabled,
+    installedAt: p.installedAt,
+    sig: p.sig,
+  }));
+}
+
+/** 收集所有已安装插件自己的设置（键 = 插件 id，值原样保留插件定义的格式） */
+function settingsOfAllPlugins(): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const p of pluginRegistry.list()) out[p.def.id] = pluginRegistry.settingsOf(p.def.id);
+  return out;
 }
 
 /** 校验并规整单条变量条目（容错：脏数据直接丢弃而非整体失败） */
@@ -186,6 +259,59 @@ function asArray<T>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
 }
 
+/** 值规整（v2 新字段用）：列表→数组，标量→number|string；脏数据一律回落成字符串 */
+function coerceValue(raw: unknown, kind: 'variable' | 'list'): ScratchValue {
+  if (kind === 'list') return Array.isArray(raw) ? (raw as ScratchValue) : String(raw ?? '');
+  if (typeof raw === 'number' || typeof raw === 'string') return raw as ScratchValue;
+  return String(raw ?? '') as ScratchValue;
+}
+
+function sanitizePluginState(raw: unknown): BundlePluginState[] {
+  return asArray<unknown>(raw)
+    .map((r): BundlePluginState | null => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+      const o = r as Record<string, unknown>;
+      if (typeof o.id !== 'string' || o.id === '') return null;
+      return {
+        id: o.id,
+        name: typeof o.name === 'string' ? o.name : o.id,
+        version: typeof o.version === 'string' ? o.version : '1.0.0',
+        type: o.type === 'patch' ? 'patch' : 'ext',
+        enabled: o.enabled !== false,
+        installedAt:
+          typeof o.installedAt === 'number' && Number.isFinite(o.installedAt)
+            ? o.installedAt
+            : Date.now(),
+        sig: typeof o.sig === 'string' ? o.sig : '',
+      };
+    })
+    .filter((x): x is BundlePluginState => x !== null);
+}
+
+function sanitizeModified(raw: unknown): BundleModified[] {
+  return asArray<unknown>(raw)
+    .map((r): BundleModified | null => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
+      const o = r as Record<string, unknown>;
+      if (typeof o.name !== 'string' || o.name === '') return null;
+      const kind: 'variable' | 'list' = o.kind === 'list' ? 'list' : 'variable';
+      const interval =
+        typeof o.lockInterval === 'number' && Number.isFinite(o.lockInterval)
+          ? Math.max(0, o.lockInterval)
+          : undefined;
+      return {
+        name: o.name,
+        targetName: typeof o.targetName === 'string' ? o.targetName : '',
+        kind,
+        value: coerceValue(o.value, kind),
+        origin: o.origin === 'lock' ? 'lock' : 'changed',
+        original: o.original === undefined ? undefined : coerceValue(o.original, kind),
+        lockInterval: interval,
+      };
+    })
+    .filter((x): x is BundleModified => x !== null);
+}
+
 /**
  * 解析配置包（宽容模式）：
  * - 完整 bundle → 全字段解析（变量条目逐条校验，脏条目丢弃）；
@@ -216,6 +342,9 @@ export function importVaIModBundle(raw: unknown): VaIModBundle | null {
       trash: [],
       settings: normalizeSettings(undefined),
       plugins: [],
+      pluginState: [],
+      pluginSettings: {},
+      modified: [],
     };
   }
 
@@ -244,6 +373,10 @@ export function importVaIModBundle(raw: unknown): VaIModBundle | null {
     plugins: asArray<unknown>(obj.plugins).filter(
       (s): s is string => typeof s === 'string' && s.trim() !== '',
     ),
+    pluginState: sanitizePluginState(obj.pluginState),
+    // 插件设置：内容格式由各插件自己定义，本体不解释，只保证是个对象
+    pluginSettings: asRecord(obj.pluginSettings),
+    modified: sanitizeModified(obj.modified),
     pluginsOnly: obj.pluginsOnly === true,
   };
 }
@@ -256,6 +389,24 @@ export interface BundleApplyResult {
   markers: number;
   trash: number;
   plugins: number;
+  /** 写入的插件设置条数（每个插件一份） */
+  pluginSettings: number;
+  /** 被还原启用态的插件数 */
+  pluginState: number;
+}
+
+/** 按装机清单还原插件启用态；只对确实已安装且状态不同的插件动手 */
+function applyPluginEnabledState(states: BundlePluginState[]): number {
+  if (states.length === 0) return 0;
+  const byId = new Map(pluginRegistry.list().map((p) => [p.def.id, p.enabled]));
+  let n = 0;
+  for (const s of states) {
+    const cur = byId.get(s.id);
+    if (cur === undefined || cur === s.enabled) continue;
+    pluginRegistry.setEnabled(s.id, s.enabled);
+    n++;
+  }
+  return n;
 }
 
 /** 把 bundle 写回各本地存储（云数据镜像由调用方用 applyCloudMirror 写入 ccwDataStore） */
@@ -264,6 +415,9 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
   // （否则导入一次「全部插件」就会清空别名 / 快照 / 回收站 / 机器人）。
   if (bundle.pluginsOnly === true) {
     const only = pluginRegistry.installMany(bundle.plugins);
+    // 「仅插件包」的范围含插件自身的东西：设置与启用态一并还原
+    const ps = pluginRegistry.applySettings(bundle.pluginSettings);
+    const pst = applyPluginEnabledState(bundle.pluginState);
     return {
       displayNames: 0,
       cloudProject: 0,
@@ -272,6 +426,8 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
       markers: 0,
       trash: 0,
       plugins: only.installed + only.upgraded,
+      pluginSettings: ps,
+      pluginState: pst,
     };
   }
 
@@ -298,6 +454,11 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
   // 单条失败不影响其余（返回失败列表供调用方汇报）
   const pluginResult = pluginRegistry.installMany(bundle.plugins);
 
+  // 插件设置（格式由插件自己定义，本体只做搬运）+ 启用态还原。
+  // 顺序必须在 installMany 之后：新装的插件此时才存在，设置与启用态才有落点。
+  const settingsApplied = pluginRegistry.applySettings(bundle.pluginSettings);
+  const stateApplied = applyPluginEnabledState(bundle.pluginState);
+
   return {
     displayNames: Object.keys(bundle.displayNames).length,
     cloudProject: 0, // 由调用方填入
@@ -306,6 +467,8 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
     markers: bundle.markers.length,
     trash: bundle.trash.length,
     plugins: pluginResult.installed + pluginResult.upgraded,
+    pluginSettings: settingsApplied,
+    pluginState: stateApplied,
   };
 }
 
@@ -329,6 +492,14 @@ export interface BundleSummary {
   markers: number;
   trash: number;
   plugins: number;
+  /** 带设置数据的插件数 */
+  pluginSettings: number;
+  /** 装机清单条目数（含启用态） */
+  pluginState: number;
+  /** 被本工具改过的变量数 */
+  modified: number;
+  /** 变量值已锁定（会被持续写回）的数量 */
+  modifiedLocked: number;
   settings: boolean;
 }
 
@@ -346,8 +517,37 @@ export function buildVaIModBundleFromVars(args: {
   cloudUser: Record<string, unknown>;
   robots?: FeishuRobot[];
   settings: Settings;
+  /** 项目原始值基线（键 = `targetId:id`）：由桥接层连接后首次读取时记下，用于「改过哪些变量」 */
+  origins?: ReadonlyMap<string, ScratchValue>;
 }): VaIModBundle {
   const lockIntervalMap = new Map(args.variables.map((v) => [v.id, v.lockInterval ?? 0]));
+
+  // 插件相关：源码 + 装机清单（启用态）+ 每个插件自己的设置（格式由插件定义，原样带走）
+  const pluginState = pluginStateSnapshot();
+  const pluginSettings = settingsOfAllPlugins();
+
+  // 「改过的变量 → 对应哪个变量」：与原始基线不同，或正被锁定持续写回
+  const modified: BundleModified[] = [];
+  for (const v of args.variables) {
+    const original = args.origins?.get(v.targetId + ':' + v.id);
+    const differs = original !== undefined && !sameBundleValue(original, v.value);
+    if (!v.isLocked && !differs) continue;
+    modified.push({
+      name: v.name,
+      targetName: v.targetName,
+      kind: v.kind,
+      value: Array.isArray(v.value) ? (v.value.slice() as VariableValue[]) : v.value,
+      origin: v.isLocked ? 'lock' : 'changed',
+      original:
+        original === undefined
+          ? undefined
+          : Array.isArray(original)
+            ? (original.slice() as VariableValue[])
+            : original,
+      lockInterval: v.isLocked ? (lockIntervalMap.get(v.id) ?? 0) : undefined,
+    });
+  }
+
   return {
     app: 'VaIMod',
     version: BUNDLE_VERSION,
@@ -372,7 +572,21 @@ export function buildVaIModBundleFromVars(args: {
     settings: args.settings,
     // 插件源码一并带走：换设备导入即自动安装（指纹相同则跳过）
     plugins: pluginRegistry.exportSources(),
+    pluginState,
+    pluginSettings,
+    modified,
   };
+}
+
+/** 值等价判定（导出「改过的变量」用）：标量严格相等，列表逐项比对 */
+function sameBundleValue(a: ScratchValue, b: ScratchValue): boolean {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 export function summarizeBundle(b: VaIModBundle): BundleSummary {
@@ -390,6 +604,10 @@ export function summarizeBundle(b: VaIModBundle): BundleSummary {
     markers: b.markers.length,
     trash: b.trash.length,
     plugins: b.plugins.length,
+    pluginSettings: Object.keys(b.pluginSettings ?? {}).length,
+    pluginState: (b.pluginState ?? []).length,
+    modified: (b.modified ?? []).length,
+    modifiedLocked: (b.modified ?? []).filter((m) => m.origin === 'lock').length,
     settings: !!b.settings,
   };
 }
@@ -404,9 +622,11 @@ export function summaryText(s: BundleSummary): string {
   if (s.cloudProject) parts.push(`作品云 ${s.cloudProject}`);
   if (s.cloudUser) parts.push(`用户云 ${s.cloudUser}`);
   if (s.robots) parts.push(`机器人 ${s.robots}`);
-  if (s.markers) parts.push(`快照 ${s.markers}`);
+  if (s.markers) parts.push(`还原点 ${s.markers}`);
   if (s.trash) parts.push(`回收站 ${s.trash}`);
   if (s.plugins) parts.push(`插件 ${s.plugins}`);
+  if (s.pluginSettings) parts.push(`插件设置 ${s.pluginSettings}`);
+  if (s.modified) parts.push(`改过 ${s.modified}${s.modifiedLocked ? `(锁定 ${s.modifiedLocked})` : ''}`);
   return parts.join(' · ');
 }
 

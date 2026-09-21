@@ -360,6 +360,30 @@ class PluginRegistry {
     this.persistSettings();
     this.emit();
   }
+
+  /**
+   * 批量写入插件设置（导入配置用）：整体替换 + 只落一次盘、只广播一次。
+   *
+   * 与 setSetting 的分工：那条是 UI 输入框的高频路径（每次击键一次，必须轻）；
+   * 导入是一次性批量动作，逐键调 setSetting 会产生 N 次 emit + N 次写 localStorage。
+   *
+   * 未被插件定义过的键也照收 —— 与 settingsOf 的「透传已保存但未定义的键」对称，
+   * 保证「导出→导入」往返不丢数据（作者改了 settings 定义时尤其重要）。
+   */
+  applySettings(map: Record<string, unknown>): number {
+    this.ensure();
+    let n = 0;
+    for (const [id, v] of Object.entries(map)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v)) continue;
+      this.settings.set(id, { ...(v as Record<string, unknown>) });
+      n++;
+    }
+    if (n > 0) {
+      this.persistSettings();
+      this.emit();
+    }
+    return n;
+  }
 }
 
 export const pluginRegistry = new PluginRegistry();
@@ -542,6 +566,82 @@ export function runPluginCode(def: PluginDef, ctx: PluginContext): () => void {
     destroyed = true;
     runCleanup(holder.fn);
     holder.fn = null;
+  };
+}
+
+/** runPluginBoot 的宿主依赖（由面板注入：只有面板能看到桥接状态与 UI 状态） */
+export interface PluginBootDeps {
+  /** 等 vm 就绪；resolve(false) = 超时或桥接出错。未注入时 waitVm 定义一律按失败处理 */
+  waitVm?: (timeoutMs: number) => Promise<boolean>;
+  /** 异步阶段结束、即将执行 code 时回调（面板据此关掉「加载中」提示） */
+  onBooting?: (booting: boolean) => void;
+  /** 异步装载失败（等待超时 / load 钩子抛错）时回调，由面板显示在标签页内 */
+  onFail?: (message: string) => void;
+}
+
+/**
+ * 按插件的**异步加载定义**（def.async）执行装载：waitVm → load → code。
+ *
+ * 未声明 async（或只声明了默认值）时与直接调 runPluginCode 完全等价 —— 不引入任何
+ * 异步边界，保持既有插件的时序不变。
+ *
+ * 契约（与 PluginAsyncDef 的注释一致）：
+ *   - waitVm：等不到 vm 就绪 → 按**加载失败**处理，不执行 code（面板显示原因）；
+ *     这样「我只在有 vm 时才工作」的插件不会带着空数据跑起来产生副作用。
+ *   - load：预加载钩子，与 code 同一沙箱边界；抛错同样按失败处理（code 可能依赖它）。
+ *   - 返回的清理函数始终可用：code 尚未到达就卸载时，迟到的清理函数也会补执行，
+ *     避免插件注册的定时器/监听器泄漏（与 runPluginCode 的处理一致）。
+ */
+export function runPluginBoot(
+  def: PluginDef,
+  ctx: PluginContext,
+  deps: PluginBootDeps = {},
+): () => void {
+  const a = def.async;
+  if (!a || (!a.waitVm && !a.load)) return runPluginCode(def, ctx);
+
+  let cleanup: (() => void) | null = null;
+  let destroyed = false;
+  deps.onBooting?.(true);
+
+  void (async () => {
+    try {
+      if (a.waitVm) {
+        const ok = deps.waitVm ? await deps.waitVm(a.timeout) : false;
+        if (!ok) {
+          throw new Error(`等待 VM 就绪超时（async.timeout = ${a.timeout > 0 ? a.timeout : 15000} ms）`);
+        }
+        if (destroyed) return;
+      }
+      if (a.load) {
+        const factory = new Function('ctx', `"use strict";\n${a.load}\n`);
+        await Promise.resolve(factory.call(undefined, ctx));
+        if (destroyed) return;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      deps.onBooting?.(false);
+      if (deps.onFail) deps.onFail(msg);
+      else ctx.toast(`插件「${def.name}」加载失败：${msg}`, 'err');
+      return;
+    }
+    deps.onBooting?.(false);
+    if (destroyed) return;
+    const fn = runPluginCode(def, ctx);
+    if (destroyed) {
+      // 卸载早于装载完成：迟到的清理函数立即补执行
+      fn();
+      return;
+    }
+    cleanup = fn;
+  })();
+
+  return () => {
+    destroyed = true;
+    if (cleanup) {
+      cleanup();
+      cleanup = null;
+    }
   };
 }
 

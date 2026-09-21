@@ -63,6 +63,9 @@ export class ScratchVM {
   private locks = new Map<string, LockEntry>();
   // 上一轮下发的变量对象（键 = targetId:id），用于引用复用，见 getVariables()
   private varRefCache = new Map<string, ScratchVariable>();
+  // 项目原始值基线（键 = targetId:id）：连接后首次读取时快照一次
+  private originValues = new Map<string, ScratchValue>();
+  private originCaptured = false;
   // 独立 VPN 通道：vm 引用只存于通道实例内，页面无法触及；可动态重建、多实例并行
   private channel: VpnChannel = VpnChannel.create();
   // 安全变量扩展对抗：白名单标记 + 防 VM 泄露检测 + 安全变量可读写
@@ -225,6 +228,10 @@ export class ScratchVM {
     ccwDataStore.reset();
     this.channel.destroy();
     this.snapshot = '';
+    // 换作品 / 断连：原始值基线与对象缓存都失去意义，清掉以便下次连接重新记录
+    this.originValues.clear();
+    this.originCaptured = false;
+    this.varRefCache.clear();
     // 吊销 SDP 凭证：断开后所有访问一律拒绝（零信任）
     ztna.reset();
     this.setStatus(BridgeStatus.Disconnected);
@@ -278,6 +285,8 @@ export class ScratchVM {
       result.push(fresh);
     }
     this.varRefCache = nextCache;
+    // 记录项目原始值基线（仅首次，见 captureOrigin 说明）
+    this.captureOrigin(result);
     // 合并安全变量（安全扩展的加密存储，解密后展示，可直接修改）
     const secure = this.secureGuard.list();
     if (secure.length > 0) result.push(...secure);
@@ -473,6 +482,29 @@ export class ScratchVM {
       }
     } catch {}
     return false;
+  }
+
+  /**
+   * 记录「项目原始值」基线：连接后**首次**读到变量时快照一次，之后不再更新。
+   *
+   * 用途：导出配置时回答「哪些变量被本工具改过、原值是什么」，从而支持按变量还原。
+   * 必须只在首次记录 —— 若每次读取都刷新，用户改完值再读一次，基线就被改后的值
+   * 覆盖，差异永远算不出来（等于没记）。
+   */
+  private captureOrigin(vars: ScratchVariable[]): void {
+    if (this.originCaptured) return;
+    this.originCaptured = true;
+    for (const v of vars) {
+      this.originValues.set(
+        v.targetId + ':' + v.id,
+        Array.isArray(v.value) ? (v.value.slice() as VariableValue[]) : v.value,
+      );
+    }
+  }
+
+  /** 项目原始值基线（键 = `targetId:id`）；未连接 / 未记录时返回空表 */
+  getOriginValues(): ReadonlyMap<string, ScratchValue> {
+    return this.originValues;
   }
 
   /**
