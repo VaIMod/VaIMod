@@ -258,6 +258,9 @@
     minimized = false;
     applySavedState();
     autoGrowPanel();
+    // 每次打开面板都真读一次当前页数据：收起期间变量轮询是暂停的，
+    // 作品/脚本可能已经改变了变量值，展开必须直接显示最新而不是收起前的残留。
+    refreshPageOnEnter();
   }
 
   // ===== 悬浮球（FAB）拖动 =====
@@ -478,38 +481,17 @@
     if (Array.isArray(v.value)) return v.value.map(String).join('\n');
     return String(v.value);
   };
-  // 变量项引用稳定化（大列表性能关键）：
-  // 桥接层每次轮询都会产出**全新的变量对象**，即使值完全没变。若把新对象直接喂给
-  // keyed each，900 行列表每 1.2s 就要全量重渲染一遍（实测：可见空间转 5s 脚本耗时 30.7ms，
-  // 满列表单键 30.3ms）。这里按「渲染相关字段」算签名，签名未变就复用上一轮的对象引用，
-  // Svelte 对引用未变的行直接跳过更新 —— 只处理真正变化的行，行为完全一致。
-  const varSigOf = (v: ScratchVaIMod): string =>
-    [
-      v.name,
-      String(v.kind ?? ''),
-      v.isCloud ? 1 : 0,
-      v.isLocked ? 1 : 0,
-      v.targetId ?? '',
-      v.targetName ?? '',
-      Array.isArray(v.value) ? v.value.join('\u0001') : String(v.value ?? ''),
-    ].join('\u0002');
-  // 只保留本轮出现过的键（被删除的变量自然淘汰，缓存不会无限增长）
-  let varRefCache = new Map<string, { sig: string; v: ScratchVaIMod }>();
-
+  // 变量项引用稳定性由桥接层保证（见 core/scratch-vm.ts 的 getVariables）：值未变的变量
+  // 复用上一轮的对象引用，Svelte 的 keyed each 因此直接跳过这些行，只更新真正变化的行。
+  // 面板侧不再重复做签名比对 —— 那会在每次击键过滤时对全部行各算一次签名，纯属重复开销。
   const groups = $derived.by(() => {
     void monitorTick;
     const { nq, vq } = splitSearch(varSearch);
     const map = new Map<string, ScratchVaIMod[]>();
-    const nextCache = new Map<string, { sig: string; v: ScratchVaIMod }>();
-    for (const raw of variables) {
+    for (const v of variables) {
       // 清洗无效数据：缺 id / 非字符串名 的条目跳过，
       // 避免 keyed each 出现重复/缺失 key 抛异常导致渲染中断
-      if (!raw || typeof raw.id !== 'string' || !raw.id || typeof raw.name !== 'string') continue;
-      const ck = raw.targetId + ':' + raw.id;
-      const sig = varSigOf(raw);
-      const cached = varRefCache.get(ck);
-      const v = cached && cached.sig === sig ? cached.v : raw;
-      nextCache.set(ck, { sig, v });
+      if (!v || typeof v.id !== 'string' || !v.id || typeof v.name !== 'string') continue;
       if (vq) {
         if (!valueText(v).toLowerCase().includes(vq)) continue;
       } else if (nq) {
@@ -522,7 +504,6 @@
       list.push(v);
       map.set(key, list);
     }
-    varRefCache = nextCache;
     return [...map.entries()].map(([name, items]) => ({ name, items }));
   });
 
@@ -1227,6 +1208,35 @@
     }, 200);
   }
 
+  /**
+   * 进入某页时的「数据真刷新」——静默版（不转圈、不重播动画）。
+   *
+   * 面板从收起状态展开、或切换到某个标签页时调用。之所以必须真读 vm：
+   * 收起 / 离开期间变量轮询是暂停的，页面里的作品脚本可能已经改变了变量值，
+   * 沿用面板里那份旧数组就会显示过期数据。
+   *
+   * 未连接时直接返回 —— 此时 getVariables() 只会给出空数组，
+   * 用它覆盖会把当前列表清空（比显示旧数据更糟）。
+   */
+  function refreshPageOnEnter() {
+    if (activePlugin) {
+      // 插件页：执行插件声明的 refresh 钩子（未定义则 no-op）
+      pluginTabRef?.refresh();
+      return;
+    }
+    if (activeTab === 'ccw') {
+      ccwPanel?.animateRefresh();
+      return;
+    }
+    if (bridge.getStatus() !== BridgeStatus.Connected) return;
+    // forceRefresh 清掉桥接层变更摘要并立即重发列表（真读 vm，非缓存）
+    bridge.forceRefresh();
+    variables = decodeVariables(bridge.getVariables());
+    if (activeTab === 'tools') toolsPanel?.refresh();
+    else if (activeTab === 'feishu') feishuPanel?.refresh();
+    else if (activeTab === 'system') systemPanel?.refresh();
+  }
+
   function refresh() {
     // 点击经统一多层安全栈执行（refresh 为豁免期动作：连接中可点，等 vm 就绪后取变量）
     secureAction('refresh', 'refresh', () => {
@@ -1246,31 +1256,16 @@
       // 每个 Tab 都重播进入动画（内容重取后视觉上有明确反馈）
       bodyAnimKey = bodyAnimKey + 1;
 
-      if (activeTab === 'vars') {
-        varsAnimKey = varsAnimKey + 1;
-        whenReady(() => {
-          // forceRefresh 清掉桥接层变更摘要并立即重发列表（真读 vm，非缓存）
-          bridge.forceRefresh();
-          variables = decodeVariables(bridge.getVariables());
-        });
-        return;
-      }
-
       if (activeTab === 'ccw') {
         // 云数据：直接调面板自身的真刷新（force 模式，不重建组件、不重置子标签）
         ccwPanel?.animateRefresh();
         return;
       }
 
-      // 工具 / 飞书 / 系统：these 面板的数据源是 vm 变量 + 本地存储，
+      if (activeTab === 'vars') varsAnimKey = varsAnimKey + 1;
+      // 变量 / 工具 / 飞书 / 系统：数据源都是 vm 变量 + 本地存储，
       // 统一走一次真实重取（变量列表刷新 + 子面板自刷新），而非空转动画。
-      whenReady(() => {
-        bridge.forceRefresh();
-        variables = decodeVariables(bridge.getVariables());
-        if (activeTab === 'tools') toolsPanel?.refresh();
-        else if (activeTab === 'feishu') feishuPanel?.refresh();
-        else if (activeTab === 'system') systemPanel?.refresh();
-      });
+      whenReady(refreshPageOnEnter);
     });
   }
 
@@ -1286,7 +1281,13 @@
   }
 
   function switchTab(t: TabId) {
-    if (t === activeTab && !tabLoading) return;
+    // 点当前 Tab 也算「打开该标签页」→ 走一次完整刷新（转圈 + 进入动画 + 真读 vm），
+    // 不再像以前那样直接 return（否则想手动刷新当前页只能去找右上角刷新按钮）。
+    if (t === activeTab) {
+      if (tabLoading) return; // 正在挂载中，忽略重复点击
+      refresh();
+      return;
+    }
     // 切换内容后让面板按新内容自适应，重置手动尺寸标记
     userSized = false;
     // 变量输入框可能正在聚焦：切 Tab 时组件卸载不会触发 blur，
@@ -1299,7 +1300,12 @@
     const mountTab = () => {
       activeTab = t;
       tabLoading = false;
-      if (t === 'vars' && bridge.getStatus() === BridgeStatus.Connected) {
+      // 进入任意页都真读一次最新变量（离开期间作品/脚本可能已改值），而不是只对变量页重读。
+      // 这里不调各子面板的 refresh 钩子：body 由 {#key `${activeTab}:${bodyAnimKey}`} 整体重建，
+      // 此刻 bind:this 拿到的仍是即将销毁的旧实例，调它没有意义（新实例挂载时会自己取数）。
+      // 未连接时跳过 —— 否则 getVariables() 的空数组会把当前列表清空。
+      if (bridge.getStatus() === BridgeStatus.Connected) {
+        bridge.forceRefresh();
         variables = decodeVariables(bridge.getVariables());
       }
     };

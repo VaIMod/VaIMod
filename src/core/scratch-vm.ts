@@ -61,6 +61,8 @@ export class ScratchVM {
   private listeners = new Set<BridgeListener>();
 
   private locks = new Map<string, LockEntry>();
+  // 上一轮下发的变量对象（键 = targetId:id），用于引用复用，见 getVariables()
+  private varRefCache = new Map<string, ScratchVariable>();
   // 独立 VPN 通道：vm 引用只存于通道实例内，页面无法触及；可动态重建、多实例并行
   private channel: VpnChannel = VpnChannel.create();
   // 安全变量扩展对抗：白名单标记 + 防 VM 泄露检测 + 安全变量可读写
@@ -235,20 +237,47 @@ export class ScratchVM {
     // 替代手写 targets 遍历——沙盒安全快照在此真正进入核心读路径。
     const secureVm = this.channel.getSecureVm();
     if (!secureVm) return [];
-    const result: ScratchVariable[] = secureVm.snapshotVariables().map((s) => {
+    const result: ScratchVariable[] = [];
+    // 只保留本轮出现过的键：被删除的变量自然淘汰，缓存不会无限增长
+    const nextCache = new Map<string, ScratchVariable>();
+    for (const s of secureVm.snapshotVariables()) {
       const lock = this.locks.get(s.id);
       const isList = Array.isArray(s.value);
-      return {
+      const kind: ScratchVariable['kind'] = isList ? 'list' : 'variable';
+      const value = lock ? lock.value : s.value;
+      const targetName = s.targetName || '舞台';
+      const isLocked = Boolean(lock);
+      const ck = s.targetId + ':' + s.id;
+      const prev = this.varRefCache.get(ck);
+      // 渲染相关字段逐项比对；列表内容按值比对（引用必然不同），标量直接比引用
+      if (
+        prev &&
+        prev.name === s.name &&
+        prev.kind === kind &&
+        prev.isCloud === s.isCloud &&
+        prev.targetId === s.targetId &&
+        prev.targetName === targetName &&
+        prev.isLocked === isLocked &&
+        ScratchVM.sameValue(prev.value, value)
+      ) {
+        nextCache.set(ck, prev);
+        result.push(prev);
+        continue;
+      }
+      const fresh: ScratchVariable = {
         id: s.id,
         name: s.name,
-        kind: isList ? 'list' : 'variable',
-        value: lock ? lock.value : s.value,
+        kind,
+        value,
         isCloud: s.isCloud,
         targetId: s.targetId,
-        targetName: s.targetName || '舞台',
-        isLocked: Boolean(lock),
+        targetName,
+        isLocked,
       };
-    });
+      nextCache.set(ck, fresh);
+      result.push(fresh);
+    }
+    this.varRefCache = nextCache;
     // 合并安全变量（安全扩展的加密存储，解密后展示，可直接修改）
     const secure = this.secureGuard.list();
     if (secure.length > 0) result.push(...secure);
@@ -444,6 +473,20 @@ export class ScratchVM {
       }
     } catch {}
     return false;
+  }
+
+  /**
+   * 变量值等价判定（引用复用专用）：标量走严格相等；列表逐项比对内容
+   * —— 快照每次都会 clone 数组，列表只能比内容。列表数量远少于标量，成本可接受。
+   */
+  private static sameValue(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (!Array.isArray(a) || !Array.isArray(b)) return false;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) return false;
+    }
+    return true;
   }
 
   private snapshotValue(value: ScratchValue): ScratchValue {

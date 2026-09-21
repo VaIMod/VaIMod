@@ -39,14 +39,43 @@
    * 契约：插件 html 是声明式结构，交互一律写进 code（ctx.ui / addEventListener）。
    * 用 DOMParser 解析而不是正则拼接，避免属性畸形被绕过。
    */
-  function sanitizePluginHtml(html: string): string {
-    if (!html) return '';
+  /**
+   * 插件 HTML 清洗（纵深防御）。
+   *
+   * 清洗结果**直接返回节点**、由调用方搬运进面板，不再回写 innerHTML 字符串：
+   * 「解析 → 取 innerHTML → 再赋给 innerHTML」会让浏览器把序列化结果重新解析一遍，
+   * 这一轮往返可能把原本是文本的内容重新解读成标记（mXSS），使上一步已删除的标签/属性
+   * 复活。搬运节点没有这次重新解析，该类绕过从根上不成立。
+   *
+   * 注：插件本就可通过 code/refresh 执行任意代码（见 plugin-registry 的说明），
+   * 因此这里是**纵深防御**（挡住内联事件与脚本标签带来的意外执行），不是插件沙箱边界。
+   */
+  function sanitizePluginHtml(html: string): DocumentFragment | null {
+    if (!html) return null;
     try {
       const doc = new DOMParser().parseFromString(html, 'text/html');
-      for (const el of Array.from(doc.querySelectorAll('script,iframe,object,embed,link,meta,base,form'))) {
+      // 可执行脚本 / 可加载外部资源 / 可改写文档结构 的标签一律移除
+      for (const el of Array.from(
+        doc.querySelectorAll('script,iframe,frame,frameset,object,embed,applet,link,meta,base,form,portal,noscript'),
+      )) {
         el.remove();
       }
-      const BAD_URL = /^\s*(?:javascript|vbscript|data:text\/html)/i;
+      // 属性清洗：on* 事件处理器全删；承载「可执行协议」的 URL 属性按值过滤
+      const BAD_URL = /^\s*(?:javascript|vbscript|data:text\/html|data:application\/xhtml)/i;
+      const URL_ATTRS = new Set([
+        'href',
+        'src',
+        'xlink:href',
+        'action',
+        'formaction',
+        'poster',
+        'background',
+        'dynsrc',
+        'lowsrc',
+        'ping',
+        'srcdoc',
+        'data',
+      ]);
       for (const el of Array.from(doc.querySelectorAll('*'))) {
         for (const attr of Array.from(el.attributes)) {
           const n = attr.name.toLowerCase();
@@ -54,14 +83,14 @@
             el.removeAttribute(attr.name);
             continue;
           }
-          if ((n === 'href' || n === 'src' || n === 'xlink:href' || n === 'action') && BAD_URL.test(attr.value)) {
-            el.removeAttribute(attr.name);
-          }
+          if (URL_ATTRS.has(n) && BAD_URL.test(attr.value)) el.removeAttribute(attr.name);
         }
       }
-      return doc.body.innerHTML;
+      const frag = doc.createDocumentFragment();
+      frag.append(...Array.from(doc.body.childNodes));
+      return frag;
     } catch {
-      return '';
+      return null;
     }
   }
 
@@ -290,7 +319,10 @@
     teardown();
     runtimeFailed = '';
     const boot = () => {
-      el.innerHTML = sanitizePluginHtml(plugin.def.html || '');
+      // 搬运清洗后的节点（不经过 innerHTML 字符串回写，见 sanitizePluginHtml 说明）
+      const frag = sanitizePluginHtml(plugin.def.html || '');
+      el.replaceChildren();
+      if (frag) el.appendChild(frag);
       alive = true;
       try {
         const ctx = buildCtx(el);
