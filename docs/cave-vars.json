@@ -1,0 +1,547 @@
+{
+  "id": "cave-io-vars",
+  "name": "Cave.io 变量名与作弊配置",
+  "version": "1.0.0",
+  "game": "cave.io",
+  "source": "[联机游戏]cave.io_去反作弊.sb3",
+  "plugin": "cave-io-helper",
+  "reverseEngineeredFrom": "project.json（6.3MB、8 targets、约 2 万积木）",
+  "runtimeSourceOfTruth": "docs/plugin-cave-helper.js 内的 VARS 数组（插件实际用这份；本文件是同一份数据的可读配置快照，改完记得同步回去）",
+  "notation": {
+    "scalarPrefix": "$",
+    "listPrefix": "@",
+    "note": "反编译器渲染用的前缀，不属于真实变量名。工程里变量名与广播名全部混淆成随机字符。"
+  },
+  "dataModel": {
+    "entityTableLength": 160,
+    "localPlayerIndex": 1,
+    "selfIdVariable": "D_1okK&zZ*",
+    "buffSlotPerEntity": 7,
+    "buffTableLength": 1120,
+    "buffIndexFormula": "(entityId - 1) * 7 + slot",
+    "writeRule": "列表变量必须整表回写。只写一格会把 160 项截断成 1 项，游戏随即崩坏。",
+    "identity": {
+      "detectVariable": "n95~]F1M+?",
+      "rule": "实体血量表存在即认定为 cave.io 工程；否则插件不渲染任何写按钮、不写任何变量。"
+    },
+    "evidence": "实体主表长度实测 160；buff 三表 1120 = 160 × 7，逆向自 buff set 的循环边界与索引公式 (e-1)*7+k。"
+  },
+  "scopes": {
+    "Stage": "舞台全局变量，对所有克隆体可见。写入时 targetName 传 \"Stage\"。",
+    "player": "角色局部变量，每个克隆体各持一份，写完后由游戏自己的 upload 逻辑同步给其他玩家。"
+  },
+  "schema": {
+    "variables[].name": "工程里真实的变量名（混淆后的原样），可直接在面板变量页按名搜索",
+    "variables[].label": "还原后的作用",
+    "variables[].kind": "list（全局列表，按索引读写，须整表回写）/ var（单值）",
+    "variables[].scope": "见 scopes，取值 Stage / player",
+    "variables[].length": "该列表在工程里的实际长度，改写时不得改变长度",
+    "variables[].critical": "关键条目，一键操作会用到",
+    "variables[].locked": "禁止修改，原因见 lockReason",
+    "variables[].evidence": "证据链：在哪个自定义积木里被这样读写",
+    "presets[].risk": "safe（可反复切换）/ danger（不可逆，操作前需确认）"
+  },
+  "variables": [
+    {
+      "name": "n95~]F1M+?",
+      "label": "实体血量表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "critical": true,
+      "evidence": "set he：n95~]F1M+?[num] ← amo。敌人结算写 set he(aim, 表[aim] - 伤害×(1-减伤))；索引 1 = 本地玩家（初始 100.17）"
+    },
+    {
+      "name": "4$;Ett$]Z?2s",
+      "label": "减伤率表（1 = 完全免伤）",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "critical": true,
+      "evidence": "damage aim= amount= attacker=：伤害 ×(1 - 4$;Ett$]Z?2s[aim]) —— 写 1 就是无敌"
+    },
+    {
+      "name": "nbl:_f75L>Jp",
+      "label": "免结算表（= 0 才吃伤害）",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "critical": true,
+      "evidence": "damage 开头：if (nbl:_f75L>Jp[aim] = 0) 才进入整段结算 —— 写 1 走的是「直接跳过」而不是「减到 0」"
+    },
+    {
+      "name": "X@FOrsA`",
+      "label": "实体 X 坐标表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "upload：← 本地 X 坐标"
+    },
+    {
+      "name": "+}8TG&]t(H",
+      "label": "实体 Y 坐标表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "upload：← 本地 Y + 体型×14"
+    },
+    {
+      "name": "|L4nAK>D0rGr",
+      "label": "实体最近攻击者表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "damage：@|L4nAK>D0rGr[aim] ← attacker"
+    },
+    {
+      "name": "8N#v^5#JAvKa",
+      "label": "实体本次击杀表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "damage：@8N#v^5#JAvKa[aim] ← 空串"
+    },
+    {
+      "name": "SK,iVz^$E",
+      "label": "实体名称 / 皮肤表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "upload：← 皮肤变量"
+    },
+    {
+      "name": "2P=G(ow2?-M",
+      "label": "实体大小表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "upload：← 体型系数×12"
+    },
+    {
+      "name": "5Z#|5&:++Jk",
+      "label": "实体名字表（名字 → 索引）",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "critical": true,
+      "evidence": "damage enemy：idxof(名字, 该表) 得索引，再拿这个索引去改血量表"
+    },
+    {
+      "name": "H@]Ql\"rsb",
+      "label": "泥巴（召唤物）名字表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 160,
+      "evidence": "damage dirt：idxof(名字, 该表)"
+    },
+    {
+      "name": "WcEY54I(",
+      "label": "buff 名称表（160×7 槽）",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 1120,
+      "critical": true,
+      "evidence": "buff set %s name= %s time= %s level= %s：@WcEY54I([i] ← name；实例容量 1120 = 160×7"
+    },
+    {
+      "name": "&woU:$rN\"]V(",
+      "label": "buff 等级表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 1120,
+      "critical": true,
+      "evidence": "buff set：等级。resis 的等级直接参与伤害扣减（伤害 += -等级），ice 的等级决定射速惩罚档位"
+    },
+    {
+      "name": "wK_]CB^EHo~",
+      "label": "buff 剩余时间表",
+      "kind": "list",
+      "scope": "Stage",
+      "length": 1120,
+      "critical": true,
+      "evidence": "buff set：@wK_]CB^EHo~[i] ← time"
+    },
+    {
+      "name": "awjTloC|o1i$",
+      "label": "内建辅助 / 自瞄开关",
+      "kind": "var",
+      "scope": "Stage",
+      "critical": true,
+      "evidence": "cheat set %s 整个过程体只有一行：$awjTloC|o1i$ ← aim。boxrender 在它为 0 时自删克隆体；health main 用它放行 U 键自伤"
+    },
+    {
+      "name": "l%o7YMN@+;vI",
+      "label": "本地玩家 id",
+      "kind": "var",
+      "scope": "Stage",
+      "critical": true,
+      "evidence": "health main：cheat 开启且按 U 时 set he(l%o7YMN@+;vI, -10000) —— 指向血量表里「自己」那一格"
+    },
+    {
+      "name": "h!#F5n)<ux",
+      "label": "本地血量",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "health main 用它当「自己这一帧的血量」去比对血量表；respawn 赋 100"
+    },
+    {
+      "name": "72MiDf)%",
+      "label": "最大血量",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "get maxhealth：100 + letter(1,装备位图)×20；dirt 系 ×1.4"
+    },
+    {
+      "name": "^n?L77~F",
+      "label": "主武器弹夹余量",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "fire：非第二武器时 += -15；bullet prepare 把它清零"
+    },
+    {
+      "name": "mbj1.C,l",
+      "label": "副武器弹夹余量",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "fire：第二武器分支 += -15"
+    },
+    {
+      "name": "cnZZ{eWY",
+      "label": "武器过热 / 充能累积",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "fire：+= 37.5/装填速度；散布公式里 (1 - cnZZ/(100+…)) 作为惩罚；respawn 清零"
+    },
+    {
+      "name": "Y$r;_sDFB0gX",
+      "label": "开火后计时（弹反窗口）",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "fire 后清零；health main 拿它与 90/180 的 0.2~0.3 倍比较触发弹反"
+    },
+    {
+      "name": "z;4\"Ms1p9B[",
+      "label": "等级",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "respawn：从 1 起每投一次技能 +1，再用它的平方算经验区间"
+    },
+    {
+      "name": "oL_-fnS-L]Y)",
+      "label": "经验值",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "respawn：等级²×5+1；upload 以属性 \"ex\" 同步上传"
+    },
+    {
+      "name": "^|:n$YVwqh",
+      "label": "技能点",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "respawn 的 dirt 分支里赋 100"
+    },
+    {
+      "name": "oE0[aC~J`}",
+      "label": "装备 / 技能位图（42 字符）",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "全局按 letter(N, 串) 取位，见 equipBits"
+    },
+    {
+      "name": "b!uyN~jsw",
+      "label": "本地体型系数",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "upload：同步成大小表 ×12、Y 偏移 ×14"
+    },
+    {
+      "name": "}DGh?vCyk:F",
+      "label": "本地 X 坐标",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "upload：写进 X 坐标表"
+    },
+    {
+      "name": "/#LRXqOK%",
+      "label": "本地 Y 坐标",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "upload：写进 Y 坐标表"
+    },
+    {
+      "name": "Jy5w\"[7~iY",
+      "label": "本地朝向角度",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "upload：写进角度表"
+    },
+    {
+      "name": "}m<>{4pu",
+      "label": "本地面向（left / right）",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "respawn 赋 left，upload 同步"
+    },
+    {
+      "name": "D_1okK&zZ*",
+      "label": "自己的实体 id（所有表的下标）",
+      "kind": "var",
+      "scope": "player",
+      "critical": true,
+      "evidence": "几乎所有表访问都以它作下标，例如 Y 表[D_1okK&zZ*]、血量表[D_1okK&zZ*]"
+    },
+    {
+      "name": "];tJ<pqy_p-",
+      "label": "克隆体类别（player / dirt / main…）",
+      "kind": "var",
+      "scope": "player",
+      "evidence": "大量 if (类别 = «player») 分支"
+    },
+    {
+      "name": "fQ,8_Uwc",
+      "label": "网络同步包 / 指令 token 表",
+      "kind": "list",
+      "scope": "player",
+      "length": 32,
+      "critical": true,
+      "evidence": "command analysis 按空格切词写它；尾部删掉首项后按位取：x / y / 角度 / 面向 / … / 子弹外观 / 血量"
+    },
+    {
+      "name": "Ty;<xn88AJ",
+      "label": "待处理聊天消息表",
+      "kind": "list",
+      "scope": "Stage",
+      "evidence": "command analysis 的输入来源：对每条消息调用一次切词"
+    },
+    {
+      "name": "6|Bgu48.DG1w",
+      "label": "过程返回值槽 1",
+      "kind": "var",
+      "scope": "player",
+      "locked": true,
+      "lockReason": "Scratch getter 惯例：get reloadspeed 不返回值，而是把结果写进这个全局暂存槽再让调用方读。改它等于篡改所有调用方，不是修改游戏状态。",
+      "evidence": "get reloadspeed 末尾写入、phantom search / boxrender / atan 读它当返回结果"
+    },
+    {
+      "name": "6d(X%#XF2)",
+      "label": "过程返回值槽 2",
+      "kind": "var",
+      "scope": "player",
+      "locked": true,
+      "lockReason": "同为跨过程暂存槽。autoaim 覆盖前者、damage 覆盖后者，任何时刻的值都只对「立即读它的那一行」有意义。",
+      "evidence": "damage 把本次伤害写进去、phantom search 把最近距离写进去"
+    }
+  ],
+  "buffs": {
+    "slotPerEntity": 7,
+    "indexFormula": "(entityId - 1) * 7 + slot",
+    "tables": {
+      "name": "WcEY54I(",
+      "level": "&woU:$rN\"]V(",
+      "time": "wK_]CB^EHo~"
+    },
+    "list": [
+      { "name": "resis", "label": "减伤（等级直接从伤害里扣）" },
+      { "name": "ice", "label": "冰冻（等级越高射速惩罚越重）" },
+      { "name": "shield", "label": "护盾（抵消一次伤害）" },
+      { "name": "confuse", "label": "混乱" }
+    ]
+  },
+  "tables": {
+    "entity": {
+      "length": 160,
+      "localPlayerIndex": 1,
+      "members": [
+        "n95~]F1M+?",
+        "4$;Ett$]Z?2s",
+        "nbl:_f75L>Jp",
+        "X@FOrsA`",
+        "+}8TG&]t(H",
+        "|L4nAK>D0rGr",
+        "8N#v^5#JAvKa",
+        "SK,iVz^$E",
+        "2P=G(ow2?-M",
+        "5Z#|5&:++Jk",
+        "H@]Ql\"rsb"
+      ]
+    },
+    "buff": {
+      "length": 1120,
+      "slotPerEntity": 7,
+      "members": ["WcEY54I(", "&woU:$rN\"]V(", "wK_]CB^EHo~"]
+    }
+  },
+  "commands": {
+    "channel": "游戏内聊天 / 网络同步包",
+    "tokenizer": "按空格切词，反斜杠 \\ 作转义；首项为时间戳，解析从第 2 项开始。",
+    "syntax": "<时间戳> <指令> <参数…>",
+    "unknownCommand": "遇到无法识别的指令时解析器直接跳过 114514 项，本包剩余内容全部作废。",
+    "entries": [
+      {
+        "command": "damage",
+        "tokens": 4,
+        "syntax": "damage <player|enemy|dirt> <名字> <伤害>",
+        "note": "player 分支只对自己生效，且要求施法者名字匹配；enemy / dirt 用 idxof(名字, 名字表) 定位后再结算。"
+      },
+      {
+        "command": "say",
+        "tokens": 2,
+        "syntax": "say <文本>",
+        "note": "文本取自 token +1，其余作为发送者前缀。"
+      },
+      {
+        "command": "secret",
+        "tokens": 3,
+        "syntax": "secret <文本> <预留位>",
+        "note": "文本取自 token +1，预留位被解析器消耗但不参与逻辑。"
+      },
+      {
+        "command": "setbuff",
+        "tokens": 6,
+        "syntax": "setbuff <player|enemy|dirt> <名字> <buff> <时长> <等级>",
+        "note": "buff ∈ {resis, ice, shield, confuse}，写入 buff 三表的同一槽位。"
+      },
+      {
+        "command": "teleport",
+        "tokens": 4,
+        "syntax": "teleport <x> <y> <角度>",
+        "note": "内部走 clone class= effect name= teleport2 生成特效。"
+      }
+    ],
+    "sentinels": {
+      "_enemyend_": "敌方同步包的结束标记，遇到即停止读取后续项。"
+    }
+  },
+  "presets": [
+    {
+      "id": "invincible",
+      "label": "无敌",
+      "risk": "safe",
+      "target": "4$;Ett$]Z?2s",
+      "op": "setIndex",
+      "indexVar": "meId()",
+      "values": { "on": 1, "off": 0 },
+      "note": "把减伤率写成 1，伤害公式 ×(1-1) = 0。整表回写。"
+    },
+    {
+      "id": "aimbot",
+      "label": "自瞄（内建辅助）",
+      "risk": "safe",
+      "target": "awjTloC|o1i$",
+      "op": "setVar",
+      "scope": "Stage",
+      "values": { "on": 1, "off": 0 },
+      "note": "走游戏内建辅助开关，命中框由 boxrender 克隆体绘制，改完通常下一帧跟上。"
+    },
+    {
+      "id": "heal",
+      "label": "回满血",
+      "risk": "safe",
+      "target": "n95~]F1M+?",
+      "op": "setIndexToVar",
+      "indexVar": "meId()",
+      "valueVar": "72MiDf)%",
+      "fallback": 100,
+      "note": "同时写本地血量 h!#F5n)<ux：只写表的话下一帧本地镜像会覆盖回去。"
+    },
+    {
+      "id": "killAll",
+      "label": "秒杀全场",
+      "risk": "danger",
+      "target": "n95~]F1M+?",
+      "op": "zeroOthers",
+      "skipIndex": "meId()",
+      "onlyPositive": true,
+      "note": "跳过自己，只把正数血量写 0，整表回写。"
+    },
+    {
+      "id": "ammo",
+      "label": "弹夹装满",
+      "risk": "safe",
+      "targets": ["^n?L77~F", "mbj1.C,l"],
+      "op": "setVar",
+      "value": 9999
+    },
+    {
+      "id": "clearHeat",
+      "label": "清过热 / 后摇",
+      "risk": "safe",
+      "targets": ["cnZZ{eWY", "Y$r;_sDFB0gX"],
+      "op": "setVar",
+      "value": 0
+    },
+    {
+      "id": "level",
+      "label": "等级 / 技能点",
+      "risk": "safe",
+      "targets": {
+        "level": "z;4\"Ms1p9B[",
+        "skillPoints": "^|:n$YVwqh"
+      },
+      "defaults": { "level": 99, "skillPoints": 999 },
+      "note": "角色局部变量，写完后由游戏自己的 upload 逻辑同步给其他玩家。等级还参与升级所需经验的计算。"
+    },
+    {
+      "id": "buffInject",
+      "label": "buff 注入",
+      "risk": "safe",
+      "op": "patchBuffSlot",
+      "note": "三张 buff 表写同一槽位，索引 = (实体 id - 1) * 7 + 槽位。"
+    },
+    {
+      "id": "teleport",
+      "label": "坐标写入",
+      "risk": "safe",
+      "targets": { "x": "}DGh?vCyk:F", "y": "/#LRXqOK%" },
+      "note": "写本地坐标，由 upload 同步到坐标表。"
+    }
+  ],
+  "equipBits": {
+    "variable": "oE0[aC~J`}",
+    "length": 42,
+    "note": "每位是一个技能等级，游戏按 letter(N, 串) 取值。下面是已确认的位号。",
+    "bits": [
+      { "index": 1, "label": "最大血量 +20/级" },
+      { "index": 2, "label": "伤害 +2/级" },
+      { "index": 3, "label": "装填 +0.2/级" },
+      { "index": 4, "label": "每级 -20 最大血" },
+      { "index": 10, "label": "连发" },
+      { "index": 12, "label": "过热点" },
+      { "index": 14, "label": "多重弹" },
+      { "index": 21, "label": "护盾" },
+      { "index": 22, "label": "敏捷" },
+      { "index": 23, "label": "敏捷" },
+      { "index": 27, "label": "连发" },
+      { "index": 28, "label": "滑铲" },
+      { "index": 31, "label": "地雷 / 塔" },
+      { "index": 35, "label": "地雷 / 塔" },
+      { "index": 42, "label": "循环" }
+    ]
+  },
+  "safety": {
+    "neverWrite": ["6|Bgu48.DG1w", "6d(X%#XF2)"],
+    "requirePresence": ["n95~]F1M+?"],
+    "listWriteRule": "整表回写",
+    "note": "血量表不存在时不渲染任何写按钮、不写任何变量；两个过程返回值槽永远不写。"
+  },
+  "verification": {
+    "probe": "probe-cave-plugin.mjs",
+    "assertions": 27,
+    "result": "27/27 PASS",
+    "coveredRegression": [
+      "实体表 160 与 buff 表 1120 整表回写未截断",
+      "血量表缺失时全部写按钮不渲染",
+      "两个过程返回值槽不被任何操作写入"
+    ]
+  }
+}
