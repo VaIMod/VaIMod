@@ -226,6 +226,9 @@
   let userSized = false;
   let lastGrowTarget = -1;
   let growRaf = 0;
+  // 上一次由 autoFitWidth 写入的宽度；只有当前宽度等于它时才允许自动回缩，
+  // 用户手动拉过的宽度一律只增不减（见 autoFitWidth 的 canShrink）。
+  let lastAutoFitW = 0;
 
   type SavedPanelState = {
     left: number;
@@ -946,8 +949,26 @@
     panel.style.height = `${target}px`;
   }
 
-  // 宽度自适应：面板宽度 ≥ 标签栏自然宽度（每个 Tab 的 scrollWidth 是
-  // ellipsis 压缩下的完整文本宽，flex 压缩不丢信息），标签多时自动撑宽。
+  // 文本自然宽测量：canvas 字体度量，零 DOM、零布局。
+  // ⛔ 不能用 tab.scrollWidth 当「自然宽」——.svp-tab{flex:1} 会把每个 Tab 拉伸填满整行，
+  //    此时 scrollWidth === 被拉伸后的宽度，于是 natural 恒等于「面板宽度 + 常量」，
+  //    autoFitWidth 每次都会判定「还不够宽」再写一个更大的值 → **永不收敛的棘轮**：
+  //    每改一次 Tab 集合（切显隐、装卸插件、恢复默认设置）面板就永久加宽几 px。
+  let measureCtx: CanvasRenderingContext2D | null | undefined;
+  function textWidth(text: string, cs: CSSStyleDeclaration): number {
+    if (measureCtx === undefined) {
+      try {
+        measureCtx = document.createElement('canvas').getContext('2d');
+      } catch {
+        measureCtx = null;
+      }
+    }
+    if (!measureCtx) return -1; // 环境不支持 canvas：调用方回退 scrollWidth
+    measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    return measureCtx.measureText(text).width;
+  }
+
+  // 宽度自适应：面板宽度 ≥ 标签栏自然宽度（按字体度量算，标签多时自动撑宽）。
   // 用户手动定宽后完全尊重用户（userSized）；右缘按视口收口防溢出。
   // 仅由「Tab 集合变化」驱动，绝不进内容 RO 高度循环（防高度/宽度振荡）。
   function autoFitWidth(panel: HTMLElement) {
@@ -959,20 +980,35 @@
     if (tabEls.length === 0) return;
     let sum = 0;
     tabEls.forEach((t) => {
-      sum += (t as HTMLElement).scrollWidth;
+      const el = t as HTMLElement;
+      const tcs = getComputedStyle(el);
+      const chromeW =
+        parseFloat(tcs.paddingLeft || '0') +
+        parseFloat(tcs.paddingRight || '0') +
+        parseFloat(tcs.borderLeftWidth || '0') +
+        parseFloat(tcs.borderRightWidth || '0');
+      const tw = textWidth(el.textContent ?? '', tcs);
+      sum += (tw >= 0 ? Math.ceil(tw) : el.scrollWidth) + chromeW;
     });
     const cs = getComputedStyle(tabsEl);
-    const gaps = (tabEls.length - 1) * parseFloat(cs.columnGap || cs.gap || '0') || 0;
-    const natural = sum + gaps + parseFloat(cs.paddingLeft || '0') + parseFloat(cs.paddingRight || '0') + 6;
+    const gaps = (tabEls.length - 1) * parseFloat(cs.columnGap || cs.gap || '0');
+    const natural = Math.ceil(
+      sum + gaps + parseFloat(cs.paddingLeft || '0') + parseFloat(cs.paddingRight || '0') + 6,
+    );
     const curW = panel.offsetWidth;
     if (natural <= curW + 1) return; // 已足够宽：不动（不缩）
     // 右缘收口：面板左锚定时防止加宽溢出视口；docked（右锚定）向左伸展无溢出
     const rect = panel.getBoundingClientRect();
-    const room = window.innerWidth - rect.left - 8;
-    const targetW = Math.min(Math.max(Math.ceil(natural), curW), Math.max(MIN_PANEL_W, room));
-    if (targetW <= curW + 1) return;
+    const room = Math.max(MIN_PANEL_W, window.innerWidth - rect.left - 8);
+    const want = Math.min(Math.max(natural, MIN_PANEL_W), room);
+    // 仅当「当前宽度确实是我上一次自动适配写下的值」才允许回缩：
+    // 用户手动拉过的宽度（userSized / 落盘恢复 / 拖拽手柄）一律只增不减。
+    const canShrink = lastAutoFitW > 0 && Math.abs(curW - lastAutoFitW) <= 1;
+    const targetW = canShrink ? want : Math.max(want, curW);
+    if (canShrink ? Math.abs(targetW - curW) <= 1 : targetW <= curW + 1) return;
     panel.classList.add('svp-grow');
     panel.style.width = `${targetW}px`;
+    lastAutoFitW = targetW;
   }
 
   function scheduleGrow() {
@@ -1247,6 +1283,7 @@
     const startHeight = panel.offsetHeight;
     dragging = true;
     userSized = true;
+    lastAutoFitW = 0; // 用户接管宽度：此后自动适配只增不减
     panel.classList.remove('svp-grow');
     // 面板自身也标记 resizing，确保拖拽期间禁用一切过渡（跟手）
     panel.classList.add('svp-resizing');
