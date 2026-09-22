@@ -1,6 +1,6 @@
 import { mount } from 'svelte';
 import { ScratchVM } from './core';
-import { createStealthHost, installStealth } from './dom-utils';
+import { createStealthHost, installStealth, getProtectedHosts, trueElementsFromPoint } from './dom-utils';
 import { installXssGuard } from './core/xss-guard';
 import { installVeilGuard, VEIL_CSS, getVeilChannel } from './core/veil-manager';
 import { hookOfficialCloudApi } from './core/official-cloud';
@@ -11,6 +11,8 @@ import { ztna } from './core/ztna';
 import { decoyRegistry } from './core/decoy';
 import { installHoneypotGuard, honeypotReport } from './core/honeypot-guard';
 import { installEarlyCaptureWatch } from './core/capture-early';
+import { installFeishuGuard, feishuMode, feishuHits, feishuPendingCount, feishuRules } from './core/feishu-guard';
+import { installUiGuard, uiGuardReport } from './core/ui-guard';
 import { migrateBrandKeys } from './core/brand-migrate';
 import VaIModPanel from './ui/VaIModPanel.svelte';
 import globalCss from './styles/global.css?inline';
@@ -35,8 +37,10 @@ installSigGuardFront(); // ⓪′ 数字签名扩展反制（实例净化 + 双�
 installStealth(); // ① stealth 防检测（DOM/遍历/MO/toString 全套）
 installXssGuard(); // ② XSS 速执行拦截（document.write / 字符串定时器）
 hookOfficialCloudApi(); // ③ 官方云 API 通道（fetch 观察，随时捕获 endpoint）
+installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住 fetch/XHR，默认 off 零影响）
 installHoneypotGuard(); // ④ 蜜罐陷阱防检测（假修改器 UI 诱饵 + window 假 vm 陷阱，攻击即轮换）
 installEarlyCaptureWatch(); // ④′ 早期作品捕获（25ms 盯 window.vm，抢在站点初始 loadProject 前包装）
+installUiGuard(); // ⑤′ UI 防篡改（宿主不可移除/搬走/隐藏 + 层级恒定最顶层）
 
 let booted = false;
 
@@ -64,6 +68,16 @@ function installDebug(bridge: ScratchVM): void {
         detected: getSigGuard().detected,
       }),
       honey: () => honeypotReport(),
+      uiGuard: () => uiGuardReport(),
+      // 调试专用：宿主在 light DOM 被 stealth 全部查询 API 过滤掉，只能从登记表直接取
+      hosts: () => getProtectedHosts(),
+      trueHitTest: (x: number, y: number) => trueElementsFromPoint(x, y),
+      feishu: () => ({
+        mode: feishuMode(),
+        hits: feishuHits().length,
+        pending: feishuPendingCount(),
+        rules: feishuRules(),
+      }),
     };
     Object.defineProperty(window, '__vaimod_debug', {
       value: handle,

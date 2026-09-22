@@ -3,8 +3,10 @@
 // - 机器人地址归一化：接受完整 webhook URL / 捷径 URL / 纯 token，统一为可发状态；
 // - 机器人登记表持久化 + 自动捕获（变量/列表内容，含云变量）→ 作品里可能多个 ID；
 // - 发送：文本 / @全员 / @指定 / 图片(image_key) / 卡片 / 捷径 JSON 透传；
-// - 图片与任意文件：先上传到匿名直链托管（catbox.moe → 0x0.st 降级）拿直链，
+// - 图片与任意文件：先上传拿直链（ccw OSS 主用 → catbox.moe → 0x0.st 降级），
 //   再以「卡片链接 / 文本直链」发出（webhook 无法上传媒体，此为无凭证下的最优路径）。
+
+import { FEISHU_BYPASS } from './feishu-guard';
 
 export interface FeishuRobot {
   id: string; // 唯一登记 id（自动捕获时为 token）
@@ -190,7 +192,9 @@ async function postJson(url: string, body: unknown): Promise<{ ok: boolean; code
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+      // VaIMod 自己发的消息不进拦截队列（否则开着拦截模式时会拦到自己）
+      [FEISHU_BYPASS]: true,
+    } as RequestInit);
     let msg = '';
     try {
       const j = (await res.json()) as { code?: number; msg?: string };
@@ -273,8 +277,10 @@ export function buildTextCard(title: string, text: string): unknown {
   };
 }
 
-// ---------- 匿名直链上传（图片/任意文件） ----------
-export type UploadHost = 'tmpfiles' | 'catbox' | '0x0';
+// ---------- 直链上传（图片/任意文件） ----------
+// 主通道改为 ccw 站点自带的 OSS（`window.oss.put`，见「文件上传工具」同款接法）：
+// tmpfiles.org 已停止服务，catbox/0x0.st 仅作降级。
+export type UploadHost = 'ccw' | 'catbox' | '0x0';
 
 export interface UploadOutcome {
   ok: boolean;
@@ -283,18 +289,84 @@ export interface UploadOutcome {
   error?: string;
 }
 
-/** tmpfiles.org：支持 CORS，POST multipart，字段名 file；直链需走 /dl/ 路径 */
-async function uploadTmpfiles(file: File): Promise<string> {
-  const form = new FormData();
-  form.append('file', file, file.name);
-  const res = await fetch('https://tmpfiles.org/api/v1/upload', { method: 'POST', body: form });
-  const json = (await res.json().catch(() => ({}))) as { status?: string; data?: { url?: string } };
-  const url = json?.data?.url;
-  if (!res.ok || typeof url !== 'string' || !/^https?:\/\//.test(url)) {
-    throw new Error(`tmpfiles: ${json?.status || res.status}`);
+/** ccw OSS 允许的路径前缀（镜像站点资源桶策略；命中其一才可能被接受） */
+const CCW_PREFIXES = [
+  'user_projects_assets',
+  'works-covers',
+  'creator-college',
+  'gandi',
+  'gandi_application',
+  'avatar',
+  'user_projects_sb3',
+];
+
+/** ccw 站点直链基址（与站点资源引用一致） */
+const CCW_BASE = 'https://m.ccw.site/';
+
+function randomHex(len: number): string {
+  let s = '';
+  for (let i = 0; i < len; i++) s += ((Math.random() * 16) | 0).toString(16);
+  return s;
+}
+
+const MIME_EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
+  'video/mp4': 'mp4',
+  'application/pdf': 'pdf',
+  'application/zip': 'zip',
+};
+
+/** 取扩展名：优先文件名，其次按 MIME 推断，兜底 bin */
+function extOf(file: File): string {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(file.name || '');
+  if (m) return m[1].toLowerCase();
+  return MIME_EXT[file.type] || 'bin';
+}
+
+type CcwOss = { put: (path: string, file: File | Blob) => Promise<unknown> };
+
+/** 取站点注入的 OSS 实例（可能在 window 或 GM 的 unsafeWindow 上） */
+function ccwOss(): CcwOss | null {
+  try {
+    const w = window as unknown as Record<string, unknown>;
+    const direct = w.oss as CcwOss | undefined;
+    if (direct && typeof direct.put === 'function') return direct;
+    const unsafe = w.unsafeWindow as Record<string, unknown> | undefined;
+    const relay = unsafe?.oss as CcwOss | undefined;
+    if (relay && typeof relay.put === 'function') return relay;
+  } catch {
+    /* ignore */
   }
-  // 上传返回的是预览页地址，直链 = 域名后加 /dl/
-  return url.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+  return null;
+}
+
+/**
+ * 上传到 ccw OSS。站点 SDK 只在加载了 OSS 的 ccw 页面上存在（m.ccw.site 等），
+ * 拿不到实例时直接抛错交给降级通道，而不是静默失败。
+ * 路径前缀按站点桶策略逐个尝试——不同页面开放的桶不一样。
+ */
+async function uploadCcw(file: File): Promise<string> {
+  const oss = ccwOss();
+  if (!oss) throw new Error('ccw OSS 不可用（当前页面未注入 window.oss）');
+  const ext = extOf(file);
+  let lastErr = '';
+  for (const prefix of CCW_PREFIXES) {
+    const path = `${prefix}/${randomHex(32)}.${ext}`;
+    try {
+      await oss.put(path, file);
+      return CCW_BASE + path;
+    } catch (err) {
+      lastErr = err instanceof Error ? err.message : String(err);
+    }
+  }
+  throw new Error(`ccw OSS: ${lastErr.slice(0, 80) || '全部前缀均被拒绝'}`);
 }
 
 async function uploadCatbox(file: File): Promise<string> {
@@ -316,11 +388,11 @@ async function upload0x0(file: File): Promise<string> {
   return text;
 }
 
-/** 上传任意文件到匿名直链托管；tmpfiles.org 主用（支持 CORS），catbox/0x0.st 降级。失败返回错误信息 */
+/** 上传任意文件到直链；ccw OSS 主用，catbox / 0x0.st 降级。失败返回错误信息 */
 export async function uploadToLink(file: File): Promise<UploadOutcome> {
   if (file.size > 180 * 1024 * 1024) return { ok: false, error: '文件过大（上限 180MB）' };
   const attempts: Array<[UploadHost, (f: File) => Promise<string>]> = [
-    ['tmpfiles', uploadTmpfiles],
+    ['ccw', uploadCcw],
     ['catbox', uploadCatbox],
     ['0x0', upload0x0],
   ];

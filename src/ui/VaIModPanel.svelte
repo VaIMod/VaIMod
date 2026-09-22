@@ -259,12 +259,16 @@
     const panel = panelEl;
     if (panel) {
       const rect = panel.getBoundingClientRect();
+      // left/top 保留「用户首选位置」：视口缩小期间面板会被钳到边上，此时收起不该把
+      // 钳制后的位置当成用户意愿写盘 —— 否则窗口拉回来它就停在边上不回去了。
+      const prev = savedState ?? readSavedState();
+      const docked = !panel.style.left || panel.style.left === 'auto';
       savedState = {
-        left: rect.left,
-        top: rect.top,
+        left: !docked && prev ? prev.left : rect.left,
+        top: !docked && prev ? prev.top : rect.top,
         width: rect.width,
         height: rect.height,
-        docked: !panel.style.left || panel.style.left === 'auto',
+        docked,
       };
       try {
         localStorage.setItem(PANEL_STORAGE_KEY, JSON.stringify(savedState));
@@ -278,10 +282,56 @@
     // 保证淡入时高度已是最终值，避免「先恢复旧高度再自动撑高」的二次跳动
     minimized = false;
     applySavedState();
+    // 收起期间窗口可能被缩小过：展开时立刻钳进当前视口，避免开在屏幕外
+    fitToViewport();
     autoGrowPanel();
     // 每次打开面板都真读一次当前页数据：收起期间变量轮询是暂停的，
     // 作品/脚本可能已经改变了变量值，展开必须直接显示最新而不是收起前的残留。
     refreshPageOnEnter();
+  }
+
+  // ===== 视口适配：始终看得见 =====
+  // 「用户首选位置」（拖拽落位，持久化）与「视口内有效位置」分开：
+  //   · 拉伸（视口变大）→ 有效位置 = clamp(首选) → 首选本来就合法 → 回到原位不动；
+  //   · 缩小（视口变小）→ clamp 把面板/悬浮球推到最近的边 → 跟着边移动，永不越界。
+  // 只有用户拖拽会改首选位置；钳制结果不写盘，所以拉回原尺寸能自动归位。
+  const VIEW_PAD = 4;
+
+  function clampToViewport(
+    left: number,
+    top: number,
+    w: number,
+    h: number,
+  ): { left: number; top: number } {
+    const maxX = Math.max(VIEW_PAD, window.innerWidth - w - VIEW_PAD);
+    const maxY = Math.max(VIEW_PAD, window.innerHeight - h - VIEW_PAD);
+    return {
+      left: Math.min(Math.max(VIEW_PAD, left), maxX),
+      top: Math.min(Math.max(VIEW_PAD, top), maxY),
+    };
+  }
+
+  /** 把面板与悬浮球钳进当前视口。resize 时调用；幂等，钳制后位置不变则为零成本。 */
+  function fitToViewport(): void {
+    if (isNarrow()) return;
+    const panel = panelEl;
+    if (panel && !minimized && panel.style.left && panel.style.left !== 'auto') {
+      const rect = panel.getBoundingClientRect();
+      const fit = clampToViewport(rect.left, rect.top, rect.width, rect.height);
+      if (Math.abs(fit.left - rect.left) > 0.5 || Math.abs(fit.top - rect.top) > 0.5) {
+        panel.style.left = `${fit.left}px`;
+        panel.style.top = `${fit.top}px`;
+      }
+    }
+    const fab = fabEl;
+    if (fab && fab.style.left && fab.style.left !== 'auto') {
+      const rect = fab.getBoundingClientRect();
+      const fit = clampToViewport(rect.left, rect.top, rect.width, rect.height);
+      if (Math.abs(fit.left - rect.left) > 0.5 || Math.abs(fit.top - rect.top) > 0.5) {
+        fab.style.left = `${fit.left}px`;
+        fab.style.top = `${fit.top}px`;
+      }
+    }
   }
 
   // ===== 悬浮球（FAB）拖动 =====
@@ -307,8 +357,11 @@
       if (!raw) return;
       const s = JSON.parse(raw) as { left?: unknown; top?: unknown };
       if (typeof s.left === 'number' && typeof s.top === 'number') {
-        fab.style.left = `${s.left}px`;
-        fab.style.top = `${s.top}px`;
+        // 存的是「首选位置」；上屏前先按当前视口钳制（换设备/换分辨率也开在可见处）
+        const rect = fab.getBoundingClientRect();
+        const fit = clampToViewport(s.left, s.top, rect.width || 52, rect.height || 52);
+        fab.style.left = `${fit.left}px`;
+        fab.style.top = `${fit.top}px`;
         fab.style.right = 'auto';
         fab.style.bottom = 'auto';
       }
@@ -408,14 +461,20 @@
       if (el) {
         el.classList.remove('svp-fab-dragging');
         if (fabMoved) {
-          // 把 transform 偏移合入 left/top，清空合成层
-          el.style.left = `${fabBaseLeft + fabDx}px`;
-          el.style.top = `${fabBaseTop + fabDy}px`;
+          // 把 transform 偏移合入 left/top，清空合成层；落位同时钳进视口
+          const landed = clampToViewport(
+            fabBaseLeft + fabDx,
+            fabBaseTop + fabDy,
+            rect.width || 52,
+            rect.height || 52,
+          );
+          el.style.left = `${landed.left}px`;
+          el.style.top = `${landed.top}px`;
           el.style.transform = 'none';
+          saveFabState();
           // 拖完不触发展开；短暂抑制 click
           suppressFabClick = true;
           setTimeout(() => (suppressFabClick = false), 120);
-          saveFabState();
         } else {
           el.style.transform = 'none';
         }
@@ -462,17 +521,25 @@
       panel.style.right = 'auto';
       panel.style.bottom = 'auto';
     }
-    if (state.width) panel.style.width = `${Math.max(MIN_PANEL_W, state.width)}px`;
+    // 宽度上限跟着视口走：手动拉宽过再缩小窗口时，面板不会横向溢出
+    const maxW = Math.max(MIN_PANEL_W, window.innerWidth - VIEW_PAD * 2);
+    if (state.width) {
+      panel.style.width = `${Math.min(Math.max(MIN_PANEL_W, state.width), maxW)}px`;
+    }
     if (state.height) panel.style.height = `${Math.max(MIN_PANEL_H, state.height)}px`;
   }
 
-  // 视口尺寸变化（横竖屏切换 / 移动端地址栏收起）：重新校准面板布局
+  // 视口尺寸变化（横竖屏切换 / 移动端地址栏收起 / 窗口拉伸缩小）：
+  // 先回到用户首选位置，再整体钳进视口 —— 拉伸即归位，缩小即贴边，任何尺寸都看得见。
+  // 收起状态下面板不可见，但要一并钳悬浮球（它是常驻可见的）。
   $effect(() => {
     if (typeof window === 'undefined') return;
     const onResize = () => {
-      if (minimized) return;
-      applySavedState();
-      scheduleGrow();
+      if (!minimized) {
+        applySavedState();
+        scheduleGrow();
+      }
+      fitToViewport();
     };
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
@@ -1103,9 +1170,13 @@
       panel.style.transform = `translateZ(0) translate3d(${dx}px, ${dy}px, 0)`;
     };
     const move = (ev: MouseEvent) => {
-      // clamp 等价原 left/top ≥0 逻辑：dx = max(-baseX, clientX - startX)
-      dx = Math.max(-baseX, ev.clientX - offX - baseX);
-      dy = Math.max(-baseY, ev.clientY - offY - baseY);
+      // 拖拽**过程中**就把落点钳进视口（与悬浮球一致，4px 边距）。
+      // 若只在 mouseup 时钳制：贴边拖出去再松手，面板会在松手那一帧被弹回边缘
+      // ——「落位跳变」（probe-paneldrag 断言 vx 与末帧视觉位置一致）。
+      // 位移仍走 transform：clamp 只改目标值，不改每帧的合成层写法。
+      const box = clampToViewport(ev.clientX - offX, ev.clientY - offY, rect.width, rect.height);
+      dx = box.left - baseX;
+      dy = box.top - baseY;
       if (!moved) {
         moved = true;
         panel.style.left = `${baseX}px`;
@@ -1128,9 +1199,28 @@
       // 样式批处理会让 transition:none 从未生效，显示态的 transform 0.2s 过渡
       // 捕捉到「translate3d(dx,dy) → 无位移」的变化 → 面板飞出整个拖距再滑回（抽搐）。
       // 下一帧移除类时所有属性值均无变化 → 不触发任何过渡。
-      panel.style.left = `${Math.max(0, baseX + dx)}px`;
-      panel.style.top = `${Math.max(0, baseY + dy)}px`;
+      // 尺寸取自拖拽开始时的 rect（此处不能读 DOM：读操作会强制同步布局，破坏上面时序）。
+      // dx/dy 在 move 里已钳进视口 → 这里幂等兜底（防拖拽中途视口被改小）。
+      const landed = clampToViewport(
+        Math.max(0, baseX + dx),
+        Math.max(0, baseY + dy),
+        rect.width,
+        rect.height,
+      );
+      panel.style.left = `${landed.left}px`;
+      panel.style.top = `${landed.top}px`;
       panel.style.transform = '';
+      // 记录「用户首选位置」（窗口缩放时的归位基准）；拖拽是唯一会改它的操作
+      savedState = {
+        left: landed.left,
+        top: landed.top,
+        width: rect.width,
+        height: rect.height,
+        docked: false,
+      };
+      try {
+        localStorage.setItem(PANEL_STORAGE_KEY, JSON.stringify(savedState));
+      } catch {}
       requestAnimationFrame(() => {
         panel.classList.remove('svp-panel-dragging');
         dragging = false;

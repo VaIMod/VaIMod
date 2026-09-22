@@ -66,7 +66,7 @@
   touch-action: none;
   /* 独立渲染层：布局/绘制与页面隔离，网页重排卡顿不影响本元素 */
   contain: layout paint;
-  /* 层级：高于透明遮罩，randomize 后 ≥2147400000 */
+  /* 层级：恒为视口最大（ui-guard 持续保证），永远压在所有页面元素之上 */
   z-index: 2147483647;
 }
 .svp-fab:not(.svp-fab-hidden) {
@@ -127,7 +127,7 @@
   /* GPU 资源优先：提升为独立合成层，动画/滚动走 GPU 合成线程，不占主线程 */
   transform: translateZ(0);
   will-change: transform;
-  /* 层级：高于透明遮罩（2147000000），randomize 后 ≥2147400000，彻底防盖 */
+  /* 层级：恒为视口最大（ui-guard 持续保证），盖不住即自动抬层级 */
   z-index: 2147483647;
 }
 /* 自动撑高/撑宽时给尺寸加过渡（仅在 autoGrow 期间，拖拽时会被移除） */
@@ -1450,6 +1450,97 @@
   justify-content: space-between;
   gap: 10px;
   margin-top: 4px;
+}
+
+/* ===== 飞书消息请求拦截（内嵌 UI） ===== */
+.svp-fs-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: rgba(255, 159, 10, 0.18);
+  border: 1px solid rgba(255, 159, 10, 0.45);
+  color: #ffb340;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: 2px;
+}
+.svp-fs-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.svp-fs-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+/* 待裁决：左侧亮条 + 边框高亮，一眼看出「有请求在等我」 */
+.svp-fs-item-pending {
+  background: rgba(255, 159, 10, 0.08);
+  border-color: rgba(255, 159, 10, 0.42);
+  box-shadow: inset 3px 0 0 0 rgba(255, 159, 10, 0.85);
+}
+.svp-fs-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.svp-fs-bot {
+  font-size: 12px;
+  font-weight: 600;
+  color: #d8dbe0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex-shrink: 0;
+}
+.svp-fs-state {
+  margin-left: auto;
+  font-size: 11px;
+  color: #8a9099;
+  flex-shrink: 0;
+}
+.svp-fs-state-pending {
+  color: #ffb340;
+  font-weight: 600;
+}
+.svp-fs-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: #b9bec6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 96px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.svp-fs-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.svp-fs-rule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.svp-fs-rule .svp-meta {
+  flex: 1;
+}
+.svp-fs-rule .svp-robot-del {
+  flex-shrink: 0;
 }
 .svp-sendbar .svp-meta {
   font-size: 12px;

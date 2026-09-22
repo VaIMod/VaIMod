@@ -1,9 +1,10 @@
 <script lang="ts">
-  // ===== 飞书：机器人管理 + 消息发送 =====
+  // ===== 飞书：机器人管理 + 消息发送 + 消息请求拦截 =====
   // 通道为飞书群自定义机器人 webhook 直发（不触碰开放平台凭证）：
   // - 机器人来源两路：扫描变量与列表内容（含云变量）/ 手动添加；可自定义名称；
   // - 发送：文本、@全员、@指定成员、图片（已有 image_key）、交互卡片 JSON、捷径/透传 JSON；
-  // - 图片与任意文件：先上传匿名直链托管（catbox→0x0.st 降级），再以「卡片链接」发到选中机器人。
+  // - 图片与任意文件：先上传拿直链（ccw OSS → catbox → 0x0.st 降级），再以「卡片链接」发出；
+  // - 消息请求拦截：拦下页面/作品发往飞书 webhook 的请求，在本面板内裁决放行或拒绝。
   import type { ScratchVaIMod } from '../core';
   import { cleanDisplay } from '../core';
   import {
@@ -26,8 +27,91 @@
     type SendResult,
   } from '../core/feishu';
   import { extractTokens } from '../core/feishu';
+  import {
+    clearFeishuLog,
+    feishuHits,
+    feishuMode,
+    feishuPendingCount,
+    feishuRules,
+    resolveAllFeishu,
+    resolveFeishu,
+    setFeishuRule,
+    setFeishuMode,
+    subscribeFeishu,
+    type FeishuHit,
+  } from '../core/feishu-guard';
+  import { loadSettings, saveSettings, type FeishuInterceptMode } from '../core/settings';
   import { fly } from 'svelte/transition';
   import { secureAction } from '../core/veil-chain';
+
+  // ===== 消息请求拦截（内嵌 UI） =====
+  // 真正的 fetch/XHR hook 在 document-start 就装好了（core/feishu-guard），
+  // 这里只是它的展示层：模式开关、待裁决请求、命中记录、记忆规则。
+  // 之所以做成内嵌而不是页面浮层：浮层会被作品/站点 DOM 操作干扰，也不符合面板一体化体验。
+  const FS_MODES: { value: FeishuInterceptMode; label: string }[] = [
+    { value: 'off', label: '不拦截' },
+    { value: 'manual', label: '询问' },
+    { value: 'allowAll', label: '只记录' },
+    { value: 'blockAll', label: '全拒绝' },
+  ];
+  const FS_MODE_HINT: Record<FeishuInterceptMode, string> = {
+    off: '不介入任何请求，行为与未安装一致。',
+    manual: '命中飞书 webhook 就挂起，等你在这里点允许 / 拒绝；超时按下方兜底动作处理。',
+    allowAll: '全部放行，只把命中记下来（审计用）。',
+    blockAll: '命中一律拒绝，请求方会收到失败。',
+  };
+  const FS_STATE_LABEL: Record<FeishuHit['decision'], string> = {
+    pending: '待裁决',
+    allowed: '已允许',
+    denied: '已拒绝',
+    'auto-allowed': '自动放行',
+    'auto-denied': '自动拒绝',
+    'timeout-allowed': '超时放行',
+    'timeout-denied': '超时拒绝',
+    'rule-allowed': '规则放行',
+    'rule-denied': '规则拒绝',
+  };
+
+  let fsMode = $state<FeishuInterceptMode>(feishuMode());
+  let fsHits = $state<FeishuHit[]>([]);
+  let fsPending = $state(0);
+  let fsRulesList = $state<Array<{ botId: string; allow: boolean }>>([]);
+  let fsOnTimeout = $state<'allow' | 'block'>(loadSettings().feishuOnTimeout);
+  let fsTimeoutMs = $state<number>(loadSettings().feishuTimeoutMs);
+
+  function syncFeishu(): void {
+    fsHits = feishuHits();
+    fsPending = feishuPendingCount();
+    fsRulesList = feishuRules();
+    fsMode = feishuMode();
+  }
+
+  $effect(() => {
+    const off = subscribeFeishu(syncFeishu);
+    syncFeishu();
+    return off;
+  });
+
+  function persistFs(patch: { feishuOnTimeout?: 'allow' | 'block'; feishuTimeoutMs?: number }): void {
+    const s = loadSettings();
+    Object.assign(s, patch);
+    saveSettings(s);
+    fsOnTimeout = s.feishuOnTimeout;
+    fsTimeoutMs = s.feishuTimeoutMs;
+  }
+
+  function decideFs(id: number, allow: boolean, remember = false): void {
+    if (!resolveFeishu(id, allow, remember)) showToast('该请求已结束', 'err');
+  }
+
+  function decideAllFs(allow: boolean, remember = false): void {
+    const n = resolveAllFeishu(allow, remember);
+    showToast(n > 0 ? `已${allow ? '放行' : '拒绝'} ${n} 条` : '没有待裁决的请求', n > 0 ? 'ok' : 'err');
+  }
+
+  function forgetFsRule(botId: string): void {
+    setFeishuRule(botId, null);
+  }
 
   // 机器人来源只依赖变量（含云变量）+ 手动添加，不再需要 vm 桥接面。
   let { variables }: { variables: ScratchVaIMod[] } = $props();
@@ -510,6 +594,98 @@
     </div>
   </section>
 
+  <!-- 消息请求拦截（内嵌 UI；hook 本体在 document-start 装好） -->
+  <section class="svp-section">
+    <h3 class="svp-section-title">
+      消息请求拦截
+      {#if fsPending > 0}<span class="svp-fs-badge">{fsPending}</span>{/if}
+    </h3>
+    <div class="svp-seg">
+      {#each FS_MODES as m}
+        <button
+          class="svp-seg-btn"
+          class:svp-seg-active={fsMode === m.value}
+          onclick={() => setFeishuMode(m.value)}
+        >
+          {m.label}
+        </button>
+      {/each}
+    </div>
+    <p class="svp-note">{FS_MODE_HINT[fsMode]}</p>
+
+    {#if fsMode === 'manual'}
+      <div class="svp-row2">
+        <label class="svp-check">
+          超时
+          <select class="svp-select" value={fsOnTimeout} onchange={(e) => persistFs({ feishuOnTimeout: (e.currentTarget as HTMLSelectElement).value === 'block' ? 'block' : 'allow' })}>
+            <option value="allow">放行</option>
+            <option value="block">拒绝</option>
+          </select>
+        </label>
+        <input
+          class="svp-input"
+          type="number"
+          min="0"
+          max="300000"
+          step="1000"
+          value={fsTimeoutMs}
+          onchange={(e) => persistFs({ feishuTimeoutMs: Math.max(0, Math.min(300000, Number((e.currentTarget as HTMLInputElement).value) || 0)) })}
+          aria-label="等待裁决的毫秒数"
+          use:keyboardGuard
+        />
+      </div>
+    {/if}
+
+    {#if fsPending > 0}
+      <div class="svp-btnrow svp-btnrow-wrap">
+        <button class="svp-btn svp-btn-blue svp-btn-sm" onclick={() => decideAllFs(true)}>全部放行</button>
+        <button class="svp-btn svp-btn-sm" onclick={() => decideAllFs(false)}>全部拒绝</button>
+        <button class="svp-btn svp-btn-sm" onclick={() => decideAllFs(true, true)}>放行并记住</button>
+      </div>
+    {/if}
+
+    {#if fsHits.length === 0}
+      <p class="svp-empty">暂无命中。切到「询问」后，页面与作品发往飞书群机器人的请求都会在这里等你裁决。</p>
+    {:else}
+      <div class="svp-fs-log">
+        {#each fsHits as h (h.id)}
+          <div class="svp-fs-item" class:svp-fs-item-pending={h.decision === 'pending'}>
+            <div class="svp-fs-head">
+              <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : maskToken(h.botId)}</span>
+              <span class="svp-meta">{h.via.toUpperCase()} · {h.method}</span>
+              <span class="svp-fs-state" class:svp-fs-state-pending={h.decision === 'pending'}>{FS_STATE_LABEL[h.decision]}</span>
+            </div>
+            <div class="svp-fs-text">{h.text}</div>
+            {#if h.decision === 'pending'}
+              <div class="svp-btnrow svp-btnrow-wrap">
+                <button class="svp-btn svp-btn-blue svp-btn-sm" onclick={() => decideFs(h.id, true)}>允许</button>
+                <button class="svp-btn svp-btn-sm" onclick={() => decideFs(h.id, false)}>拒绝</button>
+                <button class="svp-btn svp-btn-sm" onclick={() => decideFs(h.id, true, true)}>允许并记住</button>
+                <button class="svp-btn svp-btn-sm" onclick={() => decideFs(h.id, false, true)}>拒绝并记住</button>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+
+      {#if fsRulesList.length > 0}
+        <div class="svp-fs-rules">
+          {#each fsRulesList as r (r.botId)}
+            <div class="svp-fs-rule">
+              <span class="svp-fs-bot">{maskToken(r.botId)}</span>
+              <span class="svp-meta">{r.allow ? '总是允许' : '总是拒绝'}</span>
+              <button class="svp-robot-del" onclick={() => forgetFsRule(r.botId)} aria-label="忘记该规则">×</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="svp-btnrow">
+        <button class="svp-btn svp-btn-sm" onclick={clearFeishuLog}>清空记录</button>
+      </div>
+    {/if}
+  </section>
+
   <!-- 编辑发送：flex:1 让它吃掉面板被拉长多出来的高度，
        配合文本域的 autoGrowArea 实现「拉长自动补位」 -->
   <section class="svp-section svp-section-grow">
@@ -559,7 +735,7 @@
           </div>
         </div>
       {/if}
-      <p class="svp-note">群机器人 webhook 不支持直接推送文件/图片二进制：文件会先上传到匿名直链托管，再以卡片链接消息发送给选中机器人。</p>
+      <p class="svp-note">群机器人 webhook 不支持直接推送文件/图片二进制：文件会先上传拿直链（ccw OSS 优先，catbox / 0x0.st 降级），再以卡片链接消息发送给选中机器人。</p>
     {/if}
 
     <div class="svp-sendbar">

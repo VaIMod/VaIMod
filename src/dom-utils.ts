@@ -187,14 +187,31 @@ function startAttrRotation(host: HTMLElement): void {
 }
 
 function randomizeHostCss(css: string): string {
-  // 放大 z-index / 偏移的随机范围，并让方向随机（正负），降低 shadow 宿主被静态特征识别的概率
-  const z = 2147400000 + ((Math.random() * 240000) | 0);
+  // 随机化「离屏偏移」与方向，降低 shadow 宿主被静态特征识别的概率。
+  // ⛔ z-index 不再降级随机：宿主层级必须恒为最高（用户明确要求「任何情况下都在最顶层」），
+  // 降级到 2147400000 会被页面/其它扩展的 max 层级覆盖 → UI 被盖住看不见。
   const sign = Math.random() < 0.5 ? -1 : 1;
   const off = sign * (9990 + ((Math.random() * 60) | 0));
   return css
-    .replace(/z-index: 2147483647/g, `z-index: ${z}`)
     .replace(/left: -9999px/g, `left: ${off}px`)
     .replace(/top: -9999px/g, `top: ${off}px`);
+}
+
+// 原生 elementsFromPoint：必须在 patchQueryApis 之前抓下引用（安装 stealth 时会被包装成
+// 「过滤掉宿主」的版本，包装后拿不到真实命中栈）。模块顶层求值 = 早于 installStealth。
+const ORIG_ELEMENTS_FROM_POINT: Document['elementsFromPoint'] | null =
+  typeof Document !== 'undefined' && typeof Document.prototype.elementsFromPoint === 'function'
+    ? Document.prototype.elementsFromPoint
+    : null;
+
+/** 真实命中栈（含 VaIMod 宿主，未被 stealth 过滤）——UI 层级裁决用 */
+export function trueElementsFromPoint(x: number, y: number): Element[] {
+  if (!ORIG_ELEMENTS_FROM_POINT) return [];
+  try {
+    return Array.from(ORIG_ELEMENTS_FROM_POINT.call(document, x, y));
+  } catch {
+    return [];
+  }
 }
 
 const ORIG_FN_TO_STRING = Function.prototype.toString;
@@ -212,6 +229,16 @@ export function isProtected(node: Node): boolean {
 
 function isProtectedFast(node: Node): boolean {
   return node.nodeType === NODE_TYPE_ELEMENT && protectedHosts.has(node as HTMLElement);
+}
+
+/** 该节点本身是否为 VaIMod 宿主元素（不向上追溯祖先，热路径专用） */
+export function isProtectedHost(node: Node | null): boolean {
+  return !!node && isProtectedFast(node);
+}
+
+/** 当前已登记的宿主元素（closed shadow 无法反查，按根遍历） */
+export function getProtectedHosts(): HTMLElement[] {
+  return Array.from(protectedHosts);
 }
 
 function markNative(fn: object, name: string): void {

@@ -50,6 +50,15 @@ export const PRESET_COLORS: { id: string; label: string; value: string }[] = [
   { id: 'cyan', label: '湖水青', value: '#34c9d8' },
 ];
 
+/**
+ * 飞书 Webhook 拦截模式：
+ * - off      不拦截（默认，零行为变化）
+ * - manual   命中即排队，等面板里点「允许 / 拒绝」
+ * - allowAll 只记录放行（审计用）
+ * - blockAll 命中一律拒绝（连带记录）
+ */
+export type FeishuInterceptMode = 'off' | 'manual' | 'allowAll' | 'blockAll';
+
 export interface Settings {
   loadMode: LoadMode;
   /** 快照还原时，缺失目标/变量自动新建补齐 */
@@ -58,6 +67,12 @@ export interface Settings {
   accentColor: string;
   /** 标签页顺序与显隐（数组顺序即显示顺序） */
   tabs: TabPref[];
+  /** 飞书消息请求拦截模式 */
+  feishuIntercept: FeishuInterceptMode;
+  /** manual 模式下无人应答（超时）时的兜底动作 */
+  feishuOnTimeout: 'allow' | 'block';
+  /** manual 模式下等待应答的毫秒数（0 = 不等待，直接用兜底动作） */
+  feishuTimeoutMs: number;
 }
 
 const KEY = 'vaimod_settings_v1';
@@ -75,6 +90,9 @@ export function defaultSettings(): Settings {
     applyCreateOnRestore: true,
     accentColor: PRESET_COLORS[0].value, // 默认晴空蓝
     tabs: defaultTabs(),
+    feishuIntercept: 'off', // 默认不拦截：不改变任何既有行为
+    feishuOnTimeout: 'allow',
+    feishuTimeoutMs: 30000,
   };
 }
 
@@ -124,6 +142,7 @@ export function normalizeSettings(
     }
     tabs = kept;
   }
+  const mode = parsed.feishuIntercept;
   return {
     loadMode: parsed.loadMode === 'sync' ? 'sync' : 'async',
     applyCreateOnRestore: parsed.applyCreateOnRestore !== false,
@@ -132,6 +151,13 @@ export function normalizeSettings(
         ? parsed.accentColor
         : d.accentColor,
     tabs,
+    feishuIntercept:
+      mode === 'manual' || mode === 'allowAll' || mode === 'blockAll' ? mode : 'off',
+    feishuOnTimeout: parsed.feishuOnTimeout === 'block' ? 'block' : 'allow',
+    feishuTimeoutMs:
+      typeof parsed.feishuTimeoutMs === 'number' && Number.isFinite(parsed.feishuTimeoutMs)
+        ? Math.max(0, Math.min(300000, Math.floor(parsed.feishuTimeoutMs)))
+        : d.feishuTimeoutMs,
   };
 }
 
