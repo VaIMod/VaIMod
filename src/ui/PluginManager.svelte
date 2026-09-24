@@ -73,7 +73,9 @@
     for (const f of files) {
       try {
         const src = await f.text();
-        // 先解析拿类型：补丁参与 VaIMod 内部管道（更高信任面），安装前明确确认
+        // 先解析拿类型：补丁参与 VaIMod 内部管道（更高信任面），安装前明确确认。
+        // ⚠️ 解析会**真实执行**整段源码，所以下面必须走 installParsed 把这份 def 交回去，
+        //    不能再调 install(src) 让它重解析一遍（顶层有副作用的插件会被跑两次）。
         const def = parsePluginSource(src);
         if (def.type === 'patch') {
           const ok = confirm(
@@ -86,7 +88,7 @@
           }
           patches++;
         }
-        const r = pluginRegistry.install(src);
+        const r = pluginRegistry.installParsed(def, src);
         if (r === 'installed') installed++;
         else if (r === 'skipped') skipped++;
         else upgraded++;

@@ -507,7 +507,15 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
 }
 
 // ---------- ② register 前置拦截 ----------
+/** 已包裹过 register 的宿主对象（防 `window.Scratch` 反复赋值导致重复包裹） */
+const hookedRegisters = new WeakSet<object>();
+
 function hookRegister(extApi: { register: (...args: unknown[]) => unknown }): void {
+  // 幂等：`window.Scratch` 每次被赋值都会重新走一遍 tryHook，而站点常把 Scratch 反复重写
+  // （热重载、按需加载）。没有这个标记就会在同一个 register 上叠 N 层包裹 ——
+  // 每层都跑一遍 detectInstance，站点一次注册就被扫 N 次，纯粹的性能泄漏。
+  if (hookedRegisters.has(extApi)) return;
+  hookedRegisters.add(extApi);
   try {
     const orig = extApi.register.bind(extApi);
     extApi.register = (...args: unknown[]) => {
@@ -531,7 +539,7 @@ function hookRegister(extApi: { register: (...args: unknown[]) => unknown }): vo
       return orig(...args);
     };
   } catch {
-    /* ignore */
+    hookedRegisters.delete(extApi); // 包装失败 → 撤标记，下次还能再试
   }
 }
 

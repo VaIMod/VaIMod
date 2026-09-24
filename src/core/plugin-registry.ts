@@ -273,6 +273,22 @@ class PluginRegistry {
   install(src: string): 'installed' | 'skipped' | 'upgraded' {
     this.ensure();
     const def = parsePluginSource(src); // 先解析校验，失败抛错
+    return this.installDef(def, src);
+  }
+
+  /**
+   * 用**已经解析好的定义**安装，避免二次 parse。
+   *
+   * `parsePluginSource` 会真实执行整段源码（`new Function`），顶层有副作用的插件会被跑两遍 ——
+   * 调用方（如上传前要先看 `type` 决定是否弹「补丁需确认来源」）拿到 def 后应当走这个入口，
+   * 而不是再调一次 `install(src)`。
+   */
+  installParsed(def: PluginDef, src: string): 'installed' | 'skipped' | 'upgraded' {
+    this.ensure();
+    return this.installDef(def, src);
+  }
+
+  private installDef(def: PluginDef, src: string): 'installed' | 'skipped' | 'upgraded' {
     const sig = pluginSignature(src);
     // 用户重新上传安装同一个插件 → 覆盖写入会带上正确的完整性指纹，撤掉旧告警
     const ti = tamperedIds.indexOf(def.id);

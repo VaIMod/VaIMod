@@ -8,7 +8,7 @@
   import { onDestroy, untrack } from 'svelte';
   import type { InstalledPlugin, PluginContext, PluginProjectApi } from '../core/plugins';
   import { runPluginBoot, runPluginRefresh, makePluginStore, pluginRegistry } from '../core/plugin-registry';
-  import { createPluginUI } from '../core/plugin-ui';
+  import { createPluginUI, type PluginUIApi } from '../core/plugin-ui';
   import { scopeCss } from '../core/plugin-css';
   import {
     getAliasConfig,
@@ -208,6 +208,9 @@
   // 插件对本体 ctx 能力面（本地重命名 / 网络防火墙）的订阅：随 teardown 统一退订，
   // 插件忘了退也不泄漏。
   const ctxUnsubs = new Set<() => void>();
+  // 本次 boot 的 ui 实例：teardown 时 dispose，收掉插件没关的 confirm / modal 浮层。
+  // 它们挂在面板 ShadowRoot 直下（`#vmp-<id>` 作用域外），不主动收会变成挡死面板的残留遮罩。
+  let uiApi: PluginUIApi | null = null;
 
   function buildCtx(root: HTMLElement): PluginContext {
     return {
@@ -320,6 +323,16 @@
       cleanupFn = null;
     }
     bootCtx = null;
+    // 收掉插件没关的 confirm / modal 浮层（它们挂在面板 ShadowRoot 直下，
+    // 不随 `#vmp-<id>` 一起消失 —— 残留的全屏遮罩会永久挡住整个面板）
+    if (uiApi) {
+      try {
+        uiApi.dispose();
+      } catch {
+        /* ignore */
+      }
+      uiApi = null;
+    }
     varListeners.clear();
     for (const unsub of ctxUnsubs) {
       try {
@@ -358,6 +371,7 @@
       try {
         const ctx = buildCtx(el);
         bootCtx = ctx;
+        uiApi = ctx.ui as PluginUIApi; // teardown 时统一收掉未关的浮层
         // 异步加载定义（def.async：waitVm → load → code）。未声明 async 时
         // runPluginBoot 内部直接走 runPluginCode，时序与旧版完全一致（不引入异步边界）。
         cleanupFn = runPluginBoot(plugin.def, ctx, {

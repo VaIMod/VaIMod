@@ -206,6 +206,14 @@ export interface PluginUIApi {
    * 返回句柄 { el, box, close }；仅扩展 ctx 可用（补丁无挂载点会抛错）。
    */
   modal(opts: PluginUIModalOpts): PluginUIModalHandle;
+  /**
+   * 关掉本实例创建的全部浮层（未决的 `confirm` 按「取消」落定），并摘掉它们的 keydown 监听。
+   *
+   * 宿主面板必须在插件 teardown（切页 / 停用 / 卸载 / 改设置重跑）时调用：浮层是挂在面板
+   * ShadowRoot **直下**的（`#vmp-<id>` 作用域之外），插件内容被清掉时它们不会跟着消失 ——
+   * 残留的全屏遮罩会一直挡住整个面板，且没有任何 UI 能关掉它。
+   */
+  dispose(): void;
 }
 
 function make<K extends keyof HTMLElementTagNameMap>(
@@ -230,6 +238,9 @@ function applyCustom<T extends HTMLElement>(el: T, custom?: PluginUIStyleOpts): 
 let activeConfirm: { finish(v: boolean): void } | null = null;
 
 export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
+  /** 本实例创建、且尚未关闭的浮层（unmount 时统一收掉，防止遮罩残留挡住面板） */
+  const liveOverlays = new Set<{ close(): void }>();
+
   const toast = (text: string, kind: PluginToastKind = 'ok'): void => {
     try {
       opts.toast(text, kind);
@@ -490,9 +501,14 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
     return new Promise<boolean>((resolve) => {
       let done = false;
       const host = opts.getOverlayHost!();
+      // 登记到本实例的浮层集合（dispose 会按「取消」落定它）。
+      // token 声明在 finish 之前，避免 finish 里引用它时踩 TDZ。
+      const token = { close: (): void => {} };
+      liveOverlays.add(token);
       const finish = (v: boolean): void => {
         if (done) return;
         done = true;
+        liveOverlays.delete(token);
         if (activeConfirm === entry) activeConfirm = null;
         try {
           overlay.remove();
@@ -504,6 +520,7 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
       };
       const entry = { finish };
       activeConfirm = entry;
+      token.close = () => finish(false);
       const onKey = (e: KeyboardEvent): void => {
         if (e.key === 'Escape') finish(false);
         else if (e.key === 'Enter') finish(true);
@@ -573,6 +590,7 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
       close(): void {
         if (closed) return;
         closed = true;
+        liveOverlays.delete(h);
         try {
           overlay.remove();
         } catch {
@@ -581,6 +599,7 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
         document.removeEventListener('keydown', onKey, true);
       },
     };
+    liveOverlays.add(h);
 
     if (o.title) {
       const t = make('div', 'vpu-confirm-title');
@@ -619,6 +638,18 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
     return h;
   }
 
+  function dispose(): void {
+    // 遍历副本：close 会就地把自己从集合里删掉
+    for (const ov of [...liveOverlays]) {
+      try {
+        ov.close();
+      } catch {
+        /* ignore */
+      }
+    }
+    liveOverlays.clear();
+  }
+
   return {
     toast,
     tip,
@@ -639,5 +670,6 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
     row,
     confirm,
     modal,
+    dispose,
   };
 }

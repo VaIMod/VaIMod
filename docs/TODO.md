@@ -324,31 +324,33 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 **定位手段**：`probe-plugin-css-scope.mjs`（新，11/11）+ `fixture-css-scope.plugin.js` 是对抗样本，
 改 `scopeCss` / 设置页样式注入后**必须**跑它。其余靠既有 256 项基线。
 
-### 未修（已知、暂不触发，别重复踩）
+### 未修 → 已收敛（2026-09-24 收尾轮）
+
+首轮列了 9 条「已知识别、暂不触发」，收尾轮**清掉 6 条**，剩 3 条：
+
+**已修（6 条）**
+
+| 原条目 | 修法 | 护栏 |
+| --- | --- | --- |
+| `PluginManager` 对同一份源码 `parsePluginSource` 两次（顶层副作用跑两遍） | registry 新增 `installParsed(def, src)`；`onFiles` 解析一次后把 def 交回去（`install` 保留原语义，内部改走 `installDef`） | `plugin-test` / `probe-plugin-persist` |
+| `ui.confirm` / `ui.modal` 浮层不随插件卸载清理（残留遮罩挡死面板） | `createPluginUI` 登记自己创建的全部浮层，暴露 `dispose()`；`PluginTab.teardown` 统一收（未决 confirm 按「取消」落定，不留 pending Promise） | **新增 `probe-plugin-overlay.mjs` 11/11** + `fixture-overlay.plugin.js`（故意「开了就不关」的坏插件） |
+| `secure-cache.enc` 每次读 `secretChannel.salt()`，密钥轮换后已存条目解不回来 | 构造时取一次通道材料，再与本实例 `token` 哈希混合 → 对实例恒定、随实例唯一 | `tsc` + 全量探针无回归 |
+| `hookRegister` 无幂等标记，`window.Scratch` 每次赋值再包一层 | 加 `hookedRegisters: WeakSet<object>`，包装失败时撤标记 | `probe-anticheat` 16/16 |
+| `functionCodeToString` 的 `load` 段一致性 | `load` 已与 `code`/`refresh` 共用同一函数、同批修好；确认无遗留 | `plugin-test` |
+| `probe-perf` 基线未重采 | 已重采：隐藏 8s 变量表读取 **0 次**（回前台 1.5s 补 +2）、主线程忙 **1.75%**、idle/切页/拖拽三场景 **janky = 0**（p95 16.7–16.8ms） | — |
+
+**剩下 3 条（故意不动，各有理由）**
 
 1. **插件私有存储命名空间**：`makePluginStore` 用 `vaimod_plug_${id}_`，`_` 既是分隔符又是
    id 合法字符（`/^[a-z0-9][a-z0-9_-]{1,47}$/`）。`foo` 与 `foo_bar` 两个插件会串写同一条
    key，卸载 `foo` 还会把 `foo_bar` 的私有数据整块删掉。
    修法要动命名空间 = 老用户插件私有数据会丢，**必须先设计「读旧前缀 + 写新前缀」的迁移**再动。
-2. **`functionCodeToString` 已修，但 `load` 段同样走它** —— 若将来支持 `load: function(){}`，
-   记得一起回归（当前只影响 code/refresh）。
-3. **`PluginManager` 安装路径对同一份源码 `parsePluginSource` 两次**（`onFiles` 先解析一次、
-   `registry.install` 内部再解析一次）。`parsePluginSource` 是**真实执行**源码，顶层有副作用的
-   插件会被执行两遍。修法：给 registry 加一个「已有 def + src」的安装入口。
-4. **`plugin-ui` 的 `ui.confirm` / `ui.modal` 浮层不随插件卸载清理**：浮层挂面板 ShadowRoot、
-   `document` keydown 也只由 finish/close 移除。插件切页/停用后可能残留遮罩挡住面板。
-   修法：`createPluginUI` 记录自己创建的浮层与监听器，暴露 `dispose()`，由 teardown 统一收。
-5. **`secure-cache` 的 `enc` 用 `secretChannel.salt()`，密钥轮换后已存条目解不回来**
-   （`JSON.parse` 抛错 → 条目被删 → 语义退化为「缓存未命中」）。行为无害，未动。
-6. **`sig-guard` 的 `purgeMaskStyle` 观察者只订 `attributes:style`**：走 CSSOM（`sheet.insertRule`）
-   注入隐藏规则的路径不触发；`secure-guard` 侧同理只订 `childList`。
-7. **`dom-utils` 的 live 集合语义**：`children` / `childNodes` / `getElementsBy*` 一旦命中受保护
+   缓解已落地：文档与 skill 明确要求**插件 id 用 `-` 不用 `_`**。
+2. **`sig-guard.purgeMaskStyle` 观察者只订 `attributes:style`**：走 CSSOM（`sheet.insertRule`）
+   注入隐藏规则的路径不触发；`secure-guard` 侧同理只订 `childList`（仍有 1s 巡检兜底，存在窗口）。
+3. **`dom-utils` 的 live 集合语义**：`children` / `childNodes` / `getElementsBy*` 一旦命中受保护
    节点就返回**静态快照**（且 `childElementCount` 仍按 live 重算 → 两者可能不一致）。
    站点若缓存 `el.children` 再增删后按索引访问会踩到。修法是返回 live facade 代理，属于较大改造。
-8. **全局 setter/对象替换的重复包裹**：`secure-guard.hookRegister` 无幂等标记，
-   `window.Scratch` 每次赋值都会再包一层（`sig-guard` 有 `__vaimodSigHooked` 防重）。
-9. **`probe-perf` 的性能基线未在本轮改动后重采**（`ui-guard` 事件合并、`dom-utils` 每节点判空
-   这两处都动了热路径）——下次做性能相关改动时先补一次对照。
 
 ---
 

@@ -18,6 +18,16 @@ export class SecureCache {
   private store = new Map<string, Entry>();
   private readonly max: number;
   private readonly token = Math.random().toString(36).slice(2);
+  /**
+   * 本实例专用的混淆字节。
+   *
+   * ⛔ 不能在 `enc()` 里每次读 `secretChannel.salt()`：通道密钥会轮换，而条目是**早先**
+   * 用旧 salt 写下的 —— 轮换后 `dec` 解不回来（`JSON.parse` 抛错 → 条目被当成损坏删除），
+   * 语义无声退化成「缓存全部未命中」。
+   * 这里在构造时取一次通道材料，再与本实例 token 混合：既随实例唯一（不同实例同明文密文不同），
+   * 又对该实例恒定（写入与读取永远同一把锁）。
+   */
+  private readonly k0: number;
   private static readonly instances = new Set<SecureCache>();
 
   static create(max = DEFAULT_MAX): SecureCache {
@@ -28,14 +38,16 @@ export class SecureCache {
 
   private constructor(max: number) {
     this.max = max;
+    let h = 0;
+    for (let i = 0; i < this.token.length; i++) h = (h * 31 + this.token.charCodeAt(i)) & 0xff;
+    this.k0 = (secretChannel.salt() ^ h) & 0xff;
   }
 
   // 基于秘密密钥 VPN 派生的轻量混淆：密文存内存
   private enc(s: string): string {
-    const salt = secretChannel.salt();
     let out = '';
     for (let i = 0; i < s.length; i++) {
-      out += String.fromCharCode(s.charCodeAt(i) ^ ((salt + i * 97) & 0xff));
+      out += String.fromCharCode(s.charCodeAt(i) ^ ((this.k0 + i * 97) & 0xff));
     }
     return out;
   }
