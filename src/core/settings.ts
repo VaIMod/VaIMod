@@ -2,8 +2,8 @@
 // 加载模式：async（默认，Tab 切换先给反馈再异步挂载内容）/ sync（立即挂载）。
 export type LoadMode = 'async' | 'sync';
 
-/** 面板 Tab 标识：内置固定 5 个，插件页用 `plug:<id>` 形式的动态标识 */
-export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'system';
+/** 面板 Tab 标识：内置固定 6 个，插件页用 `plug:<id>` 形式的动态标识 */
+export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'firewall' | 'system';
 export type TabId = BuiltinTabId | `plug:${string}`;
 
 export const TAB_LABELS: Record<BuiltinTabId, string> = {
@@ -11,6 +11,7 @@ export const TAB_LABELS: Record<BuiltinTabId, string> = {
   ccw: '云数据',
   tools: '工具',
   feishu: '飞书',
+  firewall: '防火墙',
   system: '系统',
 };
 
@@ -20,7 +21,7 @@ export interface TabPref {
   enabled: boolean;
 }
 
-export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'tools', 'feishu', 'system'];
+export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'tools', 'feishu', 'firewall', 'system'];
 
 /** 判断是否内置 Tab */
 export function isBuiltinTab(id: string): id is BuiltinTabId {
@@ -59,6 +60,14 @@ export const PRESET_COLORS: { id: string; label: string; value: string }[] = [
  */
 export type FeishuInterceptMode = 'off' | 'manual' | 'allowAll' | 'blockAll';
 
+/**
+ * 网络防火墙模式：
+ * - off     完全不装钩子（零开销、零行为变化）
+ * - watch   只观察记录第三方出网请求，一律放行（默认：有审计价值且不改变任何行为）
+ * - enforce 命中用户黑名单（或开启的「外传拦截」）时拒绝该请求
+ */
+export type FirewallMode = 'off' | 'watch' | 'enforce';
+
 export interface Settings {
   loadMode: LoadMode;
   /** 快照还原时，缺失目标/变量自动新建补齐 */
@@ -73,12 +82,21 @@ export interface Settings {
   feishuOnTimeout: 'allow' | 'block';
   /** manual 模式下等待应答的毫秒数（0 = 不等待，直接用兜底动作） */
   feishuTimeoutMs: number;
+  /** 网络防火墙模式 */
+  firewall: FirewallMode;
+  /** enforce 模式下是否连「疑似把变量数据外传到第三方」的请求也拦（默认否，避免误伤统计/埋点） */
+  firewallBlockExfil: boolean;
 }
 
 const KEY = 'vaimod_settings_v1';
 
-/** 默认显示的内置标签页：只开 变量/云数据/系统（飞书和工具默认关闭，可在设置页手动开启） */
-const DEFAULT_ENABLED_TABS: ReadonlySet<BuiltinTabId> = new Set(['vars', 'ccw', 'system']);
+/** 默认显示的内置标签页：变量/云数据/系统/防火墙（飞书和工具默认关闭，可在设置页手动开启） */
+const DEFAULT_ENABLED_TABS: ReadonlySet<BuiltinTabId> = new Set([
+  'vars',
+  'ccw',
+  'firewall',
+  'system',
+]);
 
 export function defaultTabs(): TabPref[] {
   return ALL_TAB_IDS.map((id) => ({ id, enabled: DEFAULT_ENABLED_TABS.has(id) }));
@@ -93,6 +111,9 @@ export function defaultSettings(): Settings {
     feishuIntercept: 'off', // 默认不拦截：不改变任何既有行为
     feishuOnTimeout: 'allow',
     feishuTimeoutMs: 30000,
+    // 默认监视：只记录第三方出网请求、一律放行，不改变站点任何行为
+    firewall: 'watch',
+    firewallBlockExfil: false,
   };
 }
 
@@ -124,6 +145,12 @@ export function normalizeSettings(
       .map((t) => ({ id: t.id, enabled: t.enabled !== false }));
     if (list.length > 0) tabs = list;
   }
+  // 内置 Tab 补齐：tabs 数组只会记录「用户见过的内置 Tab」（UI 只能切显隐、不能删条目），
+  // 因此数组里完全缺席的内置 Tab = 本次版本新加的 → 追加到末尾并默认启用。
+  // 用户手动隐藏过的 Tab 仍在数组里（enabled=false），不受此逻辑影响，不会被强行打开。
+  for (const b of ALL_TAB_IDS) {
+    if (!tabs.some((t) => t.id === b)) tabs.push({ id: b, enabled: true });
+  }
   if (knownPluginTabs) {
     const known = new Set(knownPluginTabs);
     // 剔除已卸载插件留下的僵尸 Tab（保留内置）
@@ -143,6 +170,7 @@ export function normalizeSettings(
     tabs = kept;
   }
   const mode = parsed.feishuIntercept;
+  const fw = parsed.firewall;
   return {
     loadMode: parsed.loadMode === 'sync' ? 'sync' : 'async',
     applyCreateOnRestore: parsed.applyCreateOnRestore !== false,
@@ -158,6 +186,8 @@ export function normalizeSettings(
       typeof parsed.feishuTimeoutMs === 'number' && Number.isFinite(parsed.feishuTimeoutMs)
         ? Math.max(0, Math.min(300000, Math.floor(parsed.feishuTimeoutMs)))
         : d.feishuTimeoutMs,
+    firewall: fw === 'off' || fw === 'enforce' ? fw : 'watch',
+    firewallBlockExfil: parsed.firewallBlockExfil === true,
   };
 }
 

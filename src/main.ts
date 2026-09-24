@@ -13,11 +13,35 @@ import { installHoneypotGuard, honeypotReport } from './core/honeypot-guard';
 import { installEarlyCaptureWatch } from './core/capture-early';
 import { installFeishuGuard, feishuMode, feishuHits, feishuPendingCount, feishuRules } from './core/feishu-guard';
 import { installUiGuard, uiGuardReport } from './core/ui-guard';
+import {
+  installNetFirewall,
+  firewallStats,
+  firewallHits,
+  firewallRules,
+  firewallClearLog,
+  setFirewallMode,
+  setFirewallBlockExfil,
+  addFirewallRule,
+  removeFirewallRule,
+  clearFirewallRules,
+  exportFirewallRules,
+  importFirewallRules,
+  subscribeFirewall,
+} from './core/net-firewall';
+import {
+  getAliasConfig,
+  setAliasConfig,
+  exportAliasConfig,
+  clearAliasConfig,
+  setAliasEnabled,
+  aliasStats,
+  subscribeAliasConfig,
+} from './core/alias-config';
 import { migrateBrandKeys } from './core/brand-migrate';
 import VaIModPanel from './ui/VaIModPanel.svelte';
 import globalCss from './styles/global.css?inline';
 
-// 品牌更名数据迁移（ValMod 旧键 → VaIMod 新键）：必须在任何模块读存储之前
+// 品牌更名数据迁移（更名前的旧键 → VaIMod 新键）：必须在任何模块读存储之前
 migrateBrandKeys();
 
 // 引用障眼模块（不可达代码，与业务一同被混淆；仅阻止 tree-shaking，零运行开销）
@@ -36,6 +60,7 @@ installSecureGuardFront(); // ⓪ 反作弊扩展反制前置（最先：签名�
 installSigGuardFront(); // ⓪′ 数字签名扩展反制（实例净化 + 双注册咽喉 + 变量名保护）
 installStealth(); // ① stealth 防检测（DOM/遍历/MO/toString 全套）
 installXssGuard(); // ② XSS 速执行拦截（document.write / 字符串定时器）
+installNetFirewall(); // ②′ 网络防火墙（fetch/XHR/beacon/ws 出网观察与拦截，默认只观察）
 hookOfficialCloudApi(); // ③ 官方云 API 通道（fetch 观察，随时捕获 endpoint）
 installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住 fetch/XHR，默认 off 零影响）
 installHoneypotGuard(); // ④ 蜜罐陷阱防检测（假修改器 UI 诱饵 + window 假 vm 陷阱，攻击即轮换）
@@ -72,12 +97,95 @@ function installDebug(bridge: ScratchVM): void {
       // 调试专用：宿主在 light DOM 被 stealth 全部查询 API 过滤掉，只能从登记表直接取
       hosts: () => getProtectedHosts(),
       trueHitTest: (x: number, y: number) => trueElementsFromPoint(x, y),
+      /**
+       * 诊断：给变量读链路分段计时（毫秒）。
+       * 刻意不返回变量数据本身 —— 让它经 CDP 序列化回来会把测量对象本身的开销
+       * 算进结果里（几百个变量的对象图序列化比被测代码还慢）。
+       * 用途：把「切页停顿」拆成 核心读链 / 渲染 两半，决定优化哪一侧。
+       */
+      timeRead: () => {
+        const t0 = performance.now();
+        bridge.getVariables();
+        const t1 = performance.now();
+        bridge.forceRefresh();
+        const t2 = performance.now();
+        return {
+          getVariables: +(t1 - t0).toFixed(2),
+          forceRefresh: +(t2 - t1).toFixed(2),
+        };
+      },
+      /**
+       * 诊断：把「系统页自动初始快照」的取值成本拆成两段并**对拍两条读路径**。
+       *
+       * 背景：快照原本逐条 bridge.readVariableValue，在 900 变量下就能造出 ~38ms 长任务，
+       * 但 CPU profiler 反复抓不到那段工作（长任务观察器在无头环境时有时无）。
+       * 于是不复用 profiler，直接把两段单独计时：
+       *   perVarRead = 旧路径（逐条回读，固定开销 × 变量数）
+       *   tableRead  = 新路径（整表一次回读）
+       * 并且逐条比对两次取到的值 —— 若不一致说明「优化」动了语义，探针必须拦下来。
+       * 只读：不写 marker、不落盘。
+       */
+      snapshotCost: () => {
+        const all = bridge.getVariables().filter((v) => !v.isCloud);
+        const t0 = performance.now();
+        const raws = all.map((v) => bridge.readVariableValue(v.id, v.targetId));
+        const t1 = performance.now();
+        const live = bridge.readVmLiveValues();
+        const t2 = performance.now();
+        let hit = 0;
+        let mismatch = 0;
+        for (let i = 0; i < all.length; i++) {
+          const v = all[i];
+          const b = live.get(v.targetId + '\u0000' + v.id);
+          if (b !== undefined) hit++;
+          const a = raws[i];
+          if (a === null) {
+            if (b !== undefined) mismatch++;
+          } else if (b === undefined || JSON.stringify(a) !== JSON.stringify(b)) {
+            mismatch++;
+          }
+        }
+        const t3 = performance.now();
+        return {
+          n: all.length,
+          perVarRead: +(t1 - t0).toFixed(2),
+          tableRead: +(t2 - t1).toFixed(2),
+          compare: +(t3 - t2).toFixed(2),
+          hit,
+          mismatch,
+        };
+      },
       feishu: () => ({
         mode: feishuMode(),
         hits: feishuHits().length,
         pending: feishuPendingCount(),
         rules: feishuRules(),
       }),
+      // 本地重命名配置（仅显示层）：探针据此断言「只改显示、不动 vm」
+      alias: {
+        get: () => getAliasConfig(),
+        stats: () => aliasStats(),
+        importConfig: (raw: unknown) => setAliasConfig(raw),
+        exportConfig: () => exportAliasConfig(),
+        clear: () => clearAliasConfig(),
+        setEnabled: (on: boolean) => setAliasEnabled(on),
+        subscribe: (cb: () => void) => subscribeAliasConfig(cb),
+      },
+      // 网络防火墙（出网审计 + 域名规则）
+      firewall: {
+        stats: () => firewallStats(),
+        hits: () => firewallHits(),
+        rules: () => firewallRules(),
+        clearLog: () => firewallClearLog(),
+        setMode: (m: 'off' | 'watch' | 'enforce') => setFirewallMode(m),
+        setBlockExfil: (on: boolean) => setFirewallBlockExfil(on),
+        addRule: (host: string, kind: 'block' | 'allow') => addFirewallRule(host, kind),
+        removeRule: (host: string, kind: 'block' | 'allow') => removeFirewallRule(host, kind),
+        clearRules: () => clearFirewallRules(),
+        exportRules: () => exportFirewallRules(),
+        importRules: (raw: unknown) => importFirewallRules(raw),
+        subscribe: (cb: () => void) => subscribeFirewall(cb),
+      },
     };
     Object.defineProperty(window, '__vaimod_debug', {
       value: handle,

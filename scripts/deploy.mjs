@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '');
+// ⚠️ 这是**外部后端服务的域名**（不是品牌文案）：改了它就会连不上接口。
+//    服务端不改域名，这里就不能改；要改名得先在服务端换域名再同步这里。
 const API_BASE = 'https://valmod-api.seia0070.dpdns.org';
 const VERSION_SEED = 0x4b5a0f3c;
 const FETCH_TIMEOUT = 15000;

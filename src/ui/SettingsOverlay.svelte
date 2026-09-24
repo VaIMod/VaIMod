@@ -13,6 +13,13 @@
   } from '../core/settings';
   import { pluginRegistry } from '../core/plugin-registry';
   import { clearDisplayNames } from '../core/display-names';
+  import {
+    aliasStats,
+    exportAliasConfig,
+    setAliasConfig,
+    setAliasEnabled,
+    clearAliasConfig,
+  } from '../core/alias-config';
   import PluginManager from './PluginManager.svelte';
   import { fly } from 'svelte/transition';
 
@@ -20,11 +27,71 @@
     settings,
     onChange,
     onClose,
+    aliasHits = 0,
   }: {
     settings: Settings;
     onChange: (next: Settings) => void;
     onClose: () => void;
+    /** 当前被规则表改名的变量条数（由面板统计，设置层只展示） */
+    aliasHits?: number;
   } = $props();
+
+  // ===== 本地重命名配置（仅显示层，不新建/不改名作品里的变量） =====
+  let aliasTick = $state(0);
+  let aliasFileEl: HTMLInputElement | undefined = $state();
+  let aliasMsg = $state('');
+  let aliasMsgErr = $state(false);
+  const aliasInfo = $derived.by(() => {
+    void aliasTick;
+    return aliasStats();
+  });
+
+  function aliasSay(text: string, err = false) {
+    aliasMsg = text;
+    aliasMsgErr = err;
+  }
+
+  async function onAliasFile(ev: Event) {
+    const input = ev.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const cfg = setAliasConfig(text);
+      aliasTick = aliasTick + 1;
+      aliasSay(`已导入 ${cfg.rules.length} 条规则${cfg.name ? `（${cfg.name}）` : ''}`, false);
+    } catch (e) {
+      aliasSay(e instanceof Error ? e.message : '导入失败：文件不是合法 JSON', true);
+    }
+  }
+
+  function onAliasExport() {
+    if (!aliasInfo.rules) {
+      aliasSay('当前没有可导出的规则', true);
+      return;
+    }
+    const blob = new Blob([exportAliasConfig()], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vaimod-alias-${Date.now()}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    aliasSay('已导出为 JSON', false);
+  }
+
+  function onAliasClear() {
+    clearAliasConfig();
+    aliasTick = aliasTick + 1;
+    aliasSay('已清空本地重命名规则', false);
+  }
+
+  function onAliasToggle(on: boolean) {
+    setAliasEnabled(on);
+    aliasTick = aliasTick + 1;
+    aliasSay(on ? '已启用本地重命名' : '已停用本地重命名', false);
+  }
 
   function updateSetting(patch: Partial<Settings>) {
     const next = { ...settings, ...patch };
@@ -438,7 +505,7 @@
   function clearLocalData() {
     if (
       !confirm(
-        '确定清空全部本地记忆？将删除：飞书机器人记录、快照、回收站、变量显示别名、分组展开记忆。\n（不影响作品本体与云端数据）',
+        '确定清空全部本地记忆？将删除：飞书机器人记录、快照、回收站、变量显示别名、本地重命名规则、分组展开记忆。\n（不影响作品本体与云端数据）',
       )
     )
       return;
@@ -449,6 +516,9 @@
       // 走模块 API 而不是直接删 key：display-names 有模块级缓存，
       // 只删 localStorage 会让旧别名留在内存里，下一次改名又把它整份写回（清不掉）。
       clearDisplayNames();
+      // 同理：本地重命名配置也有模块缓存，必须走 API
+      clearAliasConfig();
+      aliasTick = aliasTick + 1;
       localStorage.removeItem(['vai', 'mod', '_grp_exp'].join(''));
       clearedPulse = true;
       setTimeout(() => (clearedPulse = false), 800);
@@ -579,6 +649,65 @@
     {/if}
     <PluginManager onChanged={() => (plugVer = plugVer + 1)} />
 
+    <div class="svp-setting-group">本地重命名</div>
+    <div class="svp-setting-item">
+      <div class="svp-setting-text">
+        <div class="svp-setting-name">启用本地重命名</div>
+        <div class="svp-setting-desc">
+          按配置里的「真实变量名 → 显示名」改面板显示。只改显示：不新建变量、不改作品里的变量名，
+          对项目与云端零影响。
+        </div>
+      </div>
+      <button
+        class="svp-toggle"
+        class:svp-toggle-on={aliasInfo.enabled}
+        onclick={() => onAliasToggle(!aliasInfo.enabled)}
+        role="switch"
+        aria-checked={aliasInfo.enabled}
+        aria-label="启用本地重命名"
+      >
+        <span class="svp-toggle-dot"></span>
+      </button>
+    </div>
+    <div class="svp-setting-item">
+      <div class="svp-setting-text">
+        <div class="svp-setting-name">
+          规则 {aliasInfo.rules} 条 · 已生效 {aliasHits} 个变量
+        </div>
+        <div class="svp-setting-desc">
+          {aliasInfo.name || '未命名配置'}｜支持 rules / variables（cave-vars.json 可直接导入）/ displayNames / 扁平表四种格式
+        </div>
+      </div>
+    </div>
+    <div class="svp-alias-bar">
+      <button class="svp-btn svp-btn-sm" onclick={() => aliasFileEl?.click()}>导入 JSON</button>
+      <button
+        class="svp-btn svp-btn-ghost svp-btn-sm"
+        onclick={onAliasExport}
+        disabled={aliasInfo.rules === 0}
+      >
+        导出 JSON
+      </button>
+      <button
+        class="svp-btn svp-btn-red-ghost svp-btn-sm"
+        onclick={onAliasClear}
+        disabled={aliasInfo.rules === 0}
+      >
+        清空
+      </button>
+      <input
+        bind:this={aliasFileEl}
+        class="svp-file-input svp-alias-file"
+        type="file"
+        accept=".json,application/json"
+        tabindex="-1"
+        onchange={onAliasFile}
+      />
+    </div>
+    {#if aliasMsg}
+      <div class="svp-alias-msg" class:svp-alias-msg-err={aliasMsgErr}>{aliasMsg}</div>
+    {/if}
+
     <div class="svp-setting-group">还原系统</div>
     <div class="svp-setting-item">
       <div class="svp-setting-text">
@@ -599,7 +728,7 @@
     <div class="svp-setting-item">
       <div class="svp-setting-text">
         <div class="svp-setting-name">清空本地记忆</div>
-        <div class="svp-setting-desc">删除机器人记录、快照、回收站、显示别名、分组记忆</div>
+        <div class="svp-setting-desc">删除机器人记录、快照、回收站、显示别名、重命名规则、分组记忆</div>
       </div>
       <button
         class="svp-icon-act svp-icon-act-danger"

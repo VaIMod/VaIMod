@@ -37,5 +37,6 @@ Thumbs.db
 .svelte-kit
 .vite
 
-# Local scratch backups
+# Local scratch backups（历史备份目录，名字里的旧品牌是既成事实，不改）
+.vaimod_old_backup/
 .valmod_old_backup/

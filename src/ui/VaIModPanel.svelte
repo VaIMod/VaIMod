@@ -13,6 +13,7 @@
   import CcwDataPanel from './CcwDataPanel.svelte';
   import ToolsPanel from './ToolsPanel.svelte';
   import FeishuPanel from './FeishuPanel.svelte';
+  import FirewallPanel from './FirewallPanel.svelte';
   import SystemPanel from './SystemPanel.svelte';
   import SettingsOverlay from './SettingsOverlay.svelte';
   import PluginTab from './PluginTab.svelte';
@@ -32,6 +33,16 @@
     clearDisplayNames,
     hasDisplayNames,
   } from '../core/display-names';
+  import {
+    getAliasConfig,
+    resolveAlias,
+    subscribeAliasConfig,
+    aliasStats,
+    exportAliasConfig,
+    setAliasConfig,
+    setAliasEnabled,
+    clearAliasConfig,
+  } from '../core/alias-config';
   import { secureAction } from '../core/veil-chain';
   import { loadSettingsFor, saveSettings, type Settings, type TabId } from '../core/settings';
   import refreshIcon from '../assets/refresh.svg?raw';
@@ -239,6 +250,8 @@
   };
   const PANEL_STORAGE_KEY = '_p';
   // 历史键（更名前真实写盘过），保持原样才能读到旧布局状态
+  // 更名前版面板用过的存储键：**兼容字面量，不要跟着改名**
+  // （改了就读不到老用户上次的面板位置，表现为「升级后面板跳回默认位置」）
   const LEGACY_PANEL_STORAGE_KEY = 'valmod.panel.state';
   let savedState = $state<SavedPanelState | null>(null);
 
@@ -586,7 +599,8 @@
       if (vq) {
         if (!valueText(v).toLowerCase().includes(vq)) continue;
       } else if (nq) {
-        const shown = (displayNames[nameKey(v)] ?? v.name).toLowerCase();
+        const alias = aliasNameOf(v);
+        const shown = (alias || v.name).toLowerCase();
         const hit = shown.includes(nq) || v.name.toLowerCase().includes(nq) || (v.targetName || '').toLowerCase().includes(nq);
         if (!hit) continue;
       }
@@ -606,7 +620,39 @@
   // 是否有变量别名（响应式，控制「一键恢复」按钮显隐）
   const hasVarAliases = $derived(
     Object.values(displayNames).some((n) => typeof n === 'string' && n.length > 0),
-  );;
+  );
+
+  // ===== 本地重命名规则表（按真实变量名匹配，见 core/alias-config.ts） =====
+  // 与手动别名并存：手动（按 id）优先，其次规则表（按名），最后原名。
+  let aliasVer = $state(0);
+  let aliasInfo = $state(aliasStats());
+  $effect(() => {
+    const off = subscribeAliasConfig(() => {
+      aliasVer = aliasVer + 1;
+      aliasInfo = aliasStats();
+    });
+    return off;
+  });
+  /**
+   * 取该变量当前应显示的别名（无别名返回 ''）。
+   * 读 `aliasVer` 建立响应式依赖：配置导入/清空后所有引用点自动重算。
+   */
+  function aliasNameOf(v: ScratchVaIMod): string {
+    void aliasVer;
+    const manual = displayNames[nameKey(v)];
+    if (manual) return manual;
+    return resolveAlias(v.name, v.targetName || '') ?? '';
+  }
+  // 命中规则表的变量数（设置页展示「本地重命名已生效 N 条」）
+  const aliasHitCount = $derived.by(() => {
+    void aliasVer;
+    let n = 0;
+    for (const v of variables) {
+      if (!v || typeof v.name !== 'string') continue;
+      if (!displayNames[nameKey(v)] && resolveAlias(v.name, v.targetName || '')) n++;
+    }
+    return n;
+  });
 
   // ===== 变量页增强：新建变量 / 删除(回收站) / 监视器显隐 =====
   const targetOptions = $derived.by(() => {
@@ -671,7 +717,7 @@
       () => {
         const raw = bridge.readVariableValue(v.id, v.targetId);
         const value = raw === null ? '' : raw;
-        const alias = displayNames[nameKey(v)];
+        const alias = aliasNameOf(v) || undefined;
         // 解锁再删：锁定器不会再写回
         if (bridge.isVariableLocked(v.id)) bridge.unlockVariable(v.id);
         const ok = bridge.deleteVariableEntry(v.id, v.targetId);
@@ -690,7 +736,8 @@
           isCloud: v.isCloud,
           displayName: alias && alias !== v.name ? alias : undefined,
         });
-        if (alias) {
+        // 只清「手动别名」；规则表命中的显示名属于配置（删变量不该动配置）
+        if (displayNames[nameKey(v)]) {
           delete displayNames[nameKey(v)];
           removeDisplayName(nameKey(v));
         }
@@ -997,9 +1044,19 @@
     );
     const curW = panel.offsetWidth;
     if (natural <= curW + 1) return; // 已足够宽：不动（不缩）
-    // 右缘收口：面板左锚定时防止加宽溢出视口；docked（右锚定）向左伸展无溢出
     const rect = panel.getBoundingClientRect();
-    const room = Math.max(MIN_PANEL_W, window.innerWidth - rect.left - 8);
+    // 可用伸展空间要按**锚定侧**算，否则右停靠面板（默认 right:18px）永远撑不宽：
+    //   · 右停靠 → 宽度增加向左伸展，可用空间 = 面板右缘到视口左边（rect.right - 8）
+    //   · 左停靠 → 宽度增加向右伸展，可用空间 = 面板左缘到视口右边（innerWidth - rect.left - 8）
+    // ⛔ 曾经的写法只算「向右的空间」，而右停靠面板的 rect.left 就在自己左边 →
+    //    room ≈ 当前宽度 → want 恒等于当前宽度 → 判「已够宽」直接 return，
+    //    表现为「装了一堆插件后标签栏被挤爆，面板死也不撑宽」。
+    // 判定锚定侧：内联 left 为空/auto 时由 CSS 的 right 定位（右停靠）。
+    const anchoredRight = !panel.style.left || panel.style.left === 'auto';
+    const room = Math.max(
+      MIN_PANEL_W,
+      anchoredRight ? rect.right - 8 : window.innerWidth - rect.left - 8,
+    );
     const want = Math.min(Math.max(natural, MIN_PANEL_W), room);
     // 仅当「当前宽度确实是我上一次自动适配写下的值」才允许回缩：
     // 用户手动拉过的宽度（userSized / 落盘恢复 / 拖拽手柄）一律只增不减。
@@ -1139,7 +1196,13 @@
       `restore:${variable.id}`,
       () => {
         const key = nameKey(variable);
-        if (!displayNames[key]) return;
+        if (!displayNames[key]) {
+          // 显示名来自「本地重命名」规则表时删不掉：那是配置条目，不是这个变量的别名
+          if (resolveAlias(variable.name, variable.targetName || '')) {
+            showToast('该名称来自「本地重命名」配置，请到系统设置里调整', 'err');
+          }
+          return;
+        }
         delete displayNames[key];
         removeDisplayName(key);
         showToast('已恢复原始名', 'ok');
@@ -1408,9 +1471,13 @@
       return;
     }
     if (bridge.getStatus() !== BridgeStatus.Connected) return;
-    // forceRefresh 清掉桥接层变更摘要并立即重发列表（真读 vm，非缓存）
-    bridge.forceRefresh();
-    variables = decodeVariables(bridge.getVariables());
+    // 一次调用拿到「刚重建的列表」并直接复用。
+    // 原来这里是 forceRefresh() + getVariables() 两连击：前者内部已重建并 emit 过整份列表，
+    // 后者又建一遍（6000 变量实测 20ms + 18ms）。切页是本面板最重的同步路径，合并成一次。
+    // 返回 null 语义 = 本轮没有可下发的新列表（vm 未就绪）→ 保留现有列表，
+    // 绝不能用空数组覆盖（那比显示上一次数据更糟）。
+    const fresh = bridge.forceRefreshList();
+    if (fresh) variables = decodeVariables(fresh);
     if (activeTab === 'tools') toolsPanel?.refresh();
     else if (activeTab === 'feishu') feishuPanel?.refresh();
     else if (activeTab === 'system') systemPanel?.refresh();
@@ -1484,8 +1551,9 @@
       // 此刻 bind:this 拿到的仍是即将销毁的旧实例，调它没有意义（新实例挂载时会自己取数）。
       // 未连接时跳过 —— 否则 getVariables() 的空数组会把当前列表清空。
       if (bridge.getStatus() === BridgeStatus.Connected) {
-        bridge.forceRefresh();
-        variables = decodeVariables(bridge.getVariables());
+        // 同上：一次调用拿回刚重建的列表，别再 getVariables() 重建第二遍
+        const fresh = bridge.forceRefreshList();
+        if (fresh) variables = decodeVariables(fresh);
       }
     };
     if (settings.loadMode === 'sync') {
@@ -1784,6 +1852,7 @@
       if (wildApplied) parts.push(`通配套用 ${wildApplied}`);
       if (unmatched) parts.push(`未匹配 ${unmatched}`);
       if (local.displayNames > 0) parts.push(`别名 ${local.displayNames}`);
+      if (local.aliasRules > 0) parts.push(`重命名规则 ${local.aliasRules}`);
       if (cloudWritten) parts.push(`云数据 ${cloudWritten}`);
       if (local.robots) parts.push(`机器人 ${local.robots}`);
       if (local.markers) parts.push(`还原点 ${local.markers}`);
@@ -2028,7 +2097,7 @@
                           {#each g.items as v (`${v.targetId}:${v.id}`)}
                             <VaIModItem
                               variable={v}
-                              displayName={displayNames[nameKey(v)]}
+                              displayName={aliasNameOf(v) || undefined}
                               onupdate={updateVaIMod}
                               ontoggleLock={toggleLock}
                               onrename={renameVaIMod}
@@ -2061,6 +2130,10 @@
               {#if activeTab === 'feishu'}
                 <FeishuPanel variables={variables} bind:this={feishuPanel} />
               {/if}
+              {#if activeTab === 'firewall'}
+                <!-- 自身订阅出网日志，挂载即读最新状态 → 不需要 refresh 钩子 -->
+                <FirewallPanel />
+              {/if}
               {#if activeTab === 'system'}
                 <SystemPanel bind:this={systemPanel} bridge={bridge} variables={variables} active={!minimized} {settings} onOpenSettings={() => (showSettings = true)} showSettingsEntry={!headerSettingsVisible} />
               {/if}
@@ -2089,6 +2162,7 @@
           {settings}
           onChange={onSettingsChange}
           onClose={() => (showSettings = false)}
+          aliasHits={aliasHitCount}
         />
       {/if}
     </section>

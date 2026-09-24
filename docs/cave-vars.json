@@ -27,7 +27,7 @@
     "evidence": "实体主表长度实测 160；buff 三表 1120 = 160 × 7，逆向自 buff set 的循环边界与索引公式 (e-1)*7+k。"
   },
   "scopes": {
-    "Stage": "舞台全局变量，对所有克隆体可见。写入时 targetName 传 \"Stage\"。",
+    "Stage": "舞台全局变量，对所有克隆体可见。写入时 targetName 传 \"Stage\"。注意：面板里拿到的 targetName 是 Scratch 的本地化名（中文环境是「舞台」），本地重命名配置的 scope 匹配已做归一化（Stage / 舞台 / ステージ 等视为同一个），所以配置里写 \"Stage\" 即可。",
     "player": "角色局部变量，每个克隆体各持一份，写完后由游戏自己的 upload 逻辑同步给其他玩家。"
   },
   "schema": {

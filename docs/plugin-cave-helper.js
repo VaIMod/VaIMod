@@ -941,10 +941,40 @@ VaIMod.plugin({
                 },
               }),
               ui.button({
-                text: '顺带把混淆名写进备注？',
+                text: '变量名本地改中文',
+                onclick: () => {
+                  // 只改面板里的**显示名**：不新建变量、不改作品里的变量名。
+                  // 走 ctx.alias（只有配置读写，没有任何写变量通道）。
+                  try {
+                    const cfg = ctx.alias.importConfig({
+                      version: 1,
+                      name: 'cave.io 中文变量名',
+                      source: 'plugin-cave-helper',
+                      enabled: true,
+                      rules: VARS.map((d) => ({
+                        match: d.n,
+                        label: d.zh,
+                        ...(d.scope ? { scope: d.scope } : {}),
+                        note: d.ev,
+                      })),
+                    });
+                    const hit = ctx.alias.stats().rules;
+                    ctx.toast(
+                      `已导入 ${hit} 条重命名规则，变量页现在显示中文名（作品里真实名与变量个数都没变）`,
+                    );
+                    void cfg;
+                  } catch (e) {
+                    ctx.toast(`导入失败：${e && e.message ? e.message : e}`, 'err');
+                  }
+                },
+              }),
+              ui.button({
+                text: '恢复原名',
                 kind: 'ghost',
-                onclick: () =>
-                  ctx.toast('用变量页的「重命名」把混淆名改成上面的还原名即可', 'info'),
+                onclick: () => {
+                  ctx.alias.clear();
+                  ctx.toast('已清空本地重命名规则，变量页恢复混淆名');
+                },
               }),
             ),
           ],

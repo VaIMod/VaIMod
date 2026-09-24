@@ -811,17 +811,29 @@ export class ScratchVM {
   }
 
   /**
+   * 强制刷新并**返回刚重建的变量列表**（未连接 / vm 不可读时返回 null）。
+   *
+   * 之所以要返回列表：面板切页时原本是「forceRefresh() + getVariables()」两连击，
+   * 而 forceRefresh 内部已经重建过一遍列表并 emit 了 —— 第二次纯属重复构建。
+   * 6000 变量实测 getVariables≈18ms、forceRefresh≈20ms，合并后切页只跑一遍。
+   * 返回 null 的语义：本轮没有可下发的新列表（未连接 / 无 vm targets），
+   * 调用方应保留现有列表，**不要**用空数组覆盖（那比显示旧数据更糟）。
+   */
+  forceRefreshList(): ScratchVariable[] | null {
+    if (!this.connected) return null;
+    this.snapshot = ''; // 清掉变更摘要 → 必然重建列表并下发
+    this.lastEmitAttempt = 0; // 绕过 EMIT_MIN_INTERVAL 节流
+    return this.emitVariablesList();
+  }
+
+  /**
    * 强制真实刷新：无视「摘要未变化」缓存，立即重扫 vm 状态并重发变量列表。
    * 面板刷新按钮 / 切回页面时调用——保证用户看到的一定是最新值，
    * 而不是上次轮询留下的快照（这是「刷新按钮只转圈不真刷新」的根因）。
    * 返回本次是否真的读到了 vm（未连接时返回 false，由调用方决定提示）。
    */
   forceRefresh(): boolean {
-    if (!this.connected) return false;
-    this.snapshot = ''; // 清掉变更摘要 → emitVariables 必然重建列表并下发
-    this.lastEmitAttempt = 0; // 绕过 EMIT_MIN_INTERVAL 节流
-    this.emitVariables();
-    return true;
+    return this.forceRefreshList() !== null;
   }
 
   /** 恢复变量轮询（面板展开时调用） */
@@ -1050,8 +1062,18 @@ export class ScratchVM {
   }
 
   private emitVariables = (): void => {
+    this.emitVariablesList();
+  };
+
+  /**
+   * emitVariables 的「带返回值」版本：真的重建了列表就把它交出去，
+   * 否则返回 null（节流命中 / 摘要未变 / 无 vm targets）。
+   * 语义与 emitVariables 完全一致，只是多带一个返回值供面板复用，
+   * 避免调用方再走一次 getVariables() 重建同样的列表。
+   */
+  private emitVariablesList = (): ScratchVariable[] | null => {
     const now = Date.now();
-    if (now - this.lastEmitAttempt < ScratchVM.EMIT_MIN_INTERVAL) return;
+    if (now - this.lastEmitAttempt < ScratchVM.EMIT_MIN_INTERVAL) return null;
     this.lastEmitAttempt = now;
     // vm 实例可能被站点重建（重开作品/切页）：轮询 tick 顺手补挂捕获包装。
     // 已包装时仅一次 WeakSet 命中即返回，零成本。
@@ -1059,10 +1081,11 @@ export class ScratchVM {
     // 性能：先直接在 vm 上轻量扫描拼摘要（零对象构造、零 JSON 序列化），
     // 绝大多数轮询 tick 无变化直接返回；只有真正变化才构造变量列表并 emit。
     const key = this.scanVariablesKey();
-    if (key === this.snapshot) return;
+    if (key === this.snapshot) return null;
     this.snapshot = key;
     const list = this.getVariables();
     this.emit({ type: 'variables', payload: list });
+    return list;
   };
 
   // 变量状态轻量摘要：直接在 vm.targets 上拼 id+值（含锁定覆盖值），
@@ -1365,6 +1388,33 @@ export class ScratchVM {
     const snap = secureVm.findVariable(variableId, targetId);
     if (!snap) return null;
     return Array.isArray(snap.value) ? (snap.value.slice() as VariableValue[]) : snap.value;
+  }
+
+  /**
+   * 批量回读「vm 真实值」（**忽略锁定覆盖值**）——整表快照采集专用。
+   *
+   * 语义与逐条 readVariableValue 完全一致：同样经 auditInbound/normalizeValue 清洗，
+   * 同样对「不存在于 vm 的变量」（安全扩展变量等）**不出现**在结果里。
+   * 区别只在遍历次数：逐条调用每条都要过 ztna 校验 + getSecureVm + 扫 targets，
+   * 5704 变量实测 65.6ms，占快照总成本 74%；这里整表只走一遍 SecureVm 快照。
+   *
+   * 为什么不能拿面板列表里的 value（那个是现成的）：
+   * getVariables() 会把**锁定变量的覆盖值**写进 value（展示语义），
+   * 而快照要存的是 vm 当前真值 —— 还原时锁定会自己再覆盖一次。
+   *
+   * 键 = `` `${targetId}\u0000${variableId}` ``（\u0000 不在 Scratch id 字符集内，不会碰撞）。
+   * 值取自 SecureVm.snapshotVariables()：数组项已由 auditInbound 复制、标量不可变，
+   * 因此调用方**不需要**再深拷贝一层。
+   */
+  readVmLiveValues(): Map<string, ScratchValue> {
+    const out = new Map<string, ScratchValue>();
+    if (!ztna.verify('read')) return out;
+    const secureVm = this.channel.getSecureVm();
+    if (!secureVm) return out;
+    for (const s of secureVm.snapshotVariables()) {
+      out.set(s.targetId + '\u0000' + s.id, s.value);
+    }
+    return out;
   }
 
   // 页面隐藏（切后台/最小化）时暂停轮询，回到前台自动恢复：后台零轮询开销

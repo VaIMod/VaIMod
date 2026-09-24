@@ -23,7 +23,7 @@
 // });
 // ```
 //
-// 解析策略：用 `new Function('VaIMod', 'ValMod', src)` 把整段源码执行一次（第一个参数是
+// 解析策略：用 `new Function('VaIMod', '<旧全局名>', src)` 把整段源码执行一次（第一个参数是
 // 新全局名，第二个是更名前的旧全局名，二者指向同一收集器 —— 更名前写的插件文件不改也能装），
 // 由 `VaIMod.plugin(def)` 收集定义（比正则抠字段稳得多：模板字符串 / `${}` / 注释
 // 等边界情形都不会解析错）。代价是要如实承认：执行作用域是全局作用域，插件文件
@@ -292,6 +292,55 @@ export interface PluginContext {
   toast(text: string, kind?: 'ok' | 'err'): void;
   /** 作品能力面：sb3/sprite3 导出、角色打包、loadProject 捕获（bridge 背书的窄面） */
   project: PluginProjectApi;
+  /**
+   * 本地重命名配置（**仅显示层**，见 core/alias-config.ts）。
+   * 注意语义：导入规则只改面板里显示的名字，**绝不新建变量、绝不改作品里的变量名**。
+   * 因此这里没有「写变量」能力 —— 只有配置本身的读写。
+   */
+  alias: {
+    /** 当前配置副本 */
+    get(): unknown;
+    /** 规则条数 / 是否启用 */
+    stats(): { rules: number; enabled: boolean; name: string };
+    /** 导入配置（兼容 rules / variables / displayNames / 扁平表；非法时抛错） */
+    importConfig(raw: unknown): unknown;
+    /** 导出为可读 JSON 字符串 */
+    exportConfig(): string;
+    /** 清空规则 */
+    clear(): void;
+    /** 启用/停用 */
+    setEnabled(on: boolean): void;
+    /** 订阅配置变化（返回取消订阅函数） */
+    subscribe(cb: () => void): () => void;
+  };
+  /**
+   * 网络防火墙（出网审计 + 域名规则，见 core/net-firewall.ts）。
+   * 默认「只观察不拦截」；插件可据此做「这个作品在偷偷外传」之类的告警。
+   * 注意：这里只暴露规则与观察面，没有「直接放行/拦截某条请求」的开关 ——
+   * 拦截与否统一由用户的模式 + 规则决定，插件不能绕过用户意志。
+   */
+  firewall: {
+    /** 当前模式（off / watch / enforce） */
+    mode(): 'off' | 'watch' | 'enforce';
+    /** 计数与规则条数 */
+    stats(): {
+      mode: 'off' | 'watch' | 'enforce';
+      hosts: number;
+      hits: number;
+      blocked: number;
+      blockRules: number;
+      allowRules: number;
+    };
+    /** 命中日志（按最近活跃排序） */
+    hits(): unknown[];
+    /** 当前域名规则 */
+    rules(): { block: string[]; allow: string[] };
+    /** 加规则（kind = 'block' | 'allow'）；域名非法返回 false */
+    addRule(host: string, kind: 'block' | 'allow'): boolean;
+    removeRule(host: string, kind: 'block' | 'allow'): void;
+    /** 订阅日志/规则变化（返回取消订阅函数） */
+    subscribe(cb: () => void): () => void;
+  };
   /** 补丁专属能力（仅 type:'patch' 存在；扩展为 undefined） */
   patch?: PatchApi;
   /** 插件标识（日志用） */
@@ -499,7 +548,8 @@ export function parsePluginSource(src: string): PluginDef {
   };
   try {
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    // 双全局：新插件用 VaIMod.plugin(...)；更名前写的 ValMod.plugin(...) 依旧可安装
+    // 双全局：新插件用 VaIMod.plugin(...)；更名前写的 <旧全局名>.plugin(...) 依旧可安装。
+    // 注意：第二个字面量是**兼容入口**，必须原样保留（改了老插件文件就装不上了）。
     const factory = new Function('VaIMod', 'ValMod', `"use strict";\n${src}\n`);
     factory.call(undefined, registry, registry);
   } catch (err) {

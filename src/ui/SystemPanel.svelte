@@ -24,6 +24,8 @@
 
   type BridgeLike = {
     readVariableValue: (id: string, targetId: string) => ScratchValue | null;
+    /** 整表回读 vm 真实值（忽略锁定覆盖值）；键 = `targetId\u0000variableId`。快照采集专用 */
+    readVmLiveValues: () => Map<string, ScratchValue>;
     setVariable: (id: string, value: ScratchValue, targetId: string) => boolean;
     createRuntimeVariable: (
       name: string,
@@ -84,8 +86,41 @@
 
   // ---------- 快照标记 ----------
   let autoDone = $state(false);
+  /**
+   * 初始快照是否已「排期」。effect 会随 variables 更新反复重跑（轮询每 2s 一次、
+   * 聊天室类作品更频繁），没有这个守卫就会重复排期；而且它是普通 let 不是 $state，
+   * 在 effect 里同步写不会触发 effect_update_depth 自激。
+   */
+  let autoScheduled = false;
   let newMarkName = $state('');
   let importText = $state('');
+
+  /**
+   * 空闲调度（rIC + setTimeout 双保险，rIC 在无头/后台标签可能长期不触发）。
+   * 用途见下方「初始快照」——那是一次百毫秒级同步重活，必须晚于切页首帧，
+   * 不能跟用户交互抢帧。
+   */
+  function scheduleIdle(fn: () => void, timeoutMs = 1200, fallbackMs = 300): void {
+    let done = false;
+    const run = () => {
+      if (done) return;
+      done = true;
+      fn();
+    };
+    try {
+      const g = globalThis as {
+        requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      };
+      if (typeof g.requestIdleCallback === 'function') {
+        g.requestIdleCallback(run, { timeout: timeoutMs });
+        setTimeout(run, fallbackMs);
+        return;
+      }
+    } catch {
+      /* 走兜底 */
+    }
+    setTimeout(run, 30);
+  }
 
   function fmtTime(t: number): string {
     const diff = Date.now() - t;
@@ -95,14 +130,27 @@
     return `${d.getMonth() + 1}月${d.getDate()}日 ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   }
 
-  /** 采集当前状态为快照数据（不含 isCloud 的 vm 云变量：避免还原时联动云端） */
+  /**
+   * 采集当前状态为快照数据（不含 isCloud 的 vm 云变量：避免还原时联动云端）。
+   *
+   * 性能（本函数是全项目单次最重的同步路径之一）：
+   * 值改为**整表一次回读**，不再逐条 bridge.readVariableValue —— 逐条读每次都要付
+   * ztna 校验 + getSecureVm + 扫 targets 的固定开销，乘以变量数后在 5704 变量时
+   * 实测 65.6ms，占快照总成本 74%；整表回读只走一遍 SecureVm 快照。
+   * 同时这里**去掉了 cloneJson**：值来自入站清洗（auditInbound 对数组已复制、
+   * 标量不可变），本就是与 vm 脱钩的纯数据，再深拷贝等于白付一次 JSON 往返
+   * （实测 19.1ms/5704 变量）。云数据那两处仍保留 cloneJson —— toJSON() 可能
+   * 吐出内部引用，必须真拷一份。
+   */
   function captureSnapshot(): Omit<MarkerEntry, 'id' | 'at' | 'name' | 'lists'> {
     const vars: Record<string, Record<string, { k: 'variable' | 'list'; value: ScratchValue }>> = {};
+    const live = bridge.readVmLiveValues();
     for (const v of variables) {
       if (v.isCloud) continue;
-      const raw = bridge.readVariableValue(v.id, v.targetId);
-      if (raw === null) continue;
-      (vars[v.targetId] ??= {})[v.name] = { k: v.kind, value: cloneJson(raw) };
+      // undefined = 该变量不在 vm 里（安全扩展变量等）→ 与逐条读返回 null 同义
+      const raw = live.get(v.targetId + '\u0000' + v.id);
+      if (raw === undefined) continue;
+      (vars[v.targetId] ??= {})[v.name] = { k: v.kind, value: raw };
     }
     const cloud = {
       p: cloneJson(ccwDataStore.project.toJSON()) as Record<string, unknown>,
@@ -246,16 +294,23 @@
     return markerList();
   });
   // 进入本页且从未建过标记时，自动落一份「初始快照」，随时一键回到初始。
-  // 写操作全部移出 effect flush（queueMicrotask），杜绝 effect_update_depth 自激警告。
   // 注意：不能在变量未加载（variables 为空）时提前置位任何"已尝试"标记，
   // 否则变量晚到后 effect 不再重跑，初始快照永远不会生成。
+  //
+  // 性能（本页唯一的百毫秒级同步开销就在这里）：
+  // captureSnapshot() 要遍历全部变量逐条回读 + cloneJson，markerAdd 还要把整份快照
+  // 序列化进 localStorage。900 变量实测 59ms 长任务；6000 变量量级线性变大。
+  // 原先用 queueMicrotask —— 它在当前任务结束后、**绘制之前**执行，正好卡住切页首帧，
+  // 这正是「切到系统页时面板卡一下」的来源。改为空闲调度：先让本页画出来，再补做快照。
+  // 语义完全不变（同样的数据、同样只在无标记时建一次），只是不再抢交互帧。
   $effect(() => {
-    if (!active || autoDone) return;
+    if (!active || autoDone || autoScheduled) return;
     if (bridge.getStatus() !== 'connected') return;
     if (variables.length === 0) return;
-    queueMicrotask(() => {
+    autoScheduled = true; // 普通 let，同步写不触发 effect 自激（见其声明处注释）
+    scheduleIdle(() => {
+      if (autoDone) return;
       try {
-        if (autoDone) return;
         if (markerList().length === 0) {
           markerAdd({ name: '初始快照（自动）', ...captureSnapshot() });
         }

@@ -9,6 +9,24 @@
   import type { InstalledPlugin, PluginContext, PluginProjectApi } from '../core/plugins';
   import { runPluginBoot, runPluginRefresh, makePluginStore, pluginRegistry } from '../core/plugin-registry';
   import { createPluginUI } from '../core/plugin-ui';
+  import {
+    getAliasConfig,
+    setAliasConfig,
+    exportAliasConfig,
+    clearAliasConfig,
+    setAliasEnabled,
+    aliasStats,
+    subscribeAliasConfig,
+  } from '../core/alias-config';
+  import {
+    firewallMode,
+    firewallStats,
+    firewallHits,
+    firewallRules,
+    addFirewallRule,
+    removeFirewallRule,
+    subscribeFirewall,
+  } from '../core/net-firewall';
   import type { ScratchVaIMod } from '../core';
 
   let {
@@ -246,6 +264,9 @@
   // boot 时的 ctx：refresh 钩子复用同一实例（ctx.variables() 等读取是实时的，
   // 返回的是当前 prop 快照）。文档约定：refresh 里不要重新订阅。
   let bootCtx: PluginContext | null = null;
+  // 插件对本体 ctx 能力面（本地重命名 / 网络防火墙）的订阅：随 teardown 统一退订，
+  // 插件忘了退也不泄漏。
+  const ctxUnsubs = new Set<() => void>();
 
   function buildCtx(root: HTMLElement): PluginContext {
     return {
@@ -292,6 +313,44 @@
       },
       // 作品能力面：bridge 背书的窄面（sb3/sprite3 导出、角色打包、loadProject 捕获）
       project: projectApi,
+      // 本地重命名配置（仅显示层）：插件可以按自己的字典生成中文名配置并导入，
+      // 但拿不到任何写变量/改变量名的通道 —— 语义上就不可能「新建变量」。
+      alias: {
+        get: () => getAliasConfig(),
+        stats: () => aliasStats(),
+        importConfig: (raw: unknown) => setAliasConfig(raw),
+        exportConfig: () => exportAliasConfig(),
+        clear: () => clearAliasConfig(),
+        setEnabled: (on: boolean) => setAliasEnabled(on),
+        subscribe(cb) {
+          // teardown 后拒绝注册，避免异步 code 迟到落定时挂进已销毁的上下文
+          if (!alive) return () => {};
+          const unsub = subscribeAliasConfig(cb);
+          ctxUnsubs.add(unsub);
+          return () => {
+            ctxUnsubs.delete(unsub);
+            unsub();
+          };
+        },
+      },
+      // 网络防火墙：观察面 + 管理用户自己的域名规则（不含「直接放行/拦截」开关）
+      firewall: {
+        mode: () => firewallMode(),
+        stats: () => firewallStats(),
+        hits: () => firewallHits(),
+        rules: () => firewallRules(),
+        addRule: (h: string, k: 'block' | 'allow') => addFirewallRule(h, k),
+        removeRule: (h: string, k: 'block' | 'allow') => removeFirewallRule(h, k),
+        subscribe(cb: () => void) {
+          if (!alive) return () => {};
+          const unsub = subscribeFirewall(cb);
+          ctxUnsubs.add(unsub);
+          return () => {
+            ctxUnsubs.delete(unsub);
+            unsub();
+          };
+        },
+      },
       // UI 样式接口：组件工厂 + 面板内确认框（挂在面板所在 ShadowRoot）
       ui: createPluginUI({
         toast: (text, kind = 'ok') => onToast?.(text, kind === 'info' ? 'ok' : kind),
@@ -317,6 +376,14 @@
     }
     bootCtx = null;
     varListeners.clear();
+    for (const unsub of ctxUnsubs) {
+      try {
+        unsub();
+      } catch {
+        /* ignore */
+      }
+    }
+    ctxUnsubs.clear();
   }
 
   /**

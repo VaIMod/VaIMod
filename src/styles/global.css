@@ -735,7 +735,13 @@
   flex-shrink: 0;
 }
 .svp-tab {
-  flex: 1;
+  /* flex:1（= 1 1 0%）会让每个 Tab 分到**完全相同**的宽度，与文字长短无关 →
+     10 个 Tab 挤在 535px 里时每个只有 49px，而「变量批量重命名助手」需要 121px →
+     长名 Tab 文字直接溢出（实测 3/10 溢出，短名 Tab 却留着大片空白）。
+     改成 1 1 auto：以**自身内容宽**为基准再均分剩余空间 → 长短名都能放下。 */
+  flex: 1 1 auto;
+  /* canvas measureText 量的是单行宽；nowrap 保证 DOM 也是单行，二者才可比 */
+  white-space: nowrap;
   padding: 8px 10px;
   font-size: 14px;
   font-weight: 600;
@@ -1542,6 +1548,63 @@
 .svp-fs-rule .svp-robot-del {
   flex-shrink: 0;
 }
+
+/* ===== 网络防火墙面板 ===== */
+.svp-fw {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+/* 被拦行的左侧亮条与暖色底，一眼区分「这条被拒了」 */
+.svp-fw-item-blocked {
+  background: rgba(255, 89, 60, 0.08);
+  border-color: rgba(255, 89, 60, 0.4);
+  box-shadow: inset 3px 0 0 0 rgba(255, 89, 60, 0.8);
+}
+.svp-fw-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.svp-fw-path {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8a9099;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.svp-fw-tag {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 20px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+.svp-fw-tag-block {
+  color: #ffb199;
+  background: rgba(255, 89, 60, 0.2);
+  border: 1px solid rgba(255, 89, 60, 0.45);
+}
+.svp-fw-tag-exfil {
+  color: #ffd08a;
+  background: rgba(255, 159, 10, 0.18);
+  border: 1px solid rgba(255, 159, 10, 0.45);
+}
+.svp-fw-tag-allow {
+  color: #8ef0b0;
+  background: rgba(48, 209, 88, 0.18);
+  border: 1px solid rgba(48, 209, 88, 0.42);
+}
+.svp-fw-tag-third {
+  color: #9aa0a6;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
 .svp-sendbar .svp-meta {
   font-size: 12px;
   color: #8a9099;
@@ -1972,6 +2035,34 @@
   align-items: center;
   gap: 10px;
   padding: 2px 0 6px;
+}
+/* 本地重命名配置：导入 / 导出 / 清空 按钮行 + 结果提示 */
+.svp-alias-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0 8px;
+  flex-wrap: wrap;
+}
+.svp-alias-file {
+  display: none;
+}
+.svp-alias-msg {
+  margin: -2px 0 8px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  background: rgba(48, 209, 88, 0.12);
+  color: #7ee2a0;
+  border: 1px solid rgba(48, 209, 88, 0.28);
+  /* 提示可能含用户配置里的名称：只当纯文本，永不 innerHTML */
+  word-break: break-word;
+}
+.svp-alias-msg-err {
+  background: rgba(255, 90, 90, 0.12);
+  color: #ff9d9d;
+  border-color: rgba(255, 90, 90, 0.3);
 }
 .svp-plug-count {
   margin-left: auto;

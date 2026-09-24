@@ -25,6 +25,24 @@ import {
 } from './plugins';
 import type { ScratchValue } from './types';
 import { createPluginUI } from './plugin-ui';
+import {
+  getAliasConfig,
+  setAliasConfig,
+  exportAliasConfig,
+  clearAliasConfig,
+  setAliasEnabled,
+  aliasStats,
+  subscribeAliasConfig,
+} from './alias-config';
+import {
+  firewallMode,
+  firewallStats,
+  firewallHits,
+  firewallRules,
+  addFirewallRule,
+  removeFirewallRule,
+  subscribeFirewall,
+} from './net-firewall';
 
 const STORE_KEY = 'vaimod_plugins_v1';
 const SET_KEY = 'vaimod_plugset_v1';
@@ -802,6 +820,36 @@ function runOnePatch(p: InstalledPlugin, host: PatchHost): void {
     },
     // UI 样式接口：headless 补丁不传挂载点 → confirm 自动退回原生 confirm
     ui: createPluginUI({ toast: (text, kind) => host.toast(text, kind === 'info' ? 'ok' : kind) }),
+    // 本地重命名配置（仅显示层）：给插件「按自己的变量字典生成中文名配置」的能力，
+    // 但**不提供任何写变量/改变量名的通道** —— 语义上就不可能「新建」。
+    alias: {
+      get: () => getAliasConfig(),
+      stats: () => aliasStats(),
+      importConfig: (raw: unknown) => setAliasConfig(raw),
+      exportConfig: () => exportAliasConfig(),
+      clear: () => clearAliasConfig(),
+      setEnabled: (on: boolean) => setAliasEnabled(on),
+      subscribe: (cb: () => void) => {
+        const unsub = subscribeAliasConfig(cb);
+        unsubs.push(unsub);
+        return unsub;
+      },
+    },
+    // 网络防火墙：只给「观察 + 管理用户自己的域名规则」，不给「直接放行/拦截」的开关 ——
+    // 拦不拦统一由用户模式决定，插件无法绕过用户意志自行决定放行危险请求。
+    firewall: {
+      mode: () => firewallMode(),
+      stats: () => firewallStats(),
+      hits: () => firewallHits(),
+      rules: () => firewallRules(),
+      addRule: (host: string, kind: 'block' | 'allow') => addFirewallRule(host, kind),
+      removeRule: (host: string, kind: 'block' | 'allow') => removeFirewallRule(host, kind),
+      subscribe: (cb: () => void) => {
+        const unsub = subscribeFirewall(cb);
+        unsubs.push(unsub);
+        return unsub;
+      },
+    },
     patch: patchApi,
     id: def.id,
     extra: def.extra,

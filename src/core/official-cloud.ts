@@ -1,4 +1,5 @@
 import { markNative } from '../dom-utils';
+import { markInternalXhr } from './net-firewall';
 
 // 官方云数据 API 加密直写通道（尽力而为）：
 // - 观察平台扩展自身发出的云数据库请求（fetch 与 XHR 双通道），捕获可泛化 endpoint 模板；
@@ -172,10 +173,12 @@ function resolveProjectOid(): string | null {
 }
 
 // XHR 发起（避开 fetch 层页面监控；credentials 带登录态；异步返回）
+// 标记为 VaIMod 内部请求：网络防火墙据此直接透传——自己的云数据写入不该被自己的防火墙拦。
 function xhrSend(url: string, method: string, body?: string): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       const xhr = new XMLHttpRequest();
+      markInternalXhr(xhr);
       xhr.open(method || 'POST', url, true);
       xhr.withCredentials = true;
       xhr.setRequestHeader('Content-Type', 'application/json');
