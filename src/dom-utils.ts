@@ -645,6 +645,12 @@ function patchMutationObserver(): void {
           callback(sanitize(records), observer);
         });
       }
+      // takeRecords() 是 callback 之外的**完整旁路**：它直接吐出未清洗的原始记录队列，
+      // 只要在观察者微任务回调之前同步取一次，就能拿到 VaIMod 宿主（sanitize 被绕过）。
+      // 枚举遍历在这里按需映射成过滤后的副本，代价只落在真调用了 takeRecords 的页面上。
+      takeRecords(): MutationRecord[] {
+        return sanitize(super.takeRecords());
+      }
     };
     markNative(Patched, (orig as { name?: string }).name || 'MutationObserver');
     return Patched as unknown as NativeFn;
@@ -657,20 +663,25 @@ function patchTraversalApis(): void {
   docProto[TR_PATCHED] = true;
 
   const wrapTraversal = (it: { nextNode(): Node | null; previousNode(): Node | null }): void => {
-    if (protectedHosts.size === 0) return;
+    // 这里**不能**在包装时判「protectedHosts 是否为空」：installStealth 跑在
+    // createStealthHost 之前（宿主尚未登记），此刻为空就直接不包装 →
+    // 页面在这个时间窗里创建的 TreeWalker / NodeIterator 此后永久不过滤宿主
+    //（宿主后来才插入，但 walker 已在裸奔）。改为在迭代时判：空集是 O(1)，
+    // 有宿主才付 isProtected 的逐节点代价 —— 那正是需要过滤的时候。
+    const idle = (): boolean => protectedHosts.size === 0;
     const nNext = it.nextNode.bind(it);
     const nPrev = it.previousNode.bind(it);
     it.nextNode = () => {
       let n: Node | null;
       while ((n = nNext())) {
-        if (!isProtected(n)) return n;
+        if (idle() || !isProtected(n)) return n;
       }
       return null;
     };
     it.previousNode = () => {
       let n: Node | null;
       while ((n = nPrev())) {
-        if (!isProtected(n)) return n;
+        if (idle() || !isProtected(n)) return n;
       }
       return null;
     };

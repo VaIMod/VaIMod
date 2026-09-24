@@ -302,17 +302,19 @@ export function installFeishuGuard(): void {
         (nativeSend as (...a: unknown[]) => void).apply(self, [body as never]);
         return;
       }
-      // 拒绝：合成一次失败事件，调用方的 onerror/onreadystatechange 能正常感知
+      // 拒绝：合成一次失败事件。
+      // 必须走 dispatchEvent —— 只调 onerror / onreadystatechange 这两个 IDL 属性回调时，
+      // 用 `xhr.addEventListener('error'|'load'|'readystatechange', …)` 注册的调用方
+      // （axios 的 XHR adapter、大量手写库）**完全收不到通知**，其 Promise 永不 settle，
+      // 直接违反「无人应答按超时兜底，绝不让请求永久悬挂」的承诺。
+      // （dispatchEvent 会同时触发 IDL 属性回调，故不必再手动调一次。）
       setTimeout(() => {
         try {
-          if (typeof self.onerror === 'function') {
-            self.onerror(new ProgressEvent('error') as never);
-          }
-          if (typeof self.onreadystatechange === 'function') {
-            Object.defineProperty(self, 'readyState', { configurable: true, value: 4 });
-            Object.defineProperty(self, 'status', { configurable: true, value: 0 });
-            (self.onreadystatechange as (e?: unknown) => void)(new Event('readystatechange'));
-          }
+          Object.defineProperty(self, 'readyState', { configurable: true, value: 4 });
+          Object.defineProperty(self, 'status', { configurable: true, value: 0 });
+          self.dispatchEvent(new Event('readystatechange'));
+          self.dispatchEvent(new ProgressEvent('error'));
+          self.dispatchEvent(new ProgressEvent('loadend'));
         } catch {
           /* ignore */
         }

@@ -54,9 +54,11 @@ function encodeDirect(s: string): string {
 
 export function xorEncode(input: unknown): string {
   const s = String(input);
-  // 超高速缓存：小值指纹命中直接返回密文（零计算）；大值不缓存
+  // 超高速缓存：小值指纹命中直接返回密文（零计算）；大值不缓存。
+  // 缓存键必须并进密钥代次：encodeDirect 依赖 salt/nonce，密钥轮换（vpnRecycle →
+  // SecretChannel.rotate）后旧密文在新密钥下解不回来，命中即产出垃圾。
   if (s.length <= 256) {
-    const k = fnv1a(s);
+    const k = fnv1a(s) + '.' + secretChannel.keyEpoch;
     const hit = encodeCache.get(k);
     if (typeof hit === 'string') return hit;
     const out = encodeDirect(s);

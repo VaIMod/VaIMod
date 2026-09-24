@@ -19,8 +19,11 @@
     setAliasConfig,
     setAliasEnabled,
     clearAliasConfig,
+    ALIAS_LIMITS,
   } from '../core/alias-config';
   import PluginManager from './PluginManager.svelte';
+  import FirewallSection from './FirewallSection.svelte';
+  import { scopeCss } from '../core/plugin-css';
   import { fly } from 'svelte/transition';
 
   let {
@@ -56,6 +59,11 @@
     const file = input.files?.[0];
     input.value = '';
     if (!file) return;
+    // 先看字节数再读内容：超大文件不该先进内存（配置来自任意来源，按不可信输入对待）
+    if (file.size > ALIAS_LIMITS.maxJsonBytes) {
+      aliasSay(`文件过大（${Math.round(file.size / 1024)} KB），上限 2 MB`, true);
+      return;
+    }
     try {
       const text = await file.text();
       const cfg = setAliasConfig(text);
@@ -492,14 +500,43 @@
     const pid = id.startsWith('plug:') ? id.slice(5) : id;
     return pluginNames[pid] ?? pid;
   }
-  /** 插件的设置页样式（作用域限定到该插件卡片） */
+  /**
+   * 插件的设置页样式：**必须做作用域限定**。
+   * 整块界面（面板所有页 + 设置覆盖层）共用一个 closed shadow root，
+   * shadow 只保证「不外泄到站点」，不保证「不外泄到面板其它部分」——
+   * 不做前缀的 settingsCss 可以在插件里直接改写整个设置页（`.svp-toggle{display:none}`），
+   * 且旧实现连 @import 都不过滤（能拉外部样式表）。作用域锚点是
+   * PluginManager 里每张插件卡片的 `#vmp-set-<id>`。
+   */
   const pluginSettingsCss = $derived.by(() => {
     void plugVer;
     return pluginRegistry
       .list()
       .filter((p) => p.def.settingsCss)
-      .map((p) => `/* plugin:${p.def.id} */\n${p.def.settingsCss}`)
+      .map((p) => scopeCss(p.def.settingsCss, `#vmp-set-${p.def.id}`))
+      .filter(Boolean)
       .join('\n');
+  });
+
+  // 运行时注入（绝不用 Svelte <style> 块）：编译器会把组件 <style> 提取成编译期静态
+  // CSS，动态表达式进去就是死文本 → 规则全丢；且那份 CSS 会被注入 document.head，
+  // 既进不了 shadow root（样式作用不到面板）又白白泄露到页面。
+  let plugCssAnchor: HTMLElement | undefined = $state();
+  let plugCssEl: HTMLStyleElement | null = null;
+  $effect(() => {
+    const anchor = plugCssAnchor;
+    if (!anchor) return;
+    const css = pluginSettingsCss;
+    if (!plugCssEl || !plugCssEl.isConnected) {
+      plugCssEl?.remove();
+      plugCssEl = document.createElement('style');
+      anchor.appendChild(plugCssEl);
+    }
+    plugCssEl.textContent = css;
+    return () => {
+      plugCssEl?.remove();
+      plugCssEl = null;
+    };
   });
 
   function clearLocalData() {
@@ -644,19 +681,14 @@
     </div>
 
     <div class="svp-setting-group">插件</div>
-    {#if pluginSettingsCss}
-      <style>{pluginSettingsCss}</style>
-    {/if}
+    <div class="svp-plug-css-anchor" bind:this={plugCssAnchor} aria-hidden="true"></div>
     <PluginManager onChanged={() => (plugVer = plugVer + 1)} />
 
     <div class="svp-setting-group">本地重命名</div>
     <div class="svp-setting-item">
       <div class="svp-setting-text">
         <div class="svp-setting-name">启用本地重命名</div>
-        <div class="svp-setting-desc">
-          按配置里的「真实变量名 → 显示名」改面板显示。只改显示：不新建变量、不改作品里的变量名，
-          对项目与云端零影响。
-        </div>
+        <div class="svp-setting-desc">只改面板显示，不动作品里的变量</div>
       </div>
       <button
         class="svp-toggle"
@@ -671,12 +703,10 @@
     </div>
     <div class="svp-setting-item">
       <div class="svp-setting-text">
-        <div class="svp-setting-name">
-          规则 {aliasInfo.rules} 条 · 已生效 {aliasHits} 个变量
-        </div>
-        <div class="svp-setting-desc">
-          {aliasInfo.name || '未命名配置'}｜支持 rules / variables（cave-vars.json 可直接导入）/ displayNames / 扁平表四种格式
-        </div>
+        <div class="svp-setting-name">规则 {aliasInfo.rules} 条 · 已生效 {aliasHits} 个变量</div>
+        {#if aliasInfo.name}
+          <div class="svp-setting-desc">{aliasInfo.name}</div>
+        {/if}
       </div>
     </div>
     <div class="svp-alias-bar">
@@ -707,6 +737,9 @@
     {#if aliasMsg}
       <div class="svp-alias-msg" class:svp-alias-msg-err={aliasMsgErr}>{aliasMsg}</div>
     {/if}
+
+    <div class="svp-setting-group">网络防火墙 · 独立补丁</div>
+    <FirewallSection />
 
     <div class="svp-setting-group">还原系统</div>
     <div class="svp-setting-item">

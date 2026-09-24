@@ -1,7 +1,6 @@
 // VaIMod 统一配置包：覆盖变量、显示别名、双方云数据、飞书机器人、
 // 快照、回收站、设置面板的所有本地/桥接配置，一次导出即可完整备份 / 还原。
 import type { ScratchValue, ScratchVariable, VariableValue } from './types';
-import type { ScratchVM } from './scratch-vm';
 import type { FeishuRobot } from './feishu';
 import type { MarkerEntry, TrashEntry, TrashScope } from './ops-meta';
 import {

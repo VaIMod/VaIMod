@@ -427,12 +427,23 @@ function normalizeSettingsDefs(raw: unknown): PluginSettingDef[] {
 function functionCodeToString(fn: (...args: unknown[]) => unknown): string {
   const src = String(fn).trim();
   let normalized = src;
-  if (/^[A-Za-z_$][\w$]*\s*\(/.test(src)) {
-    // 方法简写 / 具名函数缺关键字："code(ctx) {" → "function code(ctx) {"
-    normalized = `function ${src}`;
+  // 已经是函数表达式/箭头函数 → 原样使用。必须先判这一类：`function (ctx){}`、
+  // `async (ctx)=>{}` 的 `function`/`async` 本身就是「标识符后跟 (」，
+  // 走下面的方法简写分支会被拼成 `function function (ctx){}` / `function async (ctx)=>{}`
+  // —— 都是 SyntaxError，插件 code 直接不执行（只留一条运行出错 toast）。
+  if (
+    /^\(/.test(src) ||
+    /^function\b/.test(src) ||
+    /^async\s*\(/.test(src) ||
+    /^async\s+function\b/.test(src)
+  ) {
+    normalized = src;
   } else if (/^async\s+[A-Za-z_$][\w$]*\s*\(/.test(src)) {
     // 异步方法简写："async code(ctx) {" → "async function code(ctx) {"
     normalized = src.replace(/^async\s+/, 'async function ');
+  } else if (/^[A-Za-z_$][\w$]*\s*\(/.test(src)) {
+    // 方法简写 / 具名函数缺关键字："code(ctx) {" → "function code(ctx) {"
+    normalized = `function ${src}`;
   }
   return `return (${normalized})(ctx);`;
 }
@@ -568,10 +579,6 @@ export function parsePluginSource(src: string): PluginDef {
     const v = def[key];
     if (v !== undefined && v !== null) return v;
     return tags.has(key) ? tags.get(key) : undefined;
-  };
-  const pickStr = (key: string): string => {
-    const v = pick(key);
-    return typeof v === 'string' ? v : v === undefined ? '' : String(v);
   };
 
   const id = asString(pick('id')).trim();

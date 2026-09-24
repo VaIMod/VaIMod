@@ -8,6 +8,7 @@
     setDisplayName,
     removeDisplayName,
     clearDisplayNames,
+    subscribeDisplayNames,
   } from '../core/display-names';
   import pencilIcon from '../assets/pencil.svg?raw';
   import restoreIcon from '../assets/restore.svg?raw';
@@ -259,6 +260,12 @@
 
   // 显示别名（本地显示层）：云变量重命名只改面板显示，不改云端真实名
   let displayNames = $state(loadDisplayNames());
+  // 外部整份改写（配置包导入 / 设置里「清空本地记忆」）后回灌本组件快照，否则本页留旧别名
+  $effect(() => {
+    return subscribeDisplayNames(() => {
+      displayNames = loadDisplayNames();
+    });
+  });
   const cloudKey = (name: string) => ['c', selected, name].join(':');
   const shownName = (name: string) => displayNames[cloudKey(name)] ?? name;
   // 单条是否有别名（有且与原名不同）

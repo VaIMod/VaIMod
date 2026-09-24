@@ -24,6 +24,7 @@ const TOP_Z = 2147483647;
 const CONTEST_Z = 2147483640;
 
 let installed = false;
+let structureGuarded = false;
 let tamperCount = 0;
 let levelFixCount = 0;
 let patrolTimer: number | null = null;
@@ -191,6 +192,17 @@ function schedulePatrol(): void {
 // ---------- DOM 结构层守卫 ----------
 type AnyFn = (...args: unknown[]) => unknown;
 
+/**
+ * 同帧接回被摘出文档的宿主。
+ * 结构层钩子在「放行原生调用」之后必须调它——否则宿主从被摘到下一次巡检之间
+ * 有最长 1s 的不可见窗口（innerHTML 洗地 / replaceChildren / replaceWith 都是这条路）。
+ */
+function reattachDetachedHosts(): void {
+  for (const host of allHosts()) {
+    if (host && !host.isConnected) healHost(host, false);
+  }
+}
+
 function wrapNative<T extends AnyFn>(orig: T, impl: (orig: T) => T): T {
   const wrapped = impl(orig) as unknown as { name?: string };
   try {
@@ -202,6 +214,10 @@ function wrapNative<T extends AnyFn>(orig: T, impl: (orig: T) => T): T {
 }
 
 function installStructureGuard(): void {
+  // 一次性：原生方法只包裹一层。uninstall 不会还原原生（包裹层是幂等守卫），
+  // 二次 install 再包一次会让每次调用被计数两次、放大开销。
+  if (structureGuarded) return;
+  structureGuarded = true;
   const NP = Node.prototype as unknown as Record<string, AnyFn>;
   const EP = Element.prototype as unknown as Record<string, AnyFn>;
 
@@ -282,6 +298,15 @@ function installStructureGuard(): void {
         if (isProtectedHost(this)) {
           reportTamper();
           healHost(this as HTMLElement, false);
+          // replaceWith 语义是「用新节点替换自身」——对宿主而言这一步会把宿主摘出文档。
+          // 不能直接放行（巡检要等 1s 才接回 → 最长 1s 不可见窗口），
+          // 所以照常调用后立刻复查：谁掉了就同帧接回（零不可见窗口）。
+          if (name === 'replaceWith') {
+            if (kept.length === 0) return;
+            const res = (orig as unknown as (...a: unknown[]) => unknown).call(this, ...kept);
+            reattachDetachedHosts();
+            return res;
+          }
           if (kept.length === 0) return;
         }
         return (orig as unknown as (...a: unknown[]) => unknown).call(this, ...kept);
@@ -290,17 +315,12 @@ function installStructureGuard(): void {
   }
 
   // ④ replaceChildren / innerHTML 洗地：跑完立刻把宿主接回文档
-  const reattachAfter = (fn: AnyFn, thisArg: unknown, args: unknown[]): unknown => {
-    const res = (fn as unknown as (...a: unknown[]) => unknown).apply(thisArg, args);
-    for (const host of allHosts()) {
-      if (host && !host.isConnected) healHost(host, false);
-    }
-    return res;
-  };
   if (typeof EP.replaceChildren === 'function') {
     EP.replaceChildren = wrapNative(EP.replaceChildren, (orig) =>
       function (this: Element, ...nodes: unknown[]) {
-        return reattachAfter(orig as unknown as AnyFn, this, nodes);
+        const res = (orig as unknown as (...a: unknown[]) => unknown).apply(this, nodes);
+        reattachDetachedHosts();
+        return res;
       } as unknown as AnyFn,
     );
   }
@@ -321,9 +341,7 @@ function installStructureGuard(): void {
             return;
           }
           const res = setter.call(this, html);
-          for (const host of allHosts()) {
-            if (host && !host.isConnected) healHost(host, false);
-          }
+          reattachDetachedHosts();
           return res;
         },
       });
@@ -419,11 +437,35 @@ export function installUiGuard(): void {
     schedulePatrol();
   };
 
+  // 高频事件合并：滚动/缩放会成串触发（一次滚动可上百个事件），每个都走
+  // 「elementsFromPoint 命中测试 + getComputedStyle 逐元素 + 布局查询」太重。
+  const COALESCE_MS = 80;
+  let lastTick = 0;
+  let trailTimer: number | null = null;
+  const tickCoalesced = (): void => {
+    const now = Date.now();
+    const gap = now - lastTick;
+    if (gap >= COALESCE_MS) {
+      lastTick = now;
+      tick();
+      return;
+    }
+    // 尾随兜底用 setTimeout 而不是 rAF：无头/后台环境 rAF 可能永不触发，
+    // 一旦丢掉尾随调用，最后一次滚动就再也补不上（可见性守卫留缺口）。
+    if (trailTimer === null) {
+      trailTimer = window.setTimeout(() => {
+        trailTimer = null;
+        lastTick = Date.now();
+        tick();
+      }, COALESCE_MS - gap);
+    }
+  };
+
   try {
     if (typeof window !== 'undefined') {
-      window.addEventListener('resize', tick, { passive: true });
-      window.addEventListener('orientationchange', tick, { passive: true });
-      window.addEventListener('scroll', tick, { passive: true, capture: true });
+      window.addEventListener('resize', tickCoalesced, { passive: true });
+      window.addEventListener('orientationchange', tickCoalesced, { passive: true });
+      window.addEventListener('scroll', tickCoalesced, { passive: true, capture: true });
     }
     if (!visBound) {
       visBound = true;

@@ -13,7 +13,6 @@
   import CcwDataPanel from './CcwDataPanel.svelte';
   import ToolsPanel from './ToolsPanel.svelte';
   import FeishuPanel from './FeishuPanel.svelte';
-  import FirewallPanel from './FirewallPanel.svelte';
   import SystemPanel from './SystemPanel.svelte';
   import SettingsOverlay from './SettingsOverlay.svelte';
   import PluginTab from './PluginTab.svelte';
@@ -32,12 +31,12 @@
     removeDisplayName,
     clearDisplayNames,
     hasDisplayNames,
+    subscribeDisplayNames,
   } from '../core/display-names';
   import {
     getAliasConfig,
     resolveAlias,
     subscribeAliasConfig,
-    aliasStats,
     exportAliasConfig,
     setAliasConfig,
     setAliasEnabled,
@@ -616,6 +615,13 @@
 
   // 显示别名（仅本地显示层）：重命名不改 vm 真实名
   let displayNames = $state(loadDisplayNames());
+  // 外部整份改写（配置包导入 saveDisplayNames / 设置里「清空本地记忆」）后回灌本组件快照，
+  // 否则本页会一直显示旧别名直到重新挂载。
+  $effect(() => {
+    return subscribeDisplayNames(() => {
+      displayNames = loadDisplayNames();
+    });
+  });
   const nameKey = (v: ScratchVaIMod) => ['v', v.targetId, v.id].join(':');
   // 是否有变量别名（响应式，控制「一键恢复」按钮显隐）
   const hasVarAliases = $derived(
@@ -625,13 +631,10 @@
   // ===== 本地重命名规则表（按真实变量名匹配，见 core/alias-config.ts） =====
   // 与手动别名并存：手动（按 id）优先，其次规则表（按名），最后原名。
   let aliasVer = $state(0);
-  let aliasInfo = $state(aliasStats());
   $effect(() => {
-    const off = subscribeAliasConfig(() => {
+    return subscribeAliasConfig(() => {
       aliasVer = aliasVer + 1;
-      aliasInfo = aliasStats();
     });
-    return off;
   });
   /**
    * 取该变量当前应显示的别名（无别名返回 ''）。
@@ -2129,10 +2132,6 @@
               {/if}
               {#if activeTab === 'feishu'}
                 <FeishuPanel variables={variables} bind:this={feishuPanel} />
-              {/if}
-              {#if activeTab === 'firewall'}
-                <!-- 自身订阅出网日志，挂载即读最新状态 → 不需要 refresh 钩子 -->
-                <FirewallPanel />
               {/if}
               {#if activeTab === 'system'}
                 <SystemPanel bind:this={systemPanel} bridge={bridge} variables={variables} active={!minimized} {settings} onOpenSettings={() => (showSettings = true)} showSettingsEntry={!headerSettingsVisible} />

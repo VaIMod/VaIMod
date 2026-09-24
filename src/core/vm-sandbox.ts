@@ -169,7 +169,14 @@ function sandboxWrap(target: object): unknown {
       const desc = Reflect.getOwnPropertyDescriptor(t, p);
       if (!desc) return undefined;
       const out: PropertyDescriptor = {};
-      if ('value' in desc) out.value = wrapValue(desc.value);
+      if ('value' in desc) {
+        // Proxy 不变量：目标属性「不可配置 + 不可写」的数据属性必须原样报告 value
+        // （SameValue 相同），包装成代理会让 trap 自身抛 TypeError——
+        // 对象被 Object.freeze / defineProperty(writable:false) 时必然命中。
+        // 此时退回原始值：不变量优先，仅这类属性放弃包装（它们本就写不动）。
+        const frozen = desc.configurable === false && desc.writable === false;
+        out.value = frozen ? desc.value : wrapValue(desc.value);
+      }
       if (desc.writable !== undefined) out.writable = desc.writable;
       if (desc.enumerable !== undefined) out.enumerable = desc.enumerable;
       if (desc.configurable !== undefined) out.configurable = desc.configurable;

@@ -152,12 +152,31 @@ function purgeMaskStyle(): void {
   // _mask 第二段会给命中元素写 inline display:none!important —— 逐条撤销。
   // 用 getElementById 而非 querySelectorAll：三个目标都是纯 id 选择器，
   // 哈希查找 O(1)，避免每次 DOM 变更都做 3 次全文档选择器匹配。
+  // 只认 !important 与 secure-guard 对齐：普通 inline display:none 是站点/第三方
+  // 修改器自己的正常折叠，撤销它会形成「藏-显」拉锯（本函数挂在全文档 style 变更上）。
   try {
     for (const id of MASK_TARGET_IDS) {
       const e = document.getElementById(id) as HTMLElement | null;
-      if (e && e.style.getPropertyValue('display') === 'none') {
-        e.style.removeProperty('display');
+      if (!e) continue;
+      revertImportantHide(e);
+      // honeypot 会植入同 id 的隐形诱饵（data-role=placeholder）：撞上时 getElementById
+      // 返回的可能是诱饵，真元素就被漏掉 → 退回全量同名扫描（仅此分支付这个代价）。
+      if (e.getAttribute('data-role') !== 'placeholder') continue;
+      for (const same of Array.from(document.querySelectorAll(`[id="${id}"]`))) {
+        revertImportantHide(same as HTMLElement);
       }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 只撤销「display:none + !important」这一种（站点自己的普通折叠不动） */
+function revertImportantHide(e: HTMLElement): void {
+  try {
+    const s = e.style;
+    if (s.getPropertyValue('display') === 'none' && s.getPropertyPriority('display') === 'important') {
+      s.removeProperty('display');
     }
   } catch {
     /* ignore */

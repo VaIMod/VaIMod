@@ -23,7 +23,6 @@ const LOCK_ON = '1';
 const LOCK_OFF = '0';
 const lockMetaOf = (name: string): string => LOCK_PREFIX + name;
 const isLockMeta = (name: string): boolean => name.startsWith(LOCK_PREFIX);
-const lockTargetOf = (meta: string): string => meta.slice(LOCK_PREFIX.length);
 
 export interface LockInfo {
   value: unknown; // 钉住的值（锁定瞬间的云数据值）

@@ -22,6 +22,9 @@
 // 不改 window.vm 形状、不拒写、不吞站点赋值。
 //
 // 伪装三件套与旧实现一致：非枚举安装 / name 保持 / toString 返回原函数源码。
+// 另有第四件：登记进 dom-utils 的已伪装集合（挡 Function.prototype.toString.call 这条旁路）。
+
+import { markNative } from '../dom-utils';
 
 const TAP_MARK = '__vaimodLpTap';
 
@@ -53,6 +56,11 @@ function disguise(wrapped: unknown, orig: LoadProjectFn): void {
   } catch {
     /* ignore */
   }
+  // 自有 toString 只能骗过 `wrapped.toString()`；敌扩展用
+  // `Function.prototype.toString.call(vm.loadProject)` 就直接拿到包装源码
+  // （含 ownerTaps / for (const t of ownerTaps.get(base)) 这些 VaIMod 特征）。
+  // 登记进 dom-utils 的已伪装集合，让那边的 Function.prototype.toString 补丁兜住这条路径。
+  markNative(wrapped as object, orig.name || 'loadProject');
 }
 
 function isOurWrap(fn: unknown): boolean {

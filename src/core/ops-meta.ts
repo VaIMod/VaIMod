@@ -55,10 +55,6 @@ interface TrashRoot {
   [oid: string]: Record<string, TrashEntry[]>;
 }
 
-function trashNs(): string {
-  return [currentOid(), 't'].join(':');
-}
-
 export function trashAdd(entry: Omit<TrashEntry, 'at'>): void {
   const root = readJson<TrashRoot>(NS_TRASH);
   const oid = currentOid();

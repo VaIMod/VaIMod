@@ -60,6 +60,31 @@ const EMPTY: AliasConfig = {
 let cache: AliasConfig | null = null;
 const listeners = new Set<() => void>();
 
+/**
+ * 规则索引：精确匹配走 Map（O(1)），通配规则单独成表。
+ * 为什么要建：`resolveAlias` 是**每个变量**都会调用一次的热路径，
+ * 直接线性扫规则表的话，5000 条规则 × 900 变量的量级会让变量页卡住。
+ * 索引在配置变更时整体失效重建，读路径不动。
+ */
+let matchIndex: { exact: Map<string, AliasRule[]>; wild: AliasRule[] } | null = null;
+
+function rulesIndex(c: AliasConfig): { exact: Map<string, AliasRule[]>; wild: AliasRule[] } {
+  if (matchIndex) return matchIndex;
+  const exact = new Map<string, AliasRule[]>();
+  const wild: AliasRule[] = [];
+  for (const r of c.rules) {
+    if (r.match.includes('*')) {
+      wild.push(r);
+      continue;
+    }
+    const bucket = exact.get(r.match);
+    if (bucket) bucket.push(r);
+    else exact.set(r.match, [r]);
+  }
+  matchIndex = { exact, wild };
+  return matchIndex;
+}
+
 function notify(): void {
   for (const fn of listeners) {
     try {
@@ -96,7 +121,8 @@ function coerceRules(raw: unknown): AliasRule[] {
       const scope = str(o.scope ?? o.target, 64) ?? undefined;
       const note = str(o.note ?? o.desc ?? o.evidence, ALIAS_LIMITS.maxNoteLen) ?? undefined;
       out.push({ match, label, ...(scope ? { scope } : {}), ...(note ? { note } : {}) });
-      if (out.length >= ALIAS_LIMITS.maxRules) break;
+      // 超限整份拒绝（不截断）：截断会静默留下「半份配置生效」的中间态，最难排查
+      if (out.length > ALIAS_LIMITS.maxRules) return [];
     }
     return out;
   }
@@ -108,7 +134,7 @@ function coerceRules(raw: unknown): AliasRule[] {
       const label = str(v, ALIAS_LIMITS.maxLabelLen);
       if (!match || !label || isBadKey(match)) continue;
       out.push({ match, label });
-      if (out.length >= ALIAS_LIMITS.maxRules) break;
+      if (out.length > ALIAS_LIMITS.maxRules) return [];
     }
   }
   return out;
@@ -176,11 +202,13 @@ function load(): AliasConfig {
   } catch {
     cache = { ...EMPTY, rules: [] };
   }
+  matchIndex = null;
   return cache;
 }
 
 function persist(cfg: AliasConfig): void {
   cache = cfg;
+  matchIndex = null;
   try {
     if (cfg.rules.length === 0) localStorage.removeItem(STORE_KEY);
     else localStorage.setItem(STORE_KEY, JSON.stringify(cfg));
@@ -268,24 +296,34 @@ const STAGE_TOKENS = new Set([
   'scena',
 ]);
 
+/** 单槽记忆：同一角色的变量是连续解析的，避免每个变量都重新 trim/lower/Set 查找 */
+let canonIn = '';
+let canonOut = '';
+
 function canonTarget(s: string): string {
+  if (s === canonIn) return canonOut;
   const t = s.trim().toLowerCase();
-  return STAGE_TOKENS.has(t) ? '\u0000stage' : t;
+  canonOut = STAGE_TOKENS.has(t) ? '\u0000stage' : t;
+  canonIn = s;
+  return canonOut;
 }
 
 /** 规则的匹配打分：越大越优先。-1 = 不匹配。精确匹配恒优于通配。 */
-function score(rule: AliasRule, realName: string, targetName: string): number {
+function score(rule: AliasRule, realName: string, targetName: string, ct?: string): number {
   const sc = rule.scope;
   const scoped = !!sc && sc.trim().toLowerCase() !== 'any';
   if (scoped) {
-    if (canonTarget(String(sc)) !== canonTarget(targetName)) return -1;
+    if (canonTarget(String(sc)) !== (ct ?? canonTarget(targetName))) return -1;
   }
   const m = rule.match;
   if (m === realName) return scoped ? 3 : 2;
   if (m.includes('*')) {
     // 通配只在「首尾星号」这类简单形态上支持，中间不做正则（配置可手写，避免 ReDoS）
     const parts = m.split('*').filter((s) => s !== '');
-    if (parts.length === 0) return 0; // match === '*' → 命中一切，最低优先级
+    // match === '*' → 命中一切。给「限定了角色」的兜底规则记 1 分而不是 0 分：
+    // 0 分会与「不限角色的兜底规则」同分，最终由遍历顺序决定谁生效 ——
+    // 而角色限定是更强的语义，必须恒优于不限角色（下方通配命中也是 scoped ? 1 : 0）。
+    if (parts.length === 0) return scoped ? 1 : 0;
     let idx = 0;
     for (const p of parts) {
       const at = realName.indexOf(p, idx);
@@ -301,15 +339,29 @@ function score(rule: AliasRule, realName: string, targetName: string): number {
 
 /**
  * 按真实名 + 所属角色解析本地显示名。未命中返回 undefined。
- * 纯函数、不写任何存储；调用方可放心在渲染里高频调用（内部 O(规则数)，规则表已被上限约束）。
+ * 纯函数、不写任何存储；渲染里可高频调用 —— 精确名走 Map 命中，
+ * 只有通配规则需要线性扫，而通配条数由 ALIAS_LIMITS 约束。
  */
 export function resolveAlias(realName: string, targetName: string): string | undefined {
   const c = load();
   if (!c.enabled || c.rules.length === 0) return undefined;
+  const idx = rulesIndex(c);
+  const bucket = idx.exact.get(realName);
+  if (!bucket && idx.wild.length === 0) return undefined;
+  const ct = canonTarget(targetName); // 每个变量只归一化一次，而不是每条规则一次
   let best = -1;
   let label: string | undefined;
-  for (const r of c.rules) {
-    const s = score(r, realName, targetName);
+  if (bucket) {
+    for (const r of bucket) {
+      const s = score(r, realName, targetName, ct);
+      if (s > best) {
+        best = s;
+        label = r.label;
+      }
+    }
+  }
+  for (const r of idx.wild) {
+    const s = score(r, realName, targetName, ct);
     if (s > best) {
       best = s;
       label = r.label;
@@ -318,8 +370,24 @@ export function resolveAlias(realName: string, targetName: string): string | und
   return best >= 0 ? label : undefined;
 }
 
-/** 规则条数 / 去重后的匹配键数（UI 展示用） */
-export function aliasStats(): { rules: number; enabled: boolean; name: string } {
+/**
+ * 配置概览（UI 展示用）。
+ *
+ * `enabled` 是**用户的开关意图**，不是「是否正在生效」——
+ * 若把两者混在一起，规则为 0 条时开关会显示成关闭状态，看起来像功能没启用，
+ * 而实际只是还没导入规则。是否真的在改显示，看 `active`。
+ */
+export function aliasStats(): {
+  rules: number;
+  enabled: boolean;
+  active: boolean;
+  name: string;
+} {
   const c = load();
-  return { rules: c.rules.length, enabled: c.enabled && c.rules.length > 0, name: c.name };
+  return {
+    rules: c.rules.length,
+    enabled: c.enabled,
+    active: c.enabled && c.rules.length > 0,
+    name: c.name,
+  };
 }

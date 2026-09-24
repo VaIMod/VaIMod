@@ -20,12 +20,11 @@ const _A = [
   224, 189, 179, 170, 185, 193, 143, 236, 174, 110, 199, 114, 210, 146, 240, 88, 92, 247, 115, 22,
   14, 173, 67, 147, 227, 151, 125,
 ];
-const _B = [221, 127, 209, 100, 255, 205, 40, 240, 82, 89, 127, 234, 219, 234, 227, 216, 190, 64, 97, 142, 134, 64, 181, 114];
+// 原 `_B`（封禁名单密文）与其密钥 `_KB` 已随「移除黑名单」一并删除 —— 见下方封禁检查处的说明。
 const _C = [219, 2, 125, 85, 251, 146, 161, 121, 55, 68, 22, 150];
 const _D = [180, 2, 81, 71];
 
 const _KA = 0x5a3f7c21;
-const _KB = 0x4d6e8f3a;
 const _KC = 0x7b9d1e5f;
 const _KD = 0x2c4a9b77;
 
@@ -52,8 +51,9 @@ export async function shouldHalt(): Promise<boolean> {
       const body = data.body as Record<string, unknown> | undefined;
       const oid = body?.studentOid ?? data.studentOid;
       if (typeof oid !== 'string') return true;
-      // [移除黑名单] 按用户要求，将账号(CCW 显示ID 265011225 / 源码中原硬编码 studentOid 670b895b19f4df62e8081d80)
-      // 从封禁名单中剔除：原本此处会比对当前用户 studentOid 是否等于被封禁的 _B，命中则 terminate() 关闭页面。
+      // [移除黑名单] 按用户要求，将账号（CCW 显示 ID 265011225 / 源码中原硬编码 studentOid
+      // 670b895b19f4df62e8081d80）从封禁名单中剔除：原本此处会比对当前用户 studentOid 是否命中
+      // 封禁名单（密文常量），命中则 terminate() 关闭页面 —— 该密文常量与解密分支已一并删除。
       // 现改为不对该 oid 触发 halt，使该账号可正常使用 VaIMod。其余(无 oid / 请求失败)的自我保护逻辑保留。
       return false;
     } finally {

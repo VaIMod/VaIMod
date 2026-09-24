@@ -257,7 +257,7 @@ interface Decision {
  * 判定一个出网请求。返回 null = 不管（同源 / 站点同族 / 已跳过）。
  * 注意：这里**只判定不记录**，记录交给 record()——避免被拒绝的请求重复写日志。
  */
-function judge(url: string, method: string, body: unknown): Decision | null {
+function judge(url: string, body: unknown): Decision | null {
   if (!url || quickSkip(url)) return null;
   const host = safeHost(url);
   if (!host) return null;
@@ -350,7 +350,7 @@ function record(
 /** 统一入口：判定 + 记录，返回是否应放行 */
 function inspect(url: string, method: string, body: unknown, kind: FwKind): boolean {
   try {
-    const d = judge(url, method, body);
+    const d = judge(url, body);
     if (!d) return true;
     record(url, safeHost(url), method, kind, body, d);
     return !d.blocked;

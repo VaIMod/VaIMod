@@ -323,7 +323,10 @@ export function createPluginUI(opts: PluginUIOpts): PluginUIApi {
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.className = 'vpu-check-native';
-    cb.checked = o.checked !== false;
+    // 复选框默认**未勾选**（HTML 语义）。开关（switch）才默认开——那是「功能默认启用」
+    // 的语义。两者混用同一个 `checked !== false` 会让 `ui.check({text:'确认删除'})`
+    // 一渲染就是勾选态，作者按「默认未选」写的逻辑与界面相反。
+    cb.checked = o.checked === true;
     if (o.ariaLabel) cb.setAttribute('aria-label', o.ariaLabel);
     const box = make('span', 'vpu-check-box');
     const mark = make('span', 'vpu-check-mark');

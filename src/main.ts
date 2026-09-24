@@ -60,7 +60,7 @@ installSecureGuardFront(); // ⓪ 反作弊扩展反制前置（最先：签名�
 installSigGuardFront(); // ⓪′ 数字签名扩展反制（实例净化 + 双注册咽喉 + 变量名保护）
 installStealth(); // ① stealth 防检测（DOM/遍历/MO/toString 全套）
 installXssGuard(); // ② XSS 速执行拦截（document.write / 字符串定时器）
-installNetFirewall(); // ②′ 网络防火墙（fetch/XHR/beacon/ws 出网观察与拦截，默认只观察）
+installNetFirewall(); // ②′ 网络防火墙（独立补丁：默认 off = 不装任何钩子；开启后在设置页配置）
 hookOfficialCloudApi(); // ③ 官方云 API 通道（fetch 观察，随时捕获 endpoint）
 installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住 fetch/XHR，默认 off 零影响）
 installHoneypotGuard(); // ④ 蜜罐陷阱防检测（假修改器 UI 诱饵 + window 假 vm 陷阱，攻击即轮换）

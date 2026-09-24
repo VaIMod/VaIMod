@@ -112,9 +112,27 @@ function spawnDecoyFor(sel: string): HTMLElement {
   return el;
 }
 
-function spawnDecoy(): HTMLElement {
-  const sel = DECOY_SELECTORS[(Math.random() * DECOY_SELECTORS.length) | 0];
-  return spawnDecoyFor(sel);
+/**
+ * 布设单个诱饵并插入 body；不布设时返回 null。
+ * `#id` 形态多一步：**已存在同名元素就直接放弃**——重复 id 会让
+ * `document.getElementById` 返回我们的隐形诱饵，站点自己的面板逻辑会操作到错的节点，
+ * secure-guard / sig-guard 的「回滚 inline 隐藏」也会打在诱饵上而不是真元素。
+ */
+function plantOne(sel: string): HTMLElement | null {
+  if (sel.startsWith('#')) {
+    try {
+      if (document.getElementById(sel.slice(1))) return null;
+    } catch {
+      return null;
+    }
+  }
+  const el = spawnDecoyFor(sel);
+  // 随机插入位置（让敌人无法靠"固定在 body 末尾"定位我们的宿主规律）
+  const kids = document.body.children;
+  const idx = (Math.random() * (kids.length + 1)) | 0;
+  if (idx >= kids.length) document.body.appendChild(el);
+  else document.body.insertBefore(el, kids[idx]);
+  return el;
 }
 
 function plantDecoys(): void {
@@ -123,13 +141,8 @@ function plantDecoys(): void {
   for (const sel of DECOY_SELECTORS) {
     if (decoyNodes.has(sel)) continue;
     try {
-      const el = spawnDecoyFor(sel);
-      decoyNodes.set(sel, el);
-      // 随机插入位置（让敌人无法靠"固定在 body 末尾"定位我们的宿主规律）
-      const kids = document.body.children;
-      const idx = (Math.random() * (kids.length + 1)) | 0;
-      if (idx >= kids.length) document.body.appendChild(el);
-      else document.body.insertBefore(el, kids[idx]);
+      const el = plantOne(sel);
+      if (el) decoyNodes.set(sel, el);
     } catch {
       decoyNodes.delete(sel);
     }
@@ -142,9 +155,13 @@ function plantWindowDecoys(): void {
   const win = globalThis as unknown as Record<string, unknown>;
   for (const key of VM_DECOY_KEYS) {
     try {
-      // 页面真实全局占用同名 → 跳过（不破坏宿主）
+      // 页面/其它扩展已占用同名 → 跳过（不破坏宿主真实全局）。
+      // 必须挡**任何**已存在的自有属性，尤其是**访问器**形态：旧判定只挡
+      // 「数据属性且值非 undefined」，页面用 getter 惰性暴露同名全局时会被我们的
+      // 假对象顶掉，而下面 configurable:false 让页面**永远无法恢复** ——
+      // 依赖该 getter 的站点脚本从此拿到空壳，与「不破坏页面真实全局」的目标相反。
       const existing = Object.getOwnPropertyDescriptor(win, key);
-      if (existing && existing.value !== undefined && !existing.get) continue;
+      if (existing) continue;
       // 陷阱：读 → 返回"假 vm 泄漏"（空运行时）；写 → 计数并忽略；删 → 静默失败
       const decoy = {
         runtime: { targets: [], extensions: new Map<string, unknown>() },
@@ -185,12 +202,8 @@ function tick(): void {
       decoyNodes.delete(sel);
       // 立即重植（同一次心跳内补齐，界面感知不到缺失窗口）
       try {
-        const el = spawnDecoyFor(sel);
-        decoyNodes.set(sel, el);
-        const kids = document.body.children;
-        const idx = (Math.random() * (kids.length + 1)) | 0;
-        if (idx >= kids.length) document.body.appendChild(el);
-        else document.body.insertBefore(el, kids[idx]);
+        const el = plantOne(sel);
+        if (el) decoyNodes.set(sel, el);
       } catch {
         /* ignore */
       }

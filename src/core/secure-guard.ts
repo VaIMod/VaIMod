@@ -690,9 +690,10 @@ function installStyleWatcher(): void {
 //       已登记的 shadow 根里查（宿主是随机标签，这些类只存在于 shadow 内）
 const UI_SELF_SELECTORS = '.svp,.svp-host,.svp-panel,.svp-fab,.svp-toast,.svp-overlay,.vpu-confirm';
 const UI_TARGET_IDS: string[] = HIDE_CSS_MARKERS.filter((mk) => mk.startsWith('#')).map((mk) => mk.slice(1));
-const UI_TARGET_CLASSES: string = HIDE_CSS_MARKERS.filter((mk) => mk.startsWith('.'))
-  .map((mk) => mk.slice(1))
-  .join(',');
+// 前导点必须留着：这里拼的是 querySelectorAll 的选择器串，去掉 '.' 会变成**标签选择器**
+// （`spectre-window` 只会匹配 <spectre-window> 自定义元素），class 形态的第三方修改器
+// UI 就永远扫不到，回滚形同虚设。id 组能 slice(1) 是因为 getElementById 正好不要 '#'。
+const UI_TARGET_CLASSES: string = HIDE_CSS_MARKERS.filter((mk) => mk.startsWith('.')).join(',');
 
 /**
  * 单元素回滚：仅当「display:none + important」时撤销。
@@ -747,7 +748,17 @@ export function restoreHiddenElements(): void {
     // ① 第三方修改器 UI：id 走哈希查找，class 合并成一次选择器
     for (const id of UI_TARGET_IDS) {
       const el = document.getElementById(id);
-      if (el) cache.add(el);
+      if (!el) continue;
+      cache.add(el);
+      // honeypot 会植入同 id 的隐形诱饵（data-role=placeholder）。getElementById 只返回
+      // 文档序最前的一个 —— 诱饵在前时回滚就打在诱饵上，真元素的 inline 隐藏撤不掉。
+      // 正常情况走上面的 O(1) 快路径；只有真撞上诱饵才退回属性选择器全量同名扫描（较贵）。
+      if (el.getAttribute('data-role') !== 'placeholder') continue;
+      try {
+        for (const same of Array.from(document.querySelectorAll(`[id="${id}"]`))) cache.add(same);
+      } catch {
+        /* ignore */
+      }
     }
     if (UI_TARGET_CLASSES) {
       try {

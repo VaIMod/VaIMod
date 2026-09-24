@@ -15,6 +15,9 @@ const KEY_CACHE = new WeakMap<SecretChannel, Map<string, number>>();
 export class SecretChannel {
   private token = Math.random().toString(36).slice(2) + Date.now().toString(36);
   private seq = 0;
+  // 密钥代次：每次轮换 +1。下游凡是「把用当前密钥算出的结果缓存起来」的地方
+  // （如 cipher 的编码缓存）都必须把它并进缓存键，否则轮换后会命中旧密钥产物。
+  private epoch = 0;
   private static readonly instances = new Set<SecretChannel>();
 
   static create(): SecretChannel {
@@ -73,8 +76,14 @@ export class SecretChannel {
       sig: (Math.random() * 0xffffff) >>> 0,
     });
     this.token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    this.epoch++;
     const cache = KEY_CACHE.get(this);
     if (cache) cache.clear();
+  }
+
+  /** 密钥代次（只增不减）：下游缓存键必须并进它，避免跨轮换命中旧密钥产物 */
+  get keyEpoch(): number {
+    return this.epoch;
   }
 
   /** 加强：健康检查——密钥就位 + 派生缓存状态 */

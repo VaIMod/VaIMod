@@ -9,6 +9,7 @@
   import type { InstalledPlugin, PluginContext, PluginProjectApi } from '../core/plugins';
   import { runPluginBoot, runPluginRefresh, makePluginStore, pluginRegistry } from '../core/plugin-registry';
   import { createPluginUI } from '../core/plugin-ui';
+  import { scopeCss } from '../core/plugin-css';
   import {
     getAliasConfig,
     setAliasConfig,
@@ -163,70 +164,10 @@
     }
   });
 
-  /**
-   * CSS 作用域限定：把插件 css 里的每条选择器都加上 `#<scopeId>` 前缀，
-   * 保证插件样式不会泄漏到 VaIMod 其它页面，也不受外部样式影响。
-   * 简化处理：按 `}` 切分规则块，逐块给选择器加前缀；@media/@keyframes 原样保留
-   * （其内部规则也会被前缀，因为切分后选择器仍在段首）。
-   */
-  function scopeCss(css: string, scopeSel: string): string {
-    if (!css.trim()) return '';
-    const out: string[] = [];
-    // 按规则块切分（顶层 {} 配对）
-    let depth = 0;
-    let buf = '';
-    for (let i = 0; i < css.length; i++) {
-      const ch = css[i];
-      if (ch === '{') {
-        depth++;
-        if (depth === 1) {
-          const head = buf.trim();
-          buf = '';
-          out.push(`@@HEAD@@${head}`);
-          continue;
-        }
-      } else if (ch === '}') {
-        depth--;
-        if (depth === 0) {
-          out.push(`@@BODY@@${buf}`);
-          buf = '';
-          continue;
-        }
-      }
-      buf += ch;
-    }
-    if (buf.trim()) out.push(`@@BODY@@${buf}`);
+  // ---------- 插件 CSS 作用域限定 ----------
+  // 实现抽到 core/plugin-css.ts（设置页的 settingsCss 也走同一套前缀与 at-rule 规则，
+  // 两处若各留一份拷贝，修了一处漏一处 —— 那正是上一版 @media 后门的成因）。
 
-    let result = '';
-    let pendingHead: string | null = null;
-    for (const seg of out) {
-      if (seg.startsWith('@@HEAD@@')) {
-        pendingHead = seg.slice(8).trim();
-        continue;
-      }
-      const body = seg.slice(8);
-      if (pendingHead === null) {
-        // 无头的裸声明块：忽略
-        continue;
-      }
-      const head = pendingHead;
-      pendingHead = null;
-      if (head.startsWith('@')) {
-        // at-rule（@media / @keyframes / @supports…）：整块保留，内部规则不额外加前缀
-        // （@keyframes 的百分比选择器加前缀会破坏语义）
-        result += `${head}{${body}}\n`;
-      } else {
-        const scoped = head
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((s) => (s.startsWith('&') ? `${scopeSel}${s.slice(1)}` : `${scopeSel} ${s}`))
-          .join(', ');
-        result += `${scoped}{${body}}\n`;
-      }
-    }
-    return result;
-  }
 
   // 作用域 id 跟随插件定义（插件被同 id 升级替换时跟着变，强制重建样式）
   // 注意：scopeCss 已给每条选择器加 #scopeId 前缀，这里绝不能再包一层
@@ -366,6 +307,10 @@
 
   function teardown() {
     alive = false;
+    // 必须复位：本组件在 `{#key activeTab:bodyAnimKey}` 里，插件被同 id 升级替换 /
+    // 切换标签页都会走 teardown → 新 boot 若走同步路径就不再回调 onBooting，
+    // 「插件加载中…」会永久挂在页面上（code 其实已经在跑）。
+    pluginBooting = false;
     if (cleanupFn) {
       try {
         cleanupFn();

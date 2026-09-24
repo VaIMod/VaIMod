@@ -5,6 +5,32 @@ const STORE_KEY = ['vai', 'mod', '_disp', 'names'].join('');
 let cache: Record<string, string> | null = null;
 
 /**
+ * 变更通知。
+ * 为什么必须有：面板把别名表读成组件级 `$state(loadDisplayNames())`（挂载时一份拷贝），
+ * 而外部入口会整份改写它 —— 配置包导入走 saveDisplayNames、设置里「清空本地记忆」走
+ * clearDisplayNames。没有通知时这两个动作之后，已挂载的变量页/云数据页会继续显示旧别名，
+ * 界面与存储不一致，直到面板重新挂载为止（本地重命名有 subscribeAliasConfig，这里缺一条）。
+ */
+const listeners = new Set<() => void>();
+
+export function subscribeDisplayNames(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
+function notify(): void {
+  for (const cb of [...listeners]) {
+    try {
+      cb();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
  * 只保留字符串值的别名表。
  * 别名来源有两个都不可信：配置包导入（任意 JSON）与被篡改的 localStorage。
  * 非字符串值一旦流入消费端（`(displayNames[k] ?? name).toLowerCase()`）会抛
@@ -48,6 +74,7 @@ export function setDisplayName(key: string, name: string): void {
   } catch {
     /* ignore */
   }
+  notify();
 }
 
 /** 整体覆盖（用于配置包导入）；直接写 localStorage + 失效缓存 */
@@ -58,6 +85,7 @@ export function saveDisplayNames(map: Record<string, string>): void {
   } catch {
     /* ignore */
   }
+  notify();
 }
 
 /** 删除单条别名（恢复该变量/云数据原始名） */
@@ -70,6 +98,7 @@ export function removeDisplayName(key: string): void {
   } catch {
     /* ignore */
   }
+  notify();
 }
 
 /** 一键恢复：清空显示别名。带前缀时只清该域（'v'=变量 / 'c'=云数据），不带则全清 */
@@ -90,6 +119,7 @@ export function clearDisplayNames(prefix?: string): void {
     } catch {
       /* ignore */
     }
+    notify();
     return;
   }
   if (Object.keys(c).length === 0) return;
@@ -99,6 +129,7 @@ export function clearDisplayNames(prefix?: string): void {
   } catch {
     /* ignore */
   }
+  notify();
 }
 
 /** 是否存在显示别名（可指定域，用于控制「一键恢复」按钮显隐） */

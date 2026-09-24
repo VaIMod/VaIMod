@@ -89,8 +89,9 @@ class ZtnaEngine {
       return false;
     }
     const now = Date.now();
-    // 过期（含颁发窗口超限）：续期放行，失败计数清零
-    if (now > t.expire || now - t.ts > TICKET_TTL_MS) {
+    // 过期（长闲置 > TTL）：续期放行，失败计数清零
+    // （expire === ts + TICKET_TTL_MS，故按 elapsed 判定与按 expire 判定等价）
+    if (now - t.ts > TICKET_TTL_MS) {
       this.rotate();
       this.failures = 0;
       this.stats.set('renew', (this.stats.get('renew') ?? 0) + 1);

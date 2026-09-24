@@ -105,12 +105,22 @@ export class VeilChannel {
     return this.seq;
   }
 
-  /** 销毁：停自检、解绑、从汇总层移除 */
+  /** 销毁：停自检、摘遮罩、解绑、从汇总层移除 */
   destroy(): void {
     if (this.timer !== null) {
       clearInterval(this.timer);
       this.timer = null;
     }
+    // 旧根里的遮罩节点要一并摘掉，并复位挂载标记——
+    // 否则 destroy → 重新 install 到同一个根时，残留节点会被当成「已就位」，
+    // 新建的遮罩则留在旧根里无处回收。
+    try {
+      const old = this.root?.querySelector('.svp-veil');
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+    } catch {
+      /* ignore */
+    }
+    this.divInited = false;
     this.root = null;
     untrackVpn('veil', this);
   }

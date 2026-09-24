@@ -75,8 +75,14 @@ export function wrapVmLoadProjectEarly(vm: object): boolean {
   if (stopped) return false;
   const holder = vm as { loadProject?: unknown };
   if (!holder || typeof holder.loadProject !== 'function' || wrappedVms.has(vm)) return false;
-  wrappedVms.add(vm);
-  return installLoadProjectTap(vm, (input) => recordEarlyCapture(input));
+  // 标记必须与「安装真的成功」绑定：installLoadProjectTap 会失败（典型场景是
+  // loadProject 被定义成访问器——上面 typeof holder.loadProject === 'function'
+  // 能过，但 lp-guard 的 findNative 只认数据描述符 → 返回 null）。
+  // 先标后装在失败时会让 earlyWrapped(vm) 恒为 true，bridge 据此**跳过自己的 tap**
+  // （scratch-vm 侧逻辑）→ 「作品捕获」整条链永久为空，且轮询因 wrappedVms 命中而白跑。
+  const ok = installLoadProjectTap(vm, (input) => recordEarlyCapture(input));
+  if (ok) wrappedVms.add(vm);
+  return ok;
 }
 
 function scanOnce(): boolean {

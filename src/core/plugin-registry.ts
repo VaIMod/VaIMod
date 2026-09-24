@@ -68,10 +68,22 @@ export function tamperedPluginIds(): string[] {
   return [...tamperedIds];
 }
 
+/**
+ * 「拒绝加载但不许删」的条目原样保留区。
+ *
+ * 为什么需要：readStore 会把指纹不符的条目排除在返回值之外、ensure 会把解析失败的
+ * 条目 catch 掉，而 persist() 只写 this.installed —— 于是这些条目在**本次启动就被
+ * 从盘上覆盖删除**。但注释与 UI 都承诺「不静默丢弃 / 保留在盘上 / 重新上传即可修复」，
+ * 用户还没拿到修复机会，数据先没了，下次启动告警也消失得无影无踪。
+ * 这里存原始记录，persist 时并回；同 id 被重新上传安装时由新记录覆盖（天然自愈）。
+ */
+let quarantined: StoredMap = {};
+
 // ---------- 底层读写 ----------
 
 function readStore(): StoredMap {
   try {
+    quarantined = {};
     const raw = localStorage.getItem(STORE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as unknown;
@@ -89,6 +101,8 @@ function readStore(): StoredMap {
       const bodySig = typeof o.bodySig === 'string' && o.bodySig ? o.bodySig : '';
       if (bodySig && bodySig !== pluginSignature(o.src)) {
         if (!tamperedIds.includes(id)) tamperedIds.push(id);
+        // 原样扣留（含不符的 bodySig：告警要保持可见，直到用户重新上传该插件）
+        quarantined[id] = { ...(o as unknown as StoredPlugin), src: o.src };
         continue;
       }
       out[id] = {
@@ -173,6 +187,7 @@ class PluginRegistry {
         }
       } catch {
         // 损坏条目：保留在盘上不删（用户可能想手工修），但内存不加载
+        quarantined[id] = rec;
       }
     }
     this.settings = new Map(Object.entries(readSettings()));
@@ -181,6 +196,10 @@ class PluginRegistry {
 
   private persist(): void {
     const store: StoredMap = {};
+    // 先铺「扣留区」，再铺内存态：同 id 以内存态为准（重新上传安装即自愈）
+    for (const [id, rec] of Object.entries(quarantined)) {
+      if (!this.installed.has(id)) store[id] = rec;
+    }
     for (const [id, p] of this.installed) {
       const src = serializePluginDef(p.def);
       store[id] = {
@@ -258,6 +277,7 @@ class PluginRegistry {
     // 用户重新上传安装同一个插件 → 覆盖写入会带上正确的完整性指纹，撤掉旧告警
     const ti = tamperedIds.indexOf(def.id);
     if (ti >= 0) tamperedIds.splice(ti, 1);
+    delete quarantined[def.id]; // 扣留记录一并清掉，否则该插件日后被卸载时它会「复活」
     const exist = this.installed.get(def.id);
     if (exist) {
       if (exist.sig === sig) return 'skipped';
@@ -320,7 +340,15 @@ class PluginRegistry {
     this.ensure();
     const had = this.installed.delete(id);
     this.settings.delete(id);
-    if (had) {
+    // 被扣留（指纹不符 / 解析失败）的条目不在 installed 里，但同样要能被清掉：
+    // 否则它永远留在盘上、告警永远消不掉，用户除了改 localStorage 别无他法。
+    const held = id in quarantined;
+    if (held) {
+      delete quarantined[id];
+      const ti = tamperedIds.indexOf(id);
+      if (ti >= 0) tamperedIds.splice(ti, 1);
+    }
+    if (had || held) {
       stopPatch(id); // 补丁即刻下线（清 cleanup + 钩子），不等 UI 同步
       this.persist();
       this.emit();

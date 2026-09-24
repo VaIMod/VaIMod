@@ -240,6 +240,7 @@
           class="svp-card svp-plug-card"
           class:svp-plug-card-patch={p.def.type === 'patch'}
           class:svp-plug-off={!p.enabled}
+          id={`vmp-set-${p.def.id}`}
         >
           <div class="svp-card-top">
             <strong class="svp-plug-name">{p.def.name}</strong>

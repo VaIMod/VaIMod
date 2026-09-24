@@ -167,7 +167,7 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 | 场景 | 真 JS |
 |---|---|
 | 后台基线（1500ms 空窗，不点任何东西） | **3~14ms** → 常驻轮询不是元凶 |
-| 重复切页 | 变量 ~50ms ｜ 云数据 ~18ms ｜ 防火墙 6~14ms ｜ 系统 17~32ms |
+| 重复切页 | 变量 ~38ms ｜ 云数据 ~14ms ｜ 系统 ~31ms |
 | 面板首次展开（变量页首挂载） | 36~62ms（一次性） |
 
 → **变量页最重、且随变量数增长**，就是「面板有时卡一下」的主要来源。
@@ -185,6 +185,23 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 3. **初始快照移出交互帧**（`SystemPanel.svelte`）：原用 `queueMicrotask`，它在当前任务后、**绘制前**执行，
    正好卡切页首帧；改为 `scheduleIdle`（rIC + setTimeout 双保险，无头环境 rIC 可能不触发）。
    语义不变（同样只在无标记时建一次），只是不抢帧。
+4. **滚动/缩放事件合并**（`ui-guard.ts`，2026-09-24）：原来 `scroll`/`resize`/`orientationchange`
+   每个事件都跑一次全量巡检 —— 而巡检含 `getBoundingClientRect`（强制布局）+ `elementsFromPoint`
+   （命中测试）+ 逐元素 `getComputedStyle`（强制样式重算），一次滚动可上百个事件。改为 ≤80ms 合并，
+   **尾随用 `setTimeout` 而不是 rAF**：无头/后台环境 rAF 可能永不触发，丢掉尾随调用会让最后一次
+   滚动再也补不上（可见性守卫留缺口）。同批还有 `dom-utils` 的 TreeWalker 包装改为「迭代时判空集」，
+   空集是 O(1)，有宿主才付逐节点 `isProtected` 的代价（原来干脆不包装 = 隐藏缺口）。
+
+**本轮改动后的基线重采**（`probe-perf.mjs`，2026-09-24）：
+
+```
+{"hiddenReads":0,"hiddenScriptMs":14.9,"hiddenTaskMs":103.3,"hiddenBusyPct":1.29,"catchUpReads":2,
+ "idle":{"n":181,"p50":16.7,"p95":16.8,"max":16.8,"janky":0},
+ "tab":{"n":36,"p50":16.7,"p95":16.7,"max":16.8,"janky":0},
+ "drag":{"n":125,"p50":16.7,"p95":16.8,"max":16.8,"janky":0}}
+```
+
+隐藏 8s 内**变量表读取 0 次**（可见性门控有效）+ 主线程忙 1.29% + 空闲/切页/拖拽三场景 **0 掉帧**。
 
 **已排除（别再重复排查）**：
 
@@ -201,9 +218,19 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 3. `resolveAlias()` 结果进入模板前当纯文本（已确认走 Svelte 文本插值，无 `innerHTML`）
 4. 原型污染键 `__proto__` / `constructor` / `prototype`：`alias-config.ts` 扁平表形态已拒；防火墙规则表同
 
-### 网络防火墙（已完成）
+### 网络防火墙（已完成 · 形态已改为「独立补丁」）
 
-`src/core/net-firewall.ts` + `src/ui/FirewallPanel.svelte` + `probe-firewall.mjs`（45/45）。
+`src/core/net-firewall.ts` + `src/ui/FirewallSection.svelte` + `probe-firewall.mjs`（47/47）。
+
+**形态（用户明确要求：防火墙应该是单独补丁，不是系统内置）**：
+
+- **不是内置 Tab**，不占面板位置 —— 默认面板只有「变量 / 云数据」
+- **默认关闭**（`settings.firewall = 'off'`）：关闭态不安装任何网络钩子，零开销、零行为变化
+- 配置与日志挂在**设置覆盖层**的「网络防火墙 · 独立补丁」分区里（三态分段 + 外传拦截 + 黑白名单 + 最近 20 条日志）
+- 一次性迁移（`TABS_SCHEMA_VER` 2）：旧配置里的 `firewall` Tab 条目被剔除、模式强制归位到 `off`
+  —— 旧版的 `watch` 是「内置能力默认打开」的产物，不是用户的显式选择；归位只发生一次
+
+其余能力：
 
 - document-start 钩 `fetch` / `XHR(open+send)` / `sendBeacon` / `WebSocket.send`（只观察，不替换构造器以保住 `instanceof`）
 - 三态：关闭（不装任何钩子，零开销）/ 监视（只记录全放行）/ 拦截（仅黑名单命中拒绝）
@@ -215,7 +242,113 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 ### UI
 
 等用户给**具体现象**（用户偏好具体反馈，泛泛「优化 UI」容易白做）。
-本轮已附带：变量页 Tab `flex: 1 1 auto` + `nowrap`（长名 Tab 不再溢出）、防火墙页复用 `.svp-fs-*` 样式族保持视觉一致。
+本轮已附带：变量页 Tab `flex: 1 1 auto` + `nowrap`（长名 Tab 不再溢出）、防火墙分区复用 `.svp-fs-*` 样式族保持视觉一致、
+设置页「本地重命名」区文案去修饰（格式说明从常驻正文挪到「导入 JSON」按钮的 `title`，出错时才由错误信息说清）、
+防火墙日志在设置页里只列最近 20 条（设置页不是全量审计工具）。
+
+---
+
+## P4 · 默认面板收敛 + 本地重命名默认启用（2026-09-24，已完成）
+
+**用户要求**：默认面板只有「变量」和「云数据」；系统/防火墙/工具/飞书都不是默认面板；本地重命名要处于启用状态。
+
+### 默认面板
+
+- `DEFAULT_ENABLED_TABS` 收敛为 `{vars, ccw}`（原为 vars/ccw/firewall/system）
+- `firewall` 从 `BuiltinTabId` 移除 → 旧配置里的该条目会被 `isTabId` 过滤掉
+- **新加的内置 Tab 一律默认关闭**（原来「新增内置 Tab 自动补齐并启用」，会让默认面板随版本悄悄变形）
+- 一次性迁移 `TABS_SCHEMA_VER = 2` + `tabsVer` 字段：
+  - 只重置**内置** Tab 的显隐；插件 Tab 条目与全部条目的相对顺序原样保留（用户拖出来的顺序不该被抹掉）
+  - 旧版把 `firewall` 默认开成 `watch`，一并归位为 `off`
+  - 迁移结果在 `loadSettings` / `loadSettingsFor` 里顺手落盘，只跑一次（用户后来手动开回来的不会被覆盖）
+- 探针 `probe-default-tabs.mjs`（22/22）：全新安装 / 旧配置迁移 / 迁移只做一次 / 自定义顺序保留 / 缺条目默认关闭 / 本地重命名开关
+
+### 本地重命名「启用」语义（真 bug）
+
+`aliasStats().enabled` 原来返回 `c.enabled && c.rules.length > 0` —— 规则为 0 条时开关显示成**关闭**，
+看起来像「功能没启用」，实际只是还没导入规则。改为：
+
+- `enabled` = **用户的开关意图**（驱动设置页那个 toggle）
+- 新增 `active` = 是否真的在改显示（`enabled && rules > 0`）
+
+### 顺带的安全 / 性能
+
+- **安全**：导入配置文件先看字节数再读内容（> 2MB 直接拒，配置来自任意来源）；规则数超限改为**整份拒绝**而非截断
+  （截断会静默留下「半份配置生效」的中间态，最难排查 —— 原注释声明如此但实现是 `break`，属注释与实现不符）
+- **性能**：`resolveAlias()` 建**匹配索引**（精确名走 Map O(1)，通配规则单独成表），
+  并把 `canonTarget(targetName)` 从「每规则一次」降为「每变量一次 + 单槽记忆」——
+  它是每个变量都会走的热路径，5000 条规则 × 900 变量的线性扫描会让变量页卡住
+- **性能**：防火墙默认 `off` → 不装钩子（原本 `watch` 会钩住 fetch/XHR/beacon/WS 四个通道）
+
+### 探针基建教训（踩坑记录）
+
+- **`addInitScript` 每次导航都会重放（含 `reload`）**：预置 localStorage 时不加「只播一次」门控，
+  reload 后会把预置值又写回去 —— 看起来像「产品把用户的设置改回去了」，实际是自己把盘覆盖了。
+  统一做法：`if (!localStorage.getItem('__vaimod_seed')) { …预置…; localStorage.setItem('__vaimod_seed','1'); }`
+  （页面级对象如 `window.__ossCalls` 仍要每次导航重设，它们无副作用）
+- **默认面板收敛会级联打破多套老探针**：凡是依赖「系统页/飞书页默认可见」的断言，
+  都必须在预置里显式开启对应 Tab + 写 `tabsVer:2`，否则会误报成产品 bug
+
+
+---
+
+## P5 · 全项目审计：已修 / 未修清单（2026-09-24）
+
+对全仓 `src/` 做了逐文件审计（性能 / 安全 / UI / 插件与配置系统），**已修如下**：
+
+| 缺陷 | 位置 | 性质 |
+| --- | --- | --- |
+| `settingsCss` 不做作用域限定 + 不过滤 `@import` | `SettingsOverlay.svelte` | **安全**：插件可改写整个设置页样式、拉外部样式表 |
+| `@media` 内规则整块不加前缀 = 作用域后门 | `plugin-css.ts`（新） | **安全**：一条 `@media{ .svp-header{} }` 就能改全局面板样式 |
+| 顶层多余 `}` 把配对深度压成负数 → 整段错位（逃逸块因此生效、`@keyframes` 整段丢失） | `plugin-css.ts` | **安全 + 功能** |
+| `getOwnPropertyDescriptor` 违反 Proxy 不变量（冻结/不可写属性上 trap 自抛 TypeError） | `vm-sandbox.ts` | **功能** |
+| 匿名函数 / async 箭头被误当「方法简写」→ 拼出 `function function(...)` 语法错误 | `plugins.ts` | **功能**：这类插件 code 完全不执行 |
+| `UI_TARGET_CLASSES` 丢了前导点 → 变成标签选择器，class 形态第三方 UI 回滚恒失效 | `secure-guard.ts` | **安全** |
+| `MutationObserver.takeRecords()` 未过滤 = 完整旁路（可同步拿到宿主） | `dom-utils.ts` | **安全（隐身）** |
+| TreeWalker/NodeIterator 在宿主创建前包装时直接返回 → 早期创建的 walker 永不过滤 | `dom-utils.ts` | **安全（隐身）** |
+| 密钥轮换后编码缓存未失效 → 命中旧密钥密文（解出来是垃圾） | `cipher.ts` / `secret-channel.ts` | **正确性** |
+| `replaceWith` 可把宿主摘出文档且调用后不回看 → 最长 1s 不可见窗口 | `ui-guard.ts` | **UI 防篡改** |
+| 蜜罐 window 陷阱只挡数据属性 → 覆盖页面同名 getter 且 `configurable:false` 永不可恢复 | `honeypot-guard.ts` | **破坏宿主** |
+| 蜜罐 `#id` 诱饵造成重复 id（站点 `getElementById` 会拿到我们的隐形节点） | `honeypot-guard.ts` + 两个 guard 消费侧 | **破坏宿主** |
+| 拒绝 XHR 只调 IDL 回调 → `addEventListener` 调用方永久挂起（违反自述承诺） | `feishu-guard.ts` | **功能** |
+| `wrappedVms.add` 先于安装成功 → 安装失败时 bridge 跳过自己的 tap，捕获链永久为空 | `capture-early.ts` | **功能** |
+| `loadProject` 包装未登记 markNative → `Function.prototype.toString.call` 暴露包装源码 | `lp-guard.ts` | **安全（隐身）** |
+| `getOwnPropertyDescriptor`… 完整性校验失败的条目被 `persist()` 静默删盘 | `plugin-registry.ts` | **数据**：注释/UI 承诺「保留可修复」 |
+| 删除键前缀用 `_` 作分隔符，id 又允许 `_` → 跨插件串写 / 误删 | `plugin-registry.ts` | **数据**（未修，见下） |
+| 设置页别名表无变更通知 → 导入配置/清空记忆后已挂载面板留旧名 | `display-names.ts` | **UI 一致性** |
+| `ui.check()` 省略 `checked` 时默认勾选（复选框语义反了） | `plugin-ui.ts` | **语义** |
+| `pluginBooting` 不在 teardown 复位 → 永久显示「插件加载中…」 | `PluginTab.svelte` | **UI** |
+| 角色限定的 `match:'*'` 记 0 分 → 与不限角色同分，由遍历顺序决定 | `alias-config.ts` | **语义** |
+| 滚动/缩放每事件全量巡检（命中测试 + getComputedStyle + 布局查询） | `ui-guard.ts` | **性能**：合并到 ≤80ms（setTimeout 尾随，不用 rAF） |
+
+**定位手段**：`probe-plugin-css-scope.mjs`（新，11/11）+ `fixture-css-scope.plugin.js` 是对抗样本，
+改 `scopeCss` / 设置页样式注入后**必须**跑它。其余靠既有 256 项基线。
+
+### 未修（已知、暂不触发，别重复踩）
+
+1. **插件私有存储命名空间**：`makePluginStore` 用 `vaimod_plug_${id}_`，`_` 既是分隔符又是
+   id 合法字符（`/^[a-z0-9][a-z0-9_-]{1,47}$/`）。`foo` 与 `foo_bar` 两个插件会串写同一条
+   key，卸载 `foo` 还会把 `foo_bar` 的私有数据整块删掉。
+   修法要动命名空间 = 老用户插件私有数据会丢，**必须先设计「读旧前缀 + 写新前缀」的迁移**再动。
+2. **`functionCodeToString` 已修，但 `load` 段同样走它** —— 若将来支持 `load: function(){}`，
+   记得一起回归（当前只影响 code/refresh）。
+3. **`PluginManager` 安装路径对同一份源码 `parsePluginSource` 两次**（`onFiles` 先解析一次、
+   `registry.install` 内部再解析一次）。`parsePluginSource` 是**真实执行**源码，顶层有副作用的
+   插件会被执行两遍。修法：给 registry 加一个「已有 def + src」的安装入口。
+4. **`plugin-ui` 的 `ui.confirm` / `ui.modal` 浮层不随插件卸载清理**：浮层挂面板 ShadowRoot、
+   `document` keydown 也只由 finish/close 移除。插件切页/停用后可能残留遮罩挡住面板。
+   修法：`createPluginUI` 记录自己创建的浮层与监听器，暴露 `dispose()`，由 teardown 统一收。
+5. **`secure-cache` 的 `enc` 用 `secretChannel.salt()`，密钥轮换后已存条目解不回来**
+   （`JSON.parse` 抛错 → 条目被删 → 语义退化为「缓存未命中」）。行为无害，未动。
+6. **`sig-guard` 的 `purgeMaskStyle` 观察者只订 `attributes:style`**：走 CSSOM（`sheet.insertRule`）
+   注入隐藏规则的路径不触发；`secure-guard` 侧同理只订 `childList`。
+7. **`dom-utils` 的 live 集合语义**：`children` / `childNodes` / `getElementsBy*` 一旦命中受保护
+   节点就返回**静态快照**（且 `childElementCount` 仍按 live 重算 → 两者可能不一致）。
+   站点若缓存 `el.children` 再增删后按索引访问会踩到。修法是返回 live facade 代理，属于较大改造。
+8. **全局 setter/对象替换的重复包裹**：`secure-guard.hookRegister` 无幂等标记，
+   `window.Scratch` 每次赋值都会再包一层（`sig-guard` 有 `__vaimodSigHooked` 防重）。
+9. **`probe-perf` 的性能基线未在本轮改动后重采**（`ui-guard` 事件合并、`dom-utils` 每节点判空
+   这两处都动了热路径）——下次做性能相关改动时先补一次对照。
 
 ---
 

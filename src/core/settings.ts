@@ -2,8 +2,13 @@
 // 加载模式：async（默认，Tab 切换先给反馈再异步挂载内容）/ sync（立即挂载）。
 export type LoadMode = 'async' | 'sync';
 
-/** 面板 Tab 标识：内置固定 6 个，插件页用 `plug:<id>` 形式的动态标识 */
-export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'firewall' | 'system';
+/**
+ * 面板 Tab 标识：内置固定 5 个，插件页用 `plug:<id>` 形式的动态标识。
+ *
+ * 网络防火墙**不属于内置 Tab** —— 它是独立补丁（见 core/net-firewall.ts 与设置页的
+ * 「网络防火墙」分区）：默认关闭、不占面板位置，需要时在设置里单独打开。
+ */
+export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'system';
 export type TabId = BuiltinTabId | `plug:${string}`;
 
 export const TAB_LABELS: Record<BuiltinTabId, string> = {
@@ -11,7 +16,6 @@ export const TAB_LABELS: Record<BuiltinTabId, string> = {
   ccw: '云数据',
   tools: '工具',
   feishu: '飞书',
-  firewall: '防火墙',
   system: '系统',
 };
 
@@ -21,7 +25,7 @@ export interface TabPref {
   enabled: boolean;
 }
 
-export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'tools', 'feishu', 'firewall', 'system'];
+export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'tools', 'feishu', 'system'];
 
 /** 判断是否内置 Tab */
 export function isBuiltinTab(id: string): id is BuiltinTabId {
@@ -86,17 +90,22 @@ export interface Settings {
   firewall: FirewallMode;
   /** enforce 模式下是否连「疑似把变量数据外传到第三方」的请求也拦（默认否，避免误伤统计/埋点） */
   firewallBlockExfil: boolean;
+  /** 内置 Tab 显隐方案的版本号：用于一次性迁移（见 TABS_SCHEMA_VER） */
+  tabsVer?: number;
 }
 
 const KEY = 'vaimod_settings_v1';
 
-/** 默认显示的内置标签页：变量/云数据/系统/防火墙（飞书和工具默认关闭，可在设置页手动开启） */
-const DEFAULT_ENABLED_TABS: ReadonlySet<BuiltinTabId> = new Set([
-  'vars',
-  'ccw',
-  'firewall',
-  'system',
-]);
+/**
+ * 内置 Tab 显隐方案版本。
+ * v1 → v2：默认面板从「变量/云数据/系统/防火墙」收敛为**只有变量和云数据**。
+ * 系统、防火墙、工具、飞书都改为默认关闭（在设置页里随时可开），
+ * 因为它们要么是低频运维入口、要么是重型安全组件，不该占默认面板的位置。
+ */
+const TABS_SCHEMA_VER = 2;
+
+/** 默认显示的内置标签页：只有变量与云数据（其余内置 Tab 默认关闭，可在设置页手动开启） */
+const DEFAULT_ENABLED_TABS: ReadonlySet<BuiltinTabId> = new Set(['vars', 'ccw']);
 
 export function defaultTabs(): TabPref[] {
   return ALL_TAB_IDS.map((id) => ({ id, enabled: DEFAULT_ENABLED_TABS.has(id) }));
@@ -111,9 +120,11 @@ export function defaultSettings(): Settings {
     feishuIntercept: 'off', // 默认不拦截：不改变任何既有行为
     feishuOnTimeout: 'allow',
     feishuTimeoutMs: 30000,
-    // 默认监视：只记录第三方出网请求、一律放行，不改变站点任何行为
-    firewall: 'watch',
+    // 网络防火墙是独立补丁：默认关闭 —— 不安装任何网络钩子（零开销、零行为变化）。
+    // 需要时在「设置 → 网络防火墙」里打开（监视=只审计 / 拦截=按黑名单拒绝）。
+    firewall: 'off',
     firewallBlockExfil: false,
+    tabsVer: TABS_SCHEMA_VER,
   };
 }
 
@@ -122,6 +133,20 @@ function isTabId(x: unknown): x is TabId {
   if ((ALL_TAB_IDS as string[]).includes(x)) return true;
   // 插件页：plug:<插件 id>（id 规则与 plugins.ts 的 ID_RE 对齐）
   return /^plug:[a-z0-9][a-z0-9_-]{1,47}$/.test(x);
+}
+
+/**
+ * 内置 Tab 显隐的一次性迁移（方案版本落后时执行）。
+ *
+ * 只重置**内置** Tab 的显隐：插件 Tab 条目、以及全部条目的相对顺序原样保留
+ * （用户拖拽出来的顺序是他花力气调过的，不该被迁移抹掉）。
+ * 因为有 `tabsVer` 门控，只跑一次 —— 迁移后用户再手动开回来的选择不会被反复覆盖。
+ */
+function migrateTabs(tabs: TabPref[], ver: unknown): TabPref[] {
+  if (typeof ver === 'number' && ver >= TABS_SCHEMA_VER) return tabs;
+  return tabs.map((t) =>
+    isBuiltinTab(t.id) ? { ...t, enabled: DEFAULT_ENABLED_TABS.has(t.id) } : t,
+  );
 }
 
 /**
@@ -146,10 +171,11 @@ export function normalizeSettings(
     if (list.length > 0) tabs = list;
   }
   // 内置 Tab 补齐：tabs 数组只会记录「用户见过的内置 Tab」（UI 只能切显隐、不能删条目），
-  // 因此数组里完全缺席的内置 Tab = 本次版本新加的 → 追加到末尾并默认启用。
-  // 用户手动隐藏过的 Tab 仍在数组里（enabled=false），不受此逻辑影响，不会被强行打开。
+  // 因此数组里完全缺席的内置 Tab = 本次版本新加的 → 追加到末尾，但**默认关闭**。
+  // 为什么要默认关闭：内置 Tab 里混着低频运维入口（系统）与重型安全组件（防火墙），
+  // 自动冒出来会挤掉用户真正要用的面板，也让「默认面板」随版本悄悄变形。
   for (const b of ALL_TAB_IDS) {
-    if (!tabs.some((t) => t.id === b)) tabs.push({ id: b, enabled: true });
+    if (!tabs.some((t) => t.id === b)) tabs.push({ id: b, enabled: false });
   }
   if (knownPluginTabs) {
     const known = new Set(knownPluginTabs);
@@ -165,12 +191,21 @@ export function normalizeSettings(
     }
     // 内置 Tab 若被剔除（理论上不会）则补回，保证面板恒有内容
     for (const b of ALL_TAB_IDS) {
-      if (!kept.some((t) => t.id === b)) kept.push({ id: b, enabled: true });
+      if (!kept.some((t) => t.id === b)) kept.push({ id: b, enabled: false });
     }
     tabs = kept;
   }
+  tabs = migrateTabs(tabs, parsed.tabsVer);
   const mode = parsed.feishuIntercept;
   const fw = parsed.firewall;
+  // 防火墙是**独立补丁**，默认关闭：迁移时（tabsVer 落后）强制归位为 off ——
+  // 旧版本把它当内置能力默认打开了 watch，那不是用户的显式选择。
+  // 归位只发生一次，之后用户自己开的模式会被完整保留。
+  const fwMode: FirewallMode = tabsVerStale(parsed.tabsVer)
+    ? d.firewall
+    : fw === 'watch' || fw === 'enforce'
+      ? fw
+      : d.firewall;
   return {
     loadMode: parsed.loadMode === 'sync' ? 'sync' : 'async',
     applyCreateOnRestore: parsed.applyCreateOnRestore !== false,
@@ -186,9 +221,16 @@ export function normalizeSettings(
       typeof parsed.feishuTimeoutMs === 'number' && Number.isFinite(parsed.feishuTimeoutMs)
         ? Math.max(0, Math.min(300000, Math.floor(parsed.feishuTimeoutMs)))
         : d.feishuTimeoutMs,
-    firewall: fw === 'off' || fw === 'enforce' ? fw : 'watch',
+    // 防火墙：独立补丁，默认关闭（见下方 fwMode 的迁移说明）
+    firewall: fwMode,
     firewallBlockExfil: parsed.firewallBlockExfil === true,
+    tabsVer: TABS_SCHEMA_VER,
   };
+}
+
+/** 配置是否落后于当前的 Tab 方案版本（需要在读取时顺手落盘，避免每次启动都重跑迁移） */
+function tabsVerStale(ver: unknown): boolean {
+  return !(typeof ver === 'number' && ver >= TABS_SCHEMA_VER);
 }
 
 /** 读取（向后兼容：旧设置缺字段时用默认补齐；tabs 缺失/损坏时重建） */
@@ -197,7 +239,9 @@ export function loadSettings(): Settings {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaultSettings();
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    return normalizeSettings(parsed);
+    const next = normalizeSettings(parsed);
+    if (tabsVerStale(parsed.tabsVer)) saveSettings(next);
+    return next;
   } catch {
     return defaultSettings();
   }
@@ -217,7 +261,9 @@ export function loadSettingsFor(pluginTabs: string[]): Settings {
       return { ...d, tabs };
     }
     const parsed = JSON.parse(raw) as Partial<Settings>;
-    return normalizeSettings(parsed, pluginTabs);
+    const next = normalizeSettings(parsed, pluginTabs);
+    if (tabsVerStale(parsed.tabsVer)) saveSettings(next);
+    return next;
   } catch {
     return defaultSettings();
   }
