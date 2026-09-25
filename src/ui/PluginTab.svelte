@@ -15,7 +15,6 @@
     setAliasConfig,
     exportAliasConfig,
     clearAliasConfig,
-    setAliasEnabled,
     aliasStats,
     subscribeAliasConfig,
   } from '../core/alias-config';
@@ -258,7 +257,6 @@
         importConfig: (raw: unknown) => setAliasConfig(raw),
         exportConfig: () => exportAliasConfig(),
         clear: () => clearAliasConfig(),
-        setEnabled: (on: boolean) => setAliasEnabled(on),
         subscribe(cb) {
           // teardown 后拒绝注册，避免异步 code 迟到落定时挂进已销毁的上下文
           if (!alive) return () => {};

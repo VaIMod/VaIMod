@@ -30,7 +30,6 @@ import {
   setAliasConfig,
   exportAliasConfig,
   clearAliasConfig,
-  setAliasEnabled,
   aliasStats,
   subscribeAliasConfig,
 } from './alias-config';
@@ -867,7 +866,6 @@ function runOnePatch(p: InstalledPlugin, host: PatchHost): void {
       importConfig: (raw: unknown) => setAliasConfig(raw),
       exportConfig: () => exportAliasConfig(),
       clear: () => clearAliasConfig(),
-      setEnabled: (on: boolean) => setAliasEnabled(on),
       subscribe: (cb: () => void) => {
         const unsub = subscribeAliasConfig(cb);
         unsubs.push(unsub);

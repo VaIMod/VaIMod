@@ -18,7 +18,6 @@ import {
   setAliasConfig,
   exportAliasConfig,
   clearAliasConfig,
-  setAliasEnabled,
   aliasStats,
   subscribeAliasConfig,
 } from './core/alias-config';
@@ -152,7 +151,6 @@ function installDebug(bridge: ScratchVM): void {
         importConfig: (raw: unknown) => setAliasConfig(raw),
         exportConfig: () => exportAliasConfig(),
         clear: () => clearAliasConfig(),
-        setEnabled: (on: boolean) => setAliasEnabled(on),
         subscribe: (cb: () => void) => subscribeAliasConfig(cb),
       },
     };

@@ -13,14 +13,7 @@
   } from '../core/settings';
   import { pluginRegistry } from '../core/plugin-registry';
   import { clearDisplayNames } from '../core/display-names';
-  import {
-    aliasStats,
-    exportAliasConfig,
-    setAliasConfig,
-    setAliasEnabled,
-    clearAliasConfig,
-    ALIAS_LIMITS,
-  } from '../core/alias-config';
+  import { clearAliasConfig } from '../core/alias-config';
   import PluginManager from './PluginManager.svelte';
   import { scopeCss } from '../core/plugin-css';
   import { fly } from 'svelte/transition';
@@ -29,76 +22,11 @@
     settings,
     onChange,
     onClose,
-    aliasHits = 0,
   }: {
     settings: Settings;
     onChange: (next: Settings) => void;
     onClose: () => void;
-    /** 当前被规则表改名的变量条数（由面板统计，设置层只展示） */
-    aliasHits?: number;
   } = $props();
-
-  // ===== 本地重命名配置（仅显示层，不新建/不改名作品里的变量） =====
-  let aliasTick = $state(0);
-  let aliasFileEl: HTMLInputElement | undefined = $state();
-  let aliasMsg = $state('');
-  let aliasMsgErr = $state(false);
-  const aliasInfo = $derived.by(() => {
-    void aliasTick;
-    return aliasStats();
-  });
-
-  function aliasSay(text: string, err = false) {
-    aliasMsg = text;
-    aliasMsgErr = err;
-  }
-
-  async function onAliasFile(ev: Event) {
-    const input = ev.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = '';
-    if (!file) return;
-    // 先看字节数再读内容：超大文件不该先进内存（配置来自任意来源，按不可信输入对待）
-    if (file.size > ALIAS_LIMITS.maxJsonBytes) {
-      aliasSay(`文件过大（${Math.round(file.size / 1024)} KB），上限 2 MB`, true);
-      return;
-    }
-    try {
-      const text = await file.text();
-      const cfg = setAliasConfig(text);
-      aliasTick = aliasTick + 1;
-      aliasSay(`已导入 ${cfg.rules.length} 条规则${cfg.name ? `（${cfg.name}）` : ''}`, false);
-    } catch (e) {
-      aliasSay(e instanceof Error ? e.message : '导入失败：文件不是合法 JSON', true);
-    }
-  }
-
-  function onAliasExport() {
-    if (!aliasInfo.rules) {
-      aliasSay('当前没有可导出的规则', true);
-      return;
-    }
-    const blob = new Blob([exportAliasConfig()], { type: 'application/json;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `vaimod-alias-${Date.now()}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-    aliasSay('已导出为 JSON', false);
-  }
-
-  function onAliasClear() {
-    clearAliasConfig();
-    aliasTick = aliasTick + 1;
-    aliasSay('已清空本地重命名规则', false);
-  }
-
-  function onAliasToggle(on: boolean) {
-    setAliasEnabled(on);
-    aliasTick = aliasTick + 1;
-    aliasSay(on ? '已启用本地重命名' : '已停用本地重命名', false);
-  }
 
   function updateSetting(patch: Partial<Settings>) {
     const next = { ...settings, ...patch };
@@ -554,7 +482,6 @@
       clearDisplayNames();
       // 同理：本地重命名配置也有模块缓存，必须走 API
       clearAliasConfig();
-      aliasTick = aliasTick + 1;
       localStorage.removeItem(['vai', 'mod', '_grp_exp'].join(''));
       clearedPulse = true;
       setTimeout(() => (clearedPulse = false), 800);
@@ -684,60 +611,6 @@
 
     <div class="svp-setting-group">插件</div>
     <PluginManager onChanged={() => (plugVer = plugVer + 1)} />
-
-    <div class="svp-setting-group">本地重命名</div>
-    <div class="svp-setting-item">
-      <div class="svp-setting-text">
-        <div class="svp-setting-name">启用本地重命名</div>
-        <div class="svp-setting-desc">只改面板显示，不动作品里的变量</div>
-      </div>
-      <button
-        class="svp-toggle"
-        class:svp-toggle-on={aliasInfo.enabled}
-        onclick={() => onAliasToggle(!aliasInfo.enabled)}
-        role="switch"
-        aria-checked={aliasInfo.enabled}
-        aria-label="启用本地重命名"
-      >
-        <span class="svp-toggle-dot"></span>
-      </button>
-    </div>
-    <div class="svp-setting-item">
-      <div class="svp-setting-text">
-        <div class="svp-setting-name">规则 {aliasInfo.rules} 条 · 已生效 {aliasHits} 个变量</div>
-        {#if aliasInfo.name}
-          <div class="svp-setting-desc">{aliasInfo.name}</div>
-        {/if}
-      </div>
-    </div>
-    <div class="svp-alias-bar">
-      <button class="svp-btn svp-btn-sm" onclick={() => aliasFileEl?.click()}>导入 JSON</button>
-      <button
-        class="svp-btn svp-btn-ghost svp-btn-sm"
-        onclick={onAliasExport}
-        disabled={aliasInfo.rules === 0}
-      >
-        导出 JSON
-      </button>
-      <button
-        class="svp-btn svp-btn-red-ghost svp-btn-sm"
-        onclick={onAliasClear}
-        disabled={aliasInfo.rules === 0}
-      >
-        清空
-      </button>
-      <input
-        bind:this={aliasFileEl}
-        class="svp-file-input svp-alias-file"
-        type="file"
-        accept=".json,application/json"
-        tabindex="-1"
-        onchange={onAliasFile}
-      />
-    </div>
-    {#if aliasMsg}
-      <div class="svp-alias-msg" class:svp-alias-msg-err={aliasMsgErr}>{aliasMsg}</div>
-    {/if}
 
     <div class="svp-setting-group">还原系统</div>
     <div class="svp-setting-item">

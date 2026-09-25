@@ -10,7 +10,7 @@ import {
   saveAllTrash,
 } from './ops-meta';
 import { saveDisplayNames, loadDisplayNames } from './display-names';
-import { getAliasConfig, setAliasConfig, normalizeAliasConfig, type AliasConfig } from './alias-config';
+import { getAliasConfig, setAliasConfig, normalizeAliasConfig, upsertAliasRules, resolveAlias, type AliasConfig } from './alias-config';
 import { robotList, setRobots } from './feishu';
 import { normalizeSettings, type Settings } from './settings';
 import { pluginRegistry } from './plugin-registry';
@@ -37,9 +37,21 @@ export interface BundleVariable {
   name: string;
   targetName: string;
   kind: 'variable' | 'list';
+  /**
+   * 变量值。`"*"` = **自带检测**（用户要求的语义）：导入时不改这个变量的值，
+   * 保持作品里的当前值 —— 配置只负责锁定策略（isLocked/lockInterval）与显示名。
+   * 典型用法：通配模板 `{ name: '*', value: '*', isLocked: true }` =
+   * 「把项目里所有变量的当前值原样锁定」。
+   */
   value: ScratchValue;
+  /** 是否锁定变量（锁定 = 面板/锁定器持续把该值写回，防止被站点改掉） */
   isLocked: boolean;
   lockInterval?: number;
+  /**
+   * 本地显示名（本地重命名）：导入时合并进重命名规则表（同 `match+scope` 覆盖旧规则）。
+   * 本地重命名已强制开启、设置页不再有独立栏目 —— 它由本字段与 `aliasConfig` 携带。
+   */
+  rename?: string;
 }
 
 /**
@@ -249,6 +261,8 @@ function sanitizeVariable(raw: unknown): BundleVariable | null {
   const interval = typeof o.lockInterval === 'number' && Number.isFinite(o.lockInterval)
     ? Math.max(0, o.lockInterval)
     : undefined;
+  const renameRaw = typeof o.rename === 'string' ? o.rename.trim() : '';
+  const rename = renameRaw && renameRaw.length <= 256 ? renameRaw : undefined;
   return {
     name: o.name,
     targetName: typeof o.targetName === 'string' ? o.targetName : '',
@@ -256,6 +270,7 @@ function sanitizeVariable(raw: unknown): BundleVariable | null {
     value,
     isLocked: o.isLocked === true,
     lockInterval: interval,
+    ...(rename ? { rename } : {}),
   };
 }
 
@@ -453,6 +468,14 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
     const cfg = setAliasConfig(bundle.aliasConfig);
     aliasRules = cfg.rules.length;
   }
+  // 变量条目自带的 rename：合并进规则表（同 match+scope 覆盖旧规则），不整表覆盖。
+  // 两条携带通道（aliasConfig 规则表 / 条目 rename）在这里汇合 —— 后者优先级更高。
+  const entryRenames = bundle.variables
+    .filter((v) => v.rename && v.name !== '*')
+    .map((v) => ({ match: v.name, label: v.rename as string, scope: v.targetName || undefined }));
+  if (entryRenames.length > 0) {
+    aliasRules += upsertAliasRules(entryRenames);
+  }
 
   // 飞书机器人：全量覆盖
   setRobots(bundle.robots);
@@ -576,15 +599,20 @@ export function buildVaIModBundleFromVars(args: {
     version: BUNDLE_VERSION,
     exportedAt: new Date().toISOString(),
     project: args.project,
-    variables: args.variables.map((v) => ({
-      name: v.name,
-      targetName: v.targetName,
-      kind: v.kind,
-      // 已解码的明文值（列表为数组原样保留）
-      value: Array.isArray(v.value) ? (v.value.slice() as VariableValue[]) : v.value,
-      isLocked: v.isLocked,
-      lockInterval: v.isLocked ? (lockIntervalMap.get(v.id) ?? 0) : undefined,
-    })),
+    variables: args.variables.map((v) => {
+      const rename = resolveAlias(v.name, v.targetName);
+      return {
+        name: v.name,
+        targetName: v.targetName,
+        kind: v.kind,
+        // 已解码的明文值（列表为数组原样保留）
+        value: Array.isArray(v.value) ? (v.value.slice() as VariableValue[]) : v.value,
+        isLocked: v.isLocked,
+        lockInterval: v.isLocked ? (lockIntervalMap.get(v.id) ?? 0) : undefined,
+        // 本地显示名随条目走：导出即完整备份，换设备导入无需再传单独的别名文件
+        ...(rename ? { rename } : {}),
+      };
+    }),
     displayNames: loadDisplayNames(),
     aliasConfig: getAliasConfig(),
     cloudProject: args.cloudProject,
@@ -622,7 +650,18 @@ export function summarizeBundle(b: VaIModBundle): BundleSummary {
     locked: b.variables.filter((v) => v.isLocked).length,
     lists: b.variables.filter((v) => v.kind === 'list').length,
     displayNames: Object.keys(b.displayNames).length,
-    aliasRules: b.aliasConfig?.rules?.length ?? 0,
+    // 规则表条数 + 变量条目自带 rename 的条数（两者是两条携带通道，导入时合并；
+    // 按 match+scope 去重，避免同一条既在规则表又在条目里被数两遍）
+    aliasRules:
+      (b.aliasConfig?.rules?.length ?? 0) +
+      b.variables.filter(
+        (v) =>
+          v.rename &&
+          v.name !== WILDCARD &&
+          !b.aliasConfig?.rules?.some(
+            (r) => r.match === v.name && (r.scope ?? '') === (v.targetName || ''),
+          ),
+      ).length,
     cloudProject: Object.keys(b.cloudProject).length,
     cloudUser: Object.keys(b.cloudUser).length,
     robots: b.robots.length,
@@ -689,6 +728,8 @@ export interface ResolvedWrite {
  *   2. 通配条目（name === '*'）：作为模板，套用到**所有尚未被具名条目命中的变量**，
  *      以及**所有新出现的变量**（因此新增变量天然被覆盖，无需改配置）。
  *   3. 通配条目的 targetName 也可为 '*'（不限目标）；若是具体目标名则只套该目标下的变量。
+ *   4. 条目的 **value 为 `"*"` = 自带检测**：导入时不改该变量的值，保持作品里的
+ *      当前值（由调用方读取并按需锁定）——本函数只负责把条目路由到变量，透传 value。
  *
  * 返回「写入指令 + 未匹配统计」，由调用方执行实际写入。
  */

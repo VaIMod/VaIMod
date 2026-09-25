@@ -296,11 +296,12 @@ export interface PluginContext {
    * 本地重命名配置（**仅显示层**，见 core/alias-config.ts）。
    * 注意语义：导入规则只改面板里显示的名字，**绝不新建变量、绝不改作品里的变量名**。
    * 因此这里没有「写变量」能力 —— 只有配置本身的读写。
+   * 本地重命名已**强制开启**（无开关，用户要求）：规则表非空即生效。
    */
   alias: {
     /** 当前配置副本 */
     get(): unknown;
-    /** 规则条数 / 是否启用 */
+    /** 规则条数 / enabled 恒为 true（无开关） */
     stats(): { rules: number; enabled: boolean; name: string };
     /** 导入配置（兼容 rules / variables / displayNames / 扁平表；非法时抛错） */
     importConfig(raw: unknown): unknown;
@@ -308,8 +309,6 @@ export interface PluginContext {
     exportConfig(): string;
     /** 清空规则 */
     clear(): void;
-    /** 启用/停用 */
-    setEnabled(on: boolean): void;
     /** 订阅配置变化（返回取消订阅函数） */
     subscribe(cb: () => void): () => void;
   };

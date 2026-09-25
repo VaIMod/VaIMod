@@ -230,21 +230,17 @@ export function hasAliasConfig(): boolean {
 }
 
 export function isAliasEnabled(): boolean {
-  const c = load();
-  return c.enabled && c.rules.length > 0;
+  // 强制开启（用户要求：本地重命名没有开关）：只要规则表非空就生效。
+  // 配置 JSON 里的 `enabled` 字段仅为向后兼容保留，读取时一律视为 true。
+  return load().rules.length > 0;
 }
 
 /** 导入/覆盖整份配置；输入非法时抛错（调用方展示原因） */
 export function setAliasConfig(raw: unknown): AliasConfig {
   const cfg = normalizeAliasConfig(raw);
   if (!cfg) throw new Error('配置格式无法识别：需要 rules / variables / displayNames / 扁平表之一');
-  persist(cfg);
+  persist({ ...cfg, enabled: true });
   return cfg;
-}
-
-export function setAliasEnabled(on: boolean): void {
-  const c = load();
-  persist({ ...c, enabled: !!on, rules: c.rules.map((r) => ({ ...r })) });
 }
 
 export function clearAliasConfig(): void {
@@ -344,7 +340,8 @@ function score(rule: AliasRule, realName: string, targetName: string, ct?: strin
  */
 export function resolveAlias(realName: string, targetName: string): string | undefined {
   const c = load();
-  if (!c.enabled || c.rules.length === 0) return undefined;
+  // 强制开启：没有用户开关，规则表非空即生效
+  if (c.rules.length === 0) return undefined;
   const idx = rulesIndex(c);
   const bucket = idx.exact.get(realName);
   if (!bucket && idx.wild.length === 0) return undefined;
@@ -373,9 +370,8 @@ export function resolveAlias(realName: string, targetName: string): string | und
 /**
  * 配置概览（UI 展示用）。
  *
- * `enabled` 是**用户的开关意图**，不是「是否正在生效」——
- * 若把两者混在一起，规则为 0 条时开关会显示成关闭状态，看起来像功能没启用，
- * 而实际只是还没导入规则。是否真的在改显示，看 `active`。
+ * `enabled` 恒为 true（本地重命名已强制开启、无开关，用户要求）。
+ * 「是否真的在改显示」看 `active`（规则表非空即 active）。
  */
 export function aliasStats(): {
   rules: number;
@@ -386,8 +382,46 @@ export function aliasStats(): {
   const c = load();
   return {
     rules: c.rules.length,
-    enabled: c.enabled,
-    active: c.enabled && c.rules.length > 0,
+    enabled: true,
+    active: c.rules.length > 0,
     name: c.name,
   };
+}
+
+/**
+ * 把一批规则**合并**进当前配置（不覆盖整份表）。
+ *
+ * 用途：配置包变量条目自带 `rename` 字段（见 bundle.ts BundleVariable）——
+ * 变量条目和 aliasConfig 规则表是两条独立的携带通道，导入时在这里汇合。
+ * 同 `match + scope` 的旧规则被新规则覆盖；全怪键与超限条目丢弃。
+ * 返回实际合并进去的条数。
+ */
+export function upsertAliasRules(
+  rules: { match: string; label: string; scope?: string; note?: string }[],
+): number {
+  const c = load();
+  const base = c.rules.map((r) => ({ ...r }));
+  const keyOf = (m: string, s?: string) => `${s ?? ''}\u0000${m}`;
+  const index = new Map(base.map((r, i) => [keyOf(r.match, r.scope), i]));
+  let added = 0;
+  for (const r of rules) {
+    const match = str(r.match, ALIAS_LIMITS.maxKeyLen);
+    const label = str(r.label, ALIAS_LIMITS.maxLabelLen);
+    if (!match || !label || isBadKey(match)) continue;
+    const scope = str(r.scope ?? undefined, 64) ?? undefined;
+    const note = str(r.note ?? undefined, ALIAS_LIMITS.maxNoteLen) ?? undefined;
+    const key = keyOf(match, scope);
+    const at = index.get(key);
+    const rule: AliasRule = { match, label, ...(scope ? { scope } : {}), ...(note ? { note } : {}) };
+    if (at === undefined) {
+      if (base.length >= ALIAS_LIMITS.maxRules) continue;
+      index.set(key, base.length);
+      base.push(rule);
+    } else {
+      base[at] = rule;
+    }
+    added++;
+  }
+  if (added > 0) persist({ ...c, enabled: true, rules: base });
+  return added;
 }

@@ -422,5 +422,10 @@ Free 套餐的组织私有仓不能开 Pages → `https://VaIMod.github.io/VaIMo
   引入 `HANDOFF_GRACE_MS` 宽限期
 - **2026-09-25 · 被拦 XHR 悬挂修复**：插件拒绝 XHR 改走 dispatchEvent（readystatechange+error+loadend），
   addEventListener 调用方不再永久挂起；探针 **42/42**
+- **2026-09-25 · 本地重命名改版 + 配置系统完善**：设置页「本地重命名」栏目移除、
+  功能**强制开启**（无开关；`ctx.alias.setEnabled` 已删除）；数据由主配置携带 ——
+  变量条目新增 `rename` 字段（导入合并进规则表，导出自动回填）+ `value: "*"` **自带检测**
+  （导入不改值，只应用锁定/显示名，通配模板即可「全项目现值锁定」）。
+  `probe-alias-config` 24/24 · `probe-default-tabs` 21/21 · 新增 `alias-bundle-test` 11/11
 - **2026-09-25 · 单测运行器**：`run-ts-test.mjs`（esbuild 打包直导 .ts 源码的单测，
   解决 Node 原生解析不了 src 无扩展名相对导入的问题）；sig-guard 13/13 · plugin 64/64

@@ -2005,34 +2005,6 @@
   gap: 10px;
   padding: 2px 0 6px;
 }
-/* 本地重命名配置：导入 / 导出 / 清空 按钮行 + 结果提示 */
-.svp-alias-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 2px 0 8px;
-  flex-wrap: wrap;
-}
-.svp-alias-file {
-  display: none;
-}
-.svp-alias-msg {
-  margin: -2px 0 8px;
-  padding: 6px 10px;
-  border-radius: 7px;
-  font-size: 12.5px;
-  line-height: 1.45;
-  background: rgba(48, 209, 88, 0.12);
-  color: #7ee2a0;
-  border: 1px solid rgba(48, 209, 88, 0.28);
-  /* 提示可能含用户配置里的名称：只当纯文本，永不 innerHTML */
-  word-break: break-word;
-}
-.svp-alias-msg-err {
-  background: rgba(255, 90, 90, 0.12);
-  color: #ff9d9d;
-  border-color: rgba(255, 90, 90, 0.3);
-}
 .svp-plug-count {
   margin-left: auto;
   font-size: 12.5px;

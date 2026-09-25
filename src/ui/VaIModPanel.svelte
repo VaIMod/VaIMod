@@ -39,7 +39,6 @@
     subscribeAliasConfig,
     exportAliasConfig,
     setAliasConfig,
-    setAliasEnabled,
     clearAliasConfig,
   } from '../core/alias-config';
   import { secureAction } from '../core/veil-chain';
@@ -646,17 +645,6 @@
     if (manual) return manual;
     return resolveAlias(v.name, v.targetName || '') ?? '';
   }
-  // 命中规则表的变量数（设置页展示「本地重命名已生效 N 条」）
-  const aliasHitCount = $derived.by(() => {
-    void aliasVer;
-    let n = 0;
-    for (const v of variables) {
-      if (!v || typeof v.name !== 'string') continue;
-      if (!displayNames[nameKey(v)] && resolveAlias(v.name, v.targetName || '')) n++;
-    }
-    return n;
-  });
-
   // ===== 变量页增强：新建变量 / 删除(回收站) / 监视器显隐 =====
   const targetOptions = $derived.by(() => {
     const map = new Map<string, string>();
@@ -1763,6 +1751,9 @@
       const wildTip = sum.wildcard > 0
         ? `\n（含 ${sum.wildcard} 条通配「*」条目：将自动套用到当前项目的所有变量）`
         : '';
+      const autoTip = bundle.variables.some((v) => v.value === '*')
+        ? '\n（含 value:"*" 条目：这些变量导入时保持作品当前值，只应用锁定与显示名）'
+        : '';
       const plugTip = sum.plugins > 0 ? `\n（含 ${sum.plugins} 个插件：将自动解析安装，已存在的相同插件跳过）` : '';
       // 「仅插件包」（设置页导出全部插件）：只装插件，其余字段是空占位，
       // 绝不能拿它去覆盖变量 / 别名 / 云数据 / 快照 / 回收站 / 设置。
@@ -1793,7 +1784,7 @@
       }
       if (
         !confirm(
-          `即将导入配置：\n${summaryText(sum)}${legacyTip}${wildTip}${plugTip}\n\n` +
+          `即将导入配置：\n${summaryText(sum)}${legacyTip}${wildTip}${autoTip}${plugTip}\n\n` +
             '变量/别名/还原点/回收站/机器人/设置/插件(含插件设置与启用态)将被覆盖，是否继续？',
         )
       ) {
@@ -1818,7 +1809,23 @@
       );
       let matched = 0;
       let wildApplied = 0;
+      let autoDetected = 0;
       for (const w of writes) {
+        if (w.value === '*') {
+          // 自带检测（value: "*"）：不改值，保持作品里的当前值 —— 只按需锁定。
+          // 值要读当前明文（回收站/删除流程同款读法），锁定器需要具体值才能写回。
+          const raw = bridge.readVariableValue(w.variableId, w.targetId);
+          const cur = toScratchValue(w.kind, raw === null ? '' : raw);
+          if (w.isLocked) {
+            bridge.lockVariable(w.variableId, cur, w.targetId, w.lockInterval ?? 0);
+          } else {
+            bridge.unlockVariable(w.variableId);
+          }
+          matched++;
+          if (w.from === 'wildcard') wildApplied++;
+          autoDetected++;
+          continue;
+        }
         const value = toScratchValue(w.kind, w.value);
         bridge.updateLockedVariableValue(w.variableId, value);
         bridge.setVariable(w.variableId, value, w.targetId);
@@ -1856,6 +1863,7 @@
       if (local.pluginSettings) parts.push(`插件设置 ${local.pluginSettings}`);
       if (local.pluginState) parts.push(`启用态 ${local.pluginState}`);
       if (wildApplied) parts.push(`通配套用 ${wildApplied}`);
+      if (autoDetected) parts.push(`自带检测 ${autoDetected}`);
       if (unmatched) parts.push(`未匹配 ${unmatched}`);
       if (local.displayNames > 0) parts.push(`别名 ${local.displayNames}`);
       if (local.aliasRules > 0) parts.push(`重命名规则 ${local.aliasRules}`);
@@ -2164,7 +2172,6 @@
           {settings}
           onChange={onSettingsChange}
           onClose={() => (showSettings = false)}
-          aliasHits={aliasHitCount}
         />
       {/if}
     </section>
