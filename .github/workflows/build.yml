@@ -1,9 +1,10 @@
 name: Build & Deploy
 
-# 触发时机：push 到 main 分支、手动触发
+# 触发时机：push 到 main 分支、push v* 标签（→ 发 Release）、手动触发
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths-ignore:
       - 'README.md'
   workflow_dispatch:
