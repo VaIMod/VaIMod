@@ -44,8 +44,12 @@ jobs:
         env:
           # 注入部署地址，vite 会据此生成 updateURL / downloadURL（自动更新用）
           GITHUB_PAGES_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
-          # 注入递增版本号（run_number 每次构建 +1），保证 Tampermonkey 能识别新版本
-          SCRIPT_VERSION: 0.1.${{ github.run_number }}
+          # 版本号：tag 构建（v*）直接用 tag 名（剥 v 前缀由 vite 处理），
+          # 保证 Release 产物 @version 与 tag 一致；main/手动构建用 run_number 递增
+          # （run_number 每次构建 +1，保证 Tampermonkey 能识别新版本）。
+          # ⚠ 不能无脑用 run_number：tag 触发的 run 与 tag 号会错位（v0.1.28 → run 26），
+          #    产物 @version 落后于 Release 版本，用户看不出来但升级判定会乱。
+          SCRIPT_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('0.1.{0}', github.run_number) }}
 
       # 尽力自动启用 Pages：仓库尚未开启 Pages 时尝试代开（需要 token 具备相应权限，
       # 权限不足会被忽略 —— 这一步失败不阻断后续，deploy 步骤会给出明确报错，

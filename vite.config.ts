@@ -35,6 +35,10 @@ const updateMeta = {
   updateURL: `${updateBase}VaIMod.user.js`,
 };
 
+// CI 注入版本：tag 构建传 tag 名（如 v0.1.28，这里剥掉 v 前缀），
+// main 构建传 0.1.<run_number>；本地无注入时回退 0.1.0。
+const scriptVersion = (process.env.SCRIPT_VERSION ?? '0.1.0').replace(/^v/, '');
+
 // 产物头部逐字固化：无论 vite-plugin-monkey 生成什么元信息顺序，
 // 最终都以这份模板为准（版本号用 SCRIPT_VERSION / 回退 0.1.0）。
 // 调试构建额外保留 127.0.0.1:8765 / localhost:8765 两条 @match（本地探针宿主）。
@@ -47,7 +51,7 @@ function exactUserscriptHeader() {
       _options: unknown,
       bundle: Record<string, { type: string; fileName: string; code?: string }>,
     ) {
-      const version = process.env.SCRIPT_VERSION ?? '0.1.0';
+      const version = scriptVersion;
       for (const file of Object.values(bundle)) {
         if (!file || file.type !== 'chunk' || !file.fileName.endsWith('.js')) continue;
         if (typeof file.code !== 'string' || !file.code.includes('==UserScript==')) continue;
@@ -87,7 +91,7 @@ export default defineConfig({
         // CI 注入 SCRIPT_VERSION=0.1.<run_number>（每次构建 +1）。必须在这里消费它：
         // Tampermonkey 只在 @version 变大时才自动更新，若写死成常量，
         // 自动构建出来的新版本永远推不到已安装的用户手上（自动更新形同虚设）。
-        version: process.env.SCRIPT_VERSION ?? '0.1.0',
+        version: scriptVersion,
         author: 'Maxkore@GitHub',
         match,
         grant: 'none',
