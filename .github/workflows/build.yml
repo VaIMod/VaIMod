@@ -69,7 +69,11 @@ jobs:
           if-no-files-found: error
 
   # 部署到 GitHub Pages（需在仓库 Settings → Pages 中把 Source 设为 GitHub Actions）
+  # ⛔ 只在 main 上部署：github-pages 环境的部署保护策略只认分支（deployment-branch-policies
+  #    不覆盖 tag），tag 触发的部署会被环境规则直接拒绝（"not allowed to deploy"）。
+  #    tag 只负责发 Release（release 作业不依赖本作业）；Pages 内容随 main 更新。
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
