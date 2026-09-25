@@ -1,6 +1,6 @@
 # VaIMod
 
-Scratch变量操作面板
+Scratch变量操作面板  
 实时查看、修改并锁定角色变量。支持导入和导出配置模板。
 
 ## 功能
@@ -18,8 +18,8 @@ Scratch变量操作面板
 ## 使用
 
 1. 安装浏览器脚本管理器（如 [Tampermonkey](https://www.tampermonkey.net/)）
-2. 安装脚本：[https://VaIMod.github.io/VaIMod/VaIMod.user.js](https://VaIMod.github.io/VaIMod/VaIMod.user.js)（或本地 `dist/VaIMod.user.js`）
-3. 项目页面：[https://VaIMod.github.io/VaIMod/](https://VaIMod.github.io/VaIMod/)
+2. 安装脚本：<https://VaIMod.github.io/VaIMod/VaIMod.user.js>（或本地 `dist/VaIMod.user.js`）
+3. 项目页面：<https://VaIMod.github.io/VaIMod/>
 4. 打开任意作品页，点击右下角悬浮球展开面板即可使用；面板头部齿轮是设置入口（未获取到 VM 时正文只显示等待状态，齿轮仍可用）。
 
 内置标签页为**变量 / 云数据 / 工具 / 飞书 / 系统**，默认只显示变量 / 云数据 / 系统，其余在设置的「标签页」里打开；标签页可拖拽排序、单独控制显隐，安装插件后会追加插件页。
@@ -48,5 +48,4 @@ npm run build # 构建脚本
 
 本项目使用 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0) 开源许可，完整协议见 [LICENSE](LICENSE)。
 
- 可自由使用、修改、二次分发，需保留原版权声明，标注原作者，按「现状」提供，不附带任何担保
-
+可自由使用、修改、二次分发，需保留原版权声明，标注原作者，按「现状」提供，不附带任何担保
