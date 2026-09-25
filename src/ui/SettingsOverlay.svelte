@@ -22,7 +22,6 @@
     ALIAS_LIMITS,
   } from '../core/alias-config';
   import PluginManager from './PluginManager.svelte';
-  import FirewallSection from './FirewallSection.svelte';
   import { scopeCss } from '../core/plugin-css';
   import { fly } from 'svelte/transition';
 
@@ -566,6 +565,9 @@
 </script>
 
 <div class="svp-settings-overlay" transition:fly={{ y: 12, duration: 200 }}>
+  <!-- 插件 settingsCss 的挂载锚点。用 position:absolute（见 global.css）脱离 flex 流，
+       否则它会在 .svp-settings-body 的 gap 链里白占上下两段间距（视觉上多空一格）。 -->
+  <div class="svp-plug-css-anchor" bind:this={plugCssAnchor} aria-hidden="true"></div>
   <div class="svp-settings-head">
     <span class="svp-settings-title">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -681,7 +683,6 @@
     </div>
 
     <div class="svp-setting-group">插件</div>
-    <div class="svp-plug-css-anchor" bind:this={plugCssAnchor} aria-hidden="true"></div>
     <PluginManager onChanged={() => (plugVer = plugVer + 1)} />
 
     <div class="svp-setting-group">本地重命名</div>
@@ -737,9 +738,6 @@
     {#if aliasMsg}
       <div class="svp-alias-msg" class:svp-alias-msg-err={aliasMsgErr}>{aliasMsg}</div>
     {/if}
-
-    <div class="svp-setting-group">网络防火墙 · 独立补丁</div>
-    <FirewallSection />
 
     <div class="svp-setting-group">还原系统</div>
     <div class="svp-setting-item">

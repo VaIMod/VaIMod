@@ -19,15 +19,8 @@
     aliasStats,
     subscribeAliasConfig,
   } from '../core/alias-config';
-  import {
-    firewallMode,
-    firewallStats,
-    firewallHits,
-    firewallRules,
-    addFirewallRule,
-    removeFirewallRule,
-    subscribeFirewall,
-  } from '../core/net-firewall';
+  import { isInternalXhr } from '../core/net-internal';
+  import { markNative } from '../dom-utils';
   import type { ScratchVaIMod } from '../core';
 
   let {
@@ -277,23 +270,11 @@
           };
         },
       },
-      // 网络防火墙：观察面 + 管理用户自己的域名规则（不含「直接放行/拦截」开关）
-      firewall: {
-        mode: () => firewallMode(),
-        stats: () => firewallStats(),
-        hits: () => firewallHits(),
-        rules: () => firewallRules(),
-        addRule: (h: string, k: 'block' | 'allow') => addFirewallRule(h, k),
-        removeRule: (h: string, k: 'block' | 'allow') => removeFirewallRule(h, k),
-        subscribe(cb: () => void) {
-          if (!alive) return () => {};
-          const unsub = subscribeFirewall(cb);
-          ctxUnsubs.add(unsub);
-          return () => {
-            ctxUnsubs.delete(unsub);
-            unsub();
-          };
-        },
+      // 网络类插件的基础设施：本体不内置任何网络钩子（防火墙是插件，
+      // 见 docs/plugin-net-firewall.js），这里只给两件跨边界必需的东西。
+      net: {
+        isInternalXhr: (xhr: unknown) => isInternalXhr(xhr),
+        markNative: (fn: object, name: string) => markNative(fn, name || 'anonymous'),
       },
       // UI 样式接口：组件工厂 + 面板内确认框（挂在面板所在 ShadowRoot）
       ui: createPluginUI({

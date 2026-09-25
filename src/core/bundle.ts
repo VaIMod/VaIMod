@@ -11,11 +11,6 @@ import {
 } from './ops-meta';
 import { saveDisplayNames, loadDisplayNames } from './display-names';
 import { getAliasConfig, setAliasConfig, normalizeAliasConfig, type AliasConfig } from './alias-config';
-import {
-  firewallRules as getFirewallRules,
-  importFirewallRules,
-  type FwRules,
-} from './net-firewall';
 import { robotList, setRobots } from './feishu';
 import { normalizeSettings, type Settings } from './settings';
 import { pluginRegistry } from './plugin-registry';
@@ -96,11 +91,6 @@ export interface VaIModBundle {
    * 可选：更早期的包没有这个字段；缺省时导入方保持设备上现有配置不动。
    */
   aliasConfig?: AliasConfig;
-  /**
-   * 网络防火墙域名规则（见 core/net-firewall.ts）。
-   * 可选：更早期的包没有这个字段；缺省时导入方保持设备上现有规则不动。
-   */
-  firewallRules?: FwRules;
   cloudProject: Record<string, unknown>;
   cloudUser: Record<string, unknown>;
   robots: FeishuRobot[];
@@ -203,7 +193,6 @@ export function buildPluginsOnlyBundle(): VaIModBundle {
     displayNames: {},
     // 仅插件包：别名与本地重命名都是空占位，导入时整块跳过（见 applyVaIModBundleLocal）
     aliasConfig: { version: 1, name: '', source: '', enabled: true, rules: [] },
-    firewallRules: { block: [], allow: [] },
     cloudProject: {},
     cloudUser: {},
     robots: [],
@@ -379,7 +368,6 @@ export function importVaIModBundle(raw: unknown): VaIModBundle | null {
     variables: vars,
     displayNames: asRecord(obj.displayNames) as Record<string, string>,
     aliasConfig: normalizeAliasConfig(obj.aliasConfig) ?? undefined,
-    firewallRules: sanitizeFwRules(obj.firewallRules),
     cloudProject: asRecord(obj.cloudProject),
     cloudUser: asRecord(obj.cloudUser),
     robots: asArray<FeishuRobot>(obj.robots).filter(
@@ -402,22 +390,10 @@ export function importVaIModBundle(raw: unknown): VaIModBundle | null {
   };
 }
 
-/** 防火墙规则容错解析：认不出返回 undefined，导入方据此「保持设备现状」而不是清空 */
-function sanitizeFwRules(raw: unknown): FwRules | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const o = raw as Record<string, unknown>;
-  if (!Array.isArray(o.block) && !Array.isArray(o.allow)) return undefined;
-  const strList = (x: unknown): string[] =>
-    asArray<unknown>(x).filter((s): s is string => typeof s === 'string');
-  return { block: strList(o.block), allow: strList(o.allow) };
-}
-
 export interface BundleApplyResult {
   displayNames: number;
   /** 写入的本地重命名规则条数（包里没有该字段时为 0，且不动设备上现有配置） */
   aliasRules: number;
-  /** 写入的防火墙规则总数（黑 + 白；包里没有该字段时为 0，且不动设备上现有规则） */
-  firewallRules: number;
   cloudProject: number;
   cloudUser: number;
   robots: number;
@@ -456,7 +432,6 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
     return {
       displayNames: 0,
       aliasRules: 0,
-      firewallRules: 0,
       cloudProject: 0,
       cloudUser: 0,
       robots: 0,
@@ -477,13 +452,6 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
   if (bundle.aliasConfig) {
     const cfg = setAliasConfig(bundle.aliasConfig);
     aliasRules = cfg.rules.length;
-  }
-
-  // 防火墙规则：全量覆盖；包里没有该字段 → 保持设备上现有规则不动（与本地重命名同一约定）
-  let firewallCount = 0;
-  if (bundle.firewallRules) {
-    const r = importFirewallRules(bundle.firewallRules);
-    firewallCount = r.block + r.allow;
   }
 
   // 飞书机器人：全量覆盖
@@ -514,7 +482,6 @@ export function applyVaIModBundleLocal(bundle: VaIModBundle): BundleApplyResult 
   return {
     displayNames: Object.keys(bundle.displayNames).length,
     aliasRules,
-    firewallRules: firewallCount,
     cloudProject: 0, // 由调用方填入
     cloudUser: 0,
     robots: bundle.robots.length,
@@ -542,8 +509,6 @@ export interface BundleSummary {
   displayNames: number;
   /** 本地重命名规则条数 */
   aliasRules: number;
-  /** 防火墙域名规则总数（黑 + 白） */
-  firewallRules: number;
   cloudProject: number;
   cloudUser: number;
   robots: number;
@@ -622,7 +587,6 @@ export function buildVaIModBundleFromVars(args: {
     })),
     displayNames: loadDisplayNames(),
     aliasConfig: getAliasConfig(),
-    firewallRules: getFirewallRules(),
     cloudProject: args.cloudProject,
     cloudUser: args.cloudUser,
     // 机器人：默认从本地登记表读，保证「导出即完整备份」
@@ -659,7 +623,6 @@ export function summarizeBundle(b: VaIModBundle): BundleSummary {
     lists: b.variables.filter((v) => v.kind === 'list').length,
     displayNames: Object.keys(b.displayNames).length,
     aliasRules: b.aliasConfig?.rules?.length ?? 0,
-    firewallRules: (b.firewallRules?.block?.length ?? 0) + (b.firewallRules?.allow?.length ?? 0),
     cloudProject: Object.keys(b.cloudProject).length,
     cloudUser: Object.keys(b.cloudUser).length,
     robots: b.robots.length,
@@ -682,7 +645,6 @@ export function summaryText(s: BundleSummary): string {
   if (s.lists) parts.push(`列表 ${s.lists}`);
   if (s.displayNames) parts.push(`别名 ${s.displayNames}`);
   if (s.aliasRules) parts.push(`重命名规则 ${s.aliasRules}`);
-  if (s.firewallRules) parts.push(`防火墙规则 ${s.firewallRules}`);
   if (s.cloudProject) parts.push(`作品云 ${s.cloudProject}`);
   if (s.cloudUser) parts.push(`用户云 ${s.cloudUser}`);
   if (s.robots) parts.push(`机器人 ${s.robots}`);

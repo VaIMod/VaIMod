@@ -212,39 +212,83 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 
 ### 安全性（已完成）
 
-1. ✅ **网络防火墙** `src/core/net-firewall.ts`（见下「网络防火墙」段）
+1. ✅ **网络防火墙** —— 已**移出本体**，改为可分发插件 `docs/plugin-net-firewall.js`（见下「网络防火墙」段）
 2. 配置导入的规模限制（深度 / 条数 / 字节数）—— `alias-config.ts` 已有 `ALIAS_LIMITS`（规则 5000 / 键 256 / JSON 2MB），
-   防火墙规则另有限额；**JSON 深度限制仍缺**（当前靠 `JSON.parse` 原生栈保护）
+   防火墙规则的限额由插件自己负责（插件里是 `LIMITS.maxRules` 等）；**JSON 深度限制仍缺**（当前靠 `JSON.parse` 原生栈保护）
 3. `resolveAlias()` 结果进入模板前当纯文本（已确认走 Svelte 文本插值，无 `innerHTML`）
 4. 原型污染键 `__proto__` / `constructor` / `prototype`：`alias-config.ts` 扁平表形态已拒；防火墙规则表同
 
-### 网络防火墙（已完成 · 形态已改为「独立补丁」）
+### 网络防火墙（已完成 · **形态已改为「可分发的独立插件」**）
 
-`src/core/net-firewall.ts` + `src/ui/FirewallSection.svelte` + `probe-firewall.mjs`（47/47）。
+`docs/plugin-net-firewall.js`（`id: net-firewall`，`type: ext`，`async.lazy: false`）
++ 本体侧 `src/core/net-internal.ts`（两个纯函数）
++ 探针 `probe-net-firewall.mjs`（**42/42**）。
 
-**形态（用户明确要求：防火墙应该是单独补丁，不是系统内置）**：
+**形态（用户明确要求：「防火墙就是一个正常的补丁插件，需要导入不然无法使用和显示」）**：
 
-- **不是内置 Tab**，不占面板位置 —— 默认面板只有「变量 / 云数据」
-- **默认关闭**（`settings.firewall = 'off'`）：关闭态不安装任何网络钩子，零开销、零行为变化
-- 配置与日志挂在**设置覆盖层**的「网络防火墙 · 独立补丁」分区里（三态分段 + 外传拦截 + 黑白名单 + 最近 20 条日志）
-- 一次性迁移（`TABS_SCHEMA_VER` 2）：旧配置里的 `firewall` Tab 条目被剔除、模式强制归位到 `off`
-  —— 旧版的 `watch` 是「内置能力默认打开」的产物，不是用户的显式选择；归位只发生一次
+- **不导入插件 = 本体完全没有这个功能**：没有标签页、没有设置项、**没有任何网络钩子**，
+  设置页里也搜不到「防火墙」字样，`window[Symbol.for('vaimod.net-firewall')]` 不存在，
+  `__vaimod_debug` 不再暴露 `firewall`（探针 A1~A7 断言）
+- **不是内置 Tab**，不占默认面板 —— 默认面板只有「变量 / 云数据」
+- 导入后自带一个标签页，`lazy: false` 常驻（不打开标签页也在审计）
+- 模式（关闭 / 监视 / 拦截）与域名规则存在**插件自己的私有存储**：
+  `vaimod_plug_net-firewall_*`，**不进本体设置、不进配置包导出**（`bundle.ts` 的
+  `firewallRules` 字段与 `sanitizeFwRules` 已整体删除）
+- 本体侧只留 `ctx.net` 两项能力：`isInternalXhr(xhr)`（辨别本体自己的请求，防自伤）
+  与 `markNative(fn, name)`（把包装伪装成原生）。**本体不认识「防火墙规则」这类业务概念**
 
 其余能力：
 
-- document-start 钩 `fetch` / `XHR(open+send)` / `sendBeacon` / `WebSocket.send`（只观察，不替换构造器以保住 `instanceof`）
+- 钩 `fetch` / `XHR(open+send)` / `sendBeacon` / `WebSocket.send`（只观察，不替换构造器以保住 `instanceof`）
 - 三态：关闭（不装任何钩子，零开销）/ 监视（只记录全放行）/ 拦截（仅黑名单命中拒绝）
 - 日志天然是「站外」视图：同源、站点同族域名、VaIMod 自身请求都不进日志
 - 四种判定：`third` / `block` / `exfil`（疑似变量数据外传）/ `allow`
-- 规则可随配置包导出导入（`firewallRules`，缺省时导入不动设备现有规则）
-- 插件侧经 `ctx.firewall` 访问（只读统计 + 规则读写，**无任何直通网络的能力**）
+- 引擎 `window[Symbol.for('vaimod.net-firewall')]` **单例 + 引用计数**：
+  常驻 headless 实例与可见标签页实例切页时一卸一装，各自装一套钩子会互相拆掉；
+  卸载钩子前先比对再还原（不抹掉别的脚本后来叠的包装）
+
+**本轮修掉的两个真 bug（都是「常驻审计」承诺被打破）**：
+
+1. **切标签页会清空出网日志**：`lazy:false` 的插件同时有常驻实例与标签页实例，
+   切页时「旧的卸 + 新的装」中间**必然出现一次 refs === 0** → 同步销毁引擎 →
+   日志连同钩子一起重建。现象：切走期间的命中全部丢失（常驻审计白做）。
+   修法：最后一个实例离开后**等一个宽限期**（`HANDOFF_GRACE_MS = 600`）再销毁，
+   新实例接管就撤掉这次销毁。⛔ 只延一个宏任务**不够** —— 宿主是**异步挂载**插件的
+   （双 rAF + 40ms 兜底），实测新实例在 ~30~50ms 后才到。
+   护栏：`probe-net-firewall.mjs` F1/F1b 断言「切走后 hits 仍在且含切走期间的新命中」。
+3. **被拦 XHR 悬挂**（对齐 `feishu-guard` 同类缺陷的既有修法）：拒绝时只调
+   `onerror` / `onreadystatechange` IDL 属性回调，`addEventListener` 调用方
+   （axios XHR adapter 等）收不到任何通知 → 其 Promise 永不 settle。
+   修法：改走 `dispatchEvent(readystatechange + error + loadend)`（会同时触发属性回调）。
+   护栏：H5b 断言 addEventListener 调用方收到 error+loadend。
+2. **窄屏设置覆盖层盖住 header 下沿 6px**（等于把「拖不动面板」的 bug 在窄屏重新引入）：
+   `--svp-head-h: 61px` 原本写在 `.svp-header` 上，而 `.svp-settings-overlay` 是它的**兄弟**，
+   CSS 变量只向下继承 → 覆盖层读到的还是 55px。
+   修法：改写在 `.svp-panel` 上。
+   护栏：`probe-settings-layout.mjs` N1/N2 + **N2b 探针自检**（还原旧写法后必须测出盖住 6px，
+   证明断言不是死绿）。
+
+### 设置页布局（本轮，用户报「设置页面时 UI 错位且无法拖动面板」）
+
+真因不是横向越界、也不是纵向重叠（`diag-settings-layout.mjs` 已排除），
+而是 `.svp-settings-overlay { inset: 0 }` **整块盖住面板 Header**（标题 / 标签栏 / 图标按钮）——
+用户既看不到标签栏、也按不住 Header 拖面板。修法：
+
+- 覆盖层改从 `top: var(--svp-head-h)` 开始，Header 保持可见可拖
+- Header 高度显式化并抽成 CSS 变量（`.svp-panel` 上定义，窄屏同步为 61px）
+- 覆盖层自己的标题栏压缩（否则「面板标题栏 + 设置标题栏」两层叠出视觉错位）
+- `.svp-plug-css-anchor` 改 `position: absolute` 脱离 flex 流（否则在
+  `.svp-settings-body` 的 `gap` 链里白占上下两段间距 = 视觉上多空一格）
+- 点标签栏改为**关闭设置页**（原来点了「没反应」，内容被覆盖层盖着，看起来像面板卡死）
+
+护栏：`probe-settings-layout.mjs` **21/21**（桌面 1440 + 窄屏 480 两套场景；
+含「设置页打开时真实鼠标拖拽 200px 位移生效 / 落位无跳变 / transform 无残留」）。
 
 ### UI
 
 等用户给**具体现象**（用户偏好具体反馈，泛泛「优化 UI」容易白做）。
-本轮已附带：变量页 Tab `flex: 1 1 auto` + `nowrap`（长名 Tab 不再溢出）、防火墙分区复用 `.svp-fs-*` 样式族保持视觉一致、
-设置页「本地重命名」区文案去修饰（格式说明从常驻正文挪到「导入 JSON」按钮的 `title`，出错时才由错误信息说清）、
-防火墙日志在设置页里只列最近 20 条（设置页不是全量审计工具）。
+本轮已附带：变量页 Tab `flex: 1 1 auto` + `nowrap`（长名 Tab 不再溢出）、
+设置页「本地重命名」区文案去修饰（格式说明从常驻正文挪到「导入 JSON」按钮的 `title`，出错时才由错误信息说清）。
 
 ---
 
@@ -259,7 +303,7 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 - **新加的内置 Tab 一律默认关闭**（原来「新增内置 Tab 自动补齐并启用」，会让默认面板随版本悄悄变形）
 - 一次性迁移 `TABS_SCHEMA_VER = 2` + `tabsVer` 字段：
   - 只重置**内置** Tab 的显隐；插件 Tab 条目与全部条目的相对顺序原样保留（用户拖出来的顺序不该被抹掉）
-  - 旧版把 `firewall` 默认开成 `watch`，一并归位为 `off`
+  - 历史配置里残留的 `firewall` 条目按「未知 id」丢弃（该字段后续随防火墙移出本体一并删除）
   - 迁移结果在 `loadSettings` / `loadSettingsFor` 里顺手落盘，只跑一次（用户后来手动开回来的不会被覆盖）
 - 探针 `probe-default-tabs.mjs`（22/22）：全新安装 / 旧配置迁移 / 迁移只做一次 / 自定义顺序保留 / 缺条目默认关闭 / 本地重命名开关
 
@@ -278,7 +322,7 @@ T1 显示标签页 → 407    T2 隐藏 → 410    T3 显示 → 415    T4 隐�
 - **性能**：`resolveAlias()` 建**匹配索引**（精确名走 Map O(1)，通配规则单独成表），
   并把 `canonTarget(targetName)` 从「每规则一次」降为「每变量一次 + 单槽记忆」——
   它是每个变量都会走的热路径，5000 条规则 × 900 变量的线性扫描会让变量页卡住
-- **性能**：防火墙默认 `off` → 不装钩子（原本 `watch` 会钩住 fetch/XHR/beacon/WS 四个通道）
+- **性能**：本体不再装任何网络钩子（防火墙移出本体后，四个出网通道的钩子只在**用户主动导入插件且切到监视/拦截**时才存在）
 
 ### 探针基建教训（踩坑记录）
 
@@ -367,3 +411,16 @@ Free 套餐的组织私有仓不能开 Pages → `https://VaIMod.github.io/VaIMo
 - **2026-09-22 · 面板宽度棘轮**：根因 + 修复 + 复验（见 P0）。`src/ui/VaIModPanel.svelte`
 - **2026-09-22 · cave 逆向配置**：`docs/cave-vars.json`（37 条变量 / 数据模型 / 指令协议 / 一键操作映射），与插件 `VARS` 逐条比对 0 冲突
 - **2026-09-22 · cave 外挂插件**：`docs/plugin-cave-helper.js` + `probe-cave-plugin.mjs` 27/27
+- **2026-09-25 · 防火墙移出本体**：`docs/plugin-net-firewall.js`（可导入独立插件）+ `src/core/net-internal.ts`；
+  删除 `net-firewall.ts`(673 行) / `FirewallSection.svelte` / `bundle.firewallRules` / `__vaimod_debug.firewall`；
+  `ctx.firewall` → `ctx.net`（两项能力）。`probe-net-firewall.mjs` **41/41**，
+  旧 `probe-firewall.mjs` 退休到 `retired/`（其仍有价值的 XHR/beacon/外传覆盖已迁入新探针 H1~H5）
+- **2026-09-25 · 设置页布局**：覆盖层不再盖住 Header（`top: var(--svp-head-h)`）+
+  `--svp-head-h` 定义位置修正（窄屏盖 header 6px 的真 bug）+ 锚点脱离 flex 流 + 点标签栏关设置页。
+  `probe-settings-layout.mjs` **21/21**（含探针自检）
+- **2026-09-25 · 插件常驻交接**：修掉「切标签页清空出网日志」（引擎引用计数归零 + 宿主异步挂载导致），
+  引入 `HANDOFF_GRACE_MS` 宽限期
+- **2026-09-25 · 被拦 XHR 悬挂修复**：插件拒绝 XHR 改走 dispatchEvent（readystatechange+error+loadend），
+  addEventListener 调用方不再永久挂起；探针 **42/42**
+- **2026-09-25 · 单测运行器**：`run-ts-test.mjs`（esbuild 打包直导 .ts 源码的单测，
+  解决 Node 原生解析不了 src 无扩展名相对导入的问题）；sig-guard 13/13 · plugin 64/64

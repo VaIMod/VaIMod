@@ -35,14 +35,9 @@ import {
   subscribeAliasConfig,
 } from './alias-config';
 import {
-  firewallMode,
-  firewallStats,
-  firewallHits,
-  firewallRules,
-  addFirewallRule,
-  removeFirewallRule,
-  subscribeFirewall,
-} from './net-firewall';
+  isInternalXhr,
+} from './net-internal';
+import { markNative } from '../dom-utils';
 
 const STORE_KEY = 'vaimod_plugins_v1';
 const SET_KEY = 'vaimod_plugset_v1';
@@ -879,20 +874,25 @@ function runOnePatch(p: InstalledPlugin, host: PatchHost): void {
         return unsub;
       },
     },
-    // 网络防火墙：只给「观察 + 管理用户自己的域名规则」，不给「直接放行/拦截」的开关 ——
-    // 拦不拦统一由用户模式决定，插件无法绕过用户意志自行决定放行危险请求。
-    firewall: {
-      mode: () => firewallMode(),
-      stats: () => firewallStats(),
-      hits: () => firewallHits(),
-      rules: () => firewallRules(),
-      addRule: (host: string, kind: 'block' | 'allow') => addFirewallRule(host, kind),
-      removeRule: (host: string, kind: 'block' | 'allow') => removeFirewallRule(host, kind),
-      subscribe: (cb: () => void) => {
-        const unsub = subscribeFirewall(cb);
-        unsubs.push(unsub);
-        return unsub;
-      },
+    // 网络类插件的基础设施：本体只提供两件**跨边界必需**的东西。
+    //
+    // ⛔ 本体不内置任何网络钩子、不认识「防火墙规则」这类业务概念 ——
+    //    网络策略（观察/拦截/放行）完全由插件自己决定、自己的 store 自己存。
+    //    参考实现：docs/plugin-net-firewall.js
+    net: {
+      /**
+       * 该 XHR 是 VaIMod 本体发出的（云数据直写等）→ 你的网络钩子应当直接放行，
+       * 否则用户拉黑某个域名后会连带把本体的后台请求也拦掉（自伤）。
+       * 标记用 WeakSet，页面探测不到也伪造不了。
+       */
+      isInternalXhr: (xhr: unknown) => isInternalXhr(xhr),
+      /**
+       * 把包装后的函数伪装成原生：登记进本体的 `Function.prototype.toString`
+       * 白名单并同步 `name`。**任何包装原生方法的插件都必须调它** ——
+       * 否则 `Function.prototype.toString.call(XMLHttpRequest.prototype.send)`
+       * 会直接吐出你的包装源码（反作弊最容易查的一处）。
+       */
+      markNative: (fn: object, name: string) => markNative(fn, name || 'anonymous'),
     },
     patch: patchApi,
     id: def.id,

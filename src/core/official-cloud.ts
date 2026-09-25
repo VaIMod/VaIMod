@@ -1,5 +1,5 @@
 import { markNative } from '../dom-utils';
-import { markInternalXhr } from './net-firewall';
+import { markInternalXhr } from './net-internal';
 
 // 官方云数据 API 加密直写通道（尽力而为）：
 // - 观察平台扩展自身发出的云数据库请求（fetch 与 XHR 双通道），捕获可泛化 endpoint 模板；

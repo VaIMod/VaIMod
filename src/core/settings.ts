@@ -5,8 +5,9 @@ export type LoadMode = 'async' | 'sync';
 /**
  * 面板 Tab 标识：内置固定 5 个，插件页用 `plug:<id>` 形式的动态标识。
  *
- * 网络防火墙**不属于内置 Tab** —— 它是独立补丁（见 core/net-firewall.ts 与设置页的
- * 「网络防火墙」分区）：默认关闭、不占面板位置，需要时在设置里单独打开。
+ * 网络防火墙**既不是内置 Tab、也不在本体内** —— 它是一个可分发的扩展插件
+ * （`docs/plugin-net-firewall.js`）：不导入就完全没有这个功能，
+ * 导入后自带一个标签页。
  */
 export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'system';
 export type TabId = BuiltinTabId | `plug:${string}`;
@@ -64,14 +65,6 @@ export const PRESET_COLORS: { id: string; label: string; value: string }[] = [
  */
 export type FeishuInterceptMode = 'off' | 'manual' | 'allowAll' | 'blockAll';
 
-/**
- * 网络防火墙模式：
- * - off     完全不装钩子（零开销、零行为变化）
- * - watch   只观察记录第三方出网请求，一律放行（默认：有审计价值且不改变任何行为）
- * - enforce 命中用户黑名单（或开启的「外传拦截」）时拒绝该请求
- */
-export type FirewallMode = 'off' | 'watch' | 'enforce';
-
 export interface Settings {
   loadMode: LoadMode;
   /** 快照还原时，缺失目标/变量自动新建补齐 */
@@ -86,10 +79,6 @@ export interface Settings {
   feishuOnTimeout: 'allow' | 'block';
   /** manual 模式下等待应答的毫秒数（0 = 不等待，直接用兜底动作） */
   feishuTimeoutMs: number;
-  /** 网络防火墙模式 */
-  firewall: FirewallMode;
-  /** enforce 模式下是否连「疑似把变量数据外传到第三方」的请求也拦（默认否，避免误伤统计/埋点） */
-  firewallBlockExfil: boolean;
   /** 内置 Tab 显隐方案的版本号：用于一次性迁移（见 TABS_SCHEMA_VER） */
   tabsVer?: number;
 }
@@ -120,10 +109,6 @@ export function defaultSettings(): Settings {
     feishuIntercept: 'off', // 默认不拦截：不改变任何既有行为
     feishuOnTimeout: 'allow',
     feishuTimeoutMs: 30000,
-    // 网络防火墙是独立补丁：默认关闭 —— 不安装任何网络钩子（零开销、零行为变化）。
-    // 需要时在「设置 → 网络防火墙」里打开（监视=只审计 / 拦截=按黑名单拒绝）。
-    firewall: 'off',
-    firewallBlockExfil: false,
     tabsVer: TABS_SCHEMA_VER,
   };
 }
@@ -197,15 +182,6 @@ export function normalizeSettings(
   }
   tabs = migrateTabs(tabs, parsed.tabsVer);
   const mode = parsed.feishuIntercept;
-  const fw = parsed.firewall;
-  // 防火墙是**独立补丁**，默认关闭：迁移时（tabsVer 落后）强制归位为 off ——
-  // 旧版本把它当内置能力默认打开了 watch，那不是用户的显式选择。
-  // 归位只发生一次，之后用户自己开的模式会被完整保留。
-  const fwMode: FirewallMode = tabsVerStale(parsed.tabsVer)
-    ? d.firewall
-    : fw === 'watch' || fw === 'enforce'
-      ? fw
-      : d.firewall;
   return {
     loadMode: parsed.loadMode === 'sync' ? 'sync' : 'async',
     applyCreateOnRestore: parsed.applyCreateOnRestore !== false,
@@ -221,9 +197,6 @@ export function normalizeSettings(
       typeof parsed.feishuTimeoutMs === 'number' && Number.isFinite(parsed.feishuTimeoutMs)
         ? Math.max(0, Math.min(300000, Math.floor(parsed.feishuTimeoutMs)))
         : d.feishuTimeoutMs,
-    // 防火墙：独立补丁，默认关闭（见下方 fwMode 的迁移说明）
-    firewall: fwMode,
-    firewallBlockExfil: parsed.firewallBlockExfil === true,
     tabsVer: TABS_SCHEMA_VER,
   };
 }

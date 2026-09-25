@@ -1530,6 +1530,9 @@
   }
 
   function switchTab(t: TabId) {
+    // 设置页是覆盖内容区的全屏视图：点标签栏 = 想离开设置去看那个页面。
+    // 不关的话点了「没反应」（内容被设置页盖着），看起来像面板卡死。
+    if (showSettings) showSettings = false;
     // 点当前 Tab 也算「打开该标签页」→ 走一次完整刷新（转圈 + 进入动画 + 真读 vm），
     // 不再像以前那样直接 return（否则想手动刷新当前页只能去找右上角刷新按钮）。
     if (t === activeTab) {

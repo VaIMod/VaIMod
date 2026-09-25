@@ -314,32 +314,24 @@ export interface PluginContext {
     subscribe(cb: () => void): () => void;
   };
   /**
-   * 网络防火墙（出网审计 + 域名规则，见 core/net-firewall.ts）。
-   * 默认「只观察不拦截」；插件可据此做「这个作品在偷偷外传」之类的告警。
-   * 注意：这里只暴露规则与观察面，没有「直接放行/拦截某条请求」的开关 ——
-   * 拦截与否统一由用户的模式 + 规则决定，插件不能绕过用户意志。
+   * 网络类插件的基础设施（见 core/net-internal.ts）。
+   *
+   * ⛔ 本体**不内置任何网络钩子**：网络策略（观察 / 放行 / 拦截）完全由插件自己决定，
+   *    规则与日志也由插件用自己的 `store` 存。这里只提供两件跨边界必需的东西 ——
+   *    「哪些请求是本体自己发的」和「怎么把包装伪装成原生」。
    */
-  firewall: {
-    /** 当前模式（off / watch / enforce） */
-    mode(): 'off' | 'watch' | 'enforce';
-    /** 计数与规则条数 */
-    stats(): {
-      mode: 'off' | 'watch' | 'enforce';
-      hosts: number;
-      hits: number;
-      blocked: number;
-      blockRules: number;
-      allowRules: number;
-    };
-    /** 命中日志（按最近活跃排序） */
-    hits(): unknown[];
-    /** 当前域名规则 */
-    rules(): { block: string[]; allow: string[] };
-    /** 加规则（kind = 'block' | 'allow'）；域名非法返回 false */
-    addRule(host: string, kind: 'block' | 'allow'): boolean;
-    removeRule(host: string, kind: 'block' | 'allow'): void;
-    /** 订阅日志/规则变化（返回取消订阅函数） */
-    subscribe(cb: () => void): () => void;
+  net: {
+    /**
+     * 该 XHR 是 VaIMod 本体发出的（云数据直写等）→ 网络钩子应当直接放行，
+     * 否则用户拉黑某域名后会连带把本体的后台请求拦掉（自伤）。
+     */
+    isInternalXhr(xhr: unknown): boolean;
+    /**
+     * 把包装后的函数伪装成原生：登记进本体的 `Function.prototype.toString` 白名单
+     * 并同步 `name`。**包装原生方法的插件必须调它**，否则
+     * `Function.prototype.toString.call(XMLHttpRequest.prototype.send)` 会吐出包装源码。
+     */
+    markNative(fn: object, name: string): void;
   };
   /** 补丁专属能力（仅 type:'patch' 存在；扩展为 undefined） */
   patch?: PatchApi;

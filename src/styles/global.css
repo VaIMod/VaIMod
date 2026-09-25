@@ -114,6 +114,10 @@
   max-height: min(620px, 82vh);
   display: flex;
   flex-direction: column;
+  /* Header 的固定高度。设置覆盖层靠它决定「从哪一行开始」——
+     ⛔ 不能用写死的 offset：窄屏下图标按钮热区放大到 36px，header 会跟着变高，
+        写死会让设置页盖住 header 一半（正是「打开设置就拖不动面板」的成因）。 */
+  --svp-head-h: 55px;
   /* 不用 backdrop-filter：面板每次伸缩/撑高都会整块重绘模糊层，是延迟主因；
      改用更高不透明度的纯色背景，视觉接近且零重绘成本 */
   background: rgba(24, 26, 30, 0.86);
@@ -181,6 +185,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  height: var(--svp-head-h);
   padding: 12px 14px;
   cursor: grab;
   user-select: none;
@@ -1549,65 +1554,6 @@
   flex-shrink: 0;
 }
 
-/* ===== 网络防火墙面板 ===== */
-/* 网络防火墙分区：现在挂在「设置覆盖层」里（独立补丁，不占面板 Tab）。
-   只保留纵向节奏与设置项的左右对齐，不再参与面板的 flex 伸展链。 */
-.svp-fw {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 0 2px;
-  min-height: 0;
-}
-/* 被拦行的左侧亮条与暖色底，一眼区分「这条被拒了」 */
-.svp-fw-item-blocked {
-  background: rgba(255, 89, 60, 0.08);
-  border-color: rgba(255, 89, 60, 0.4);
-  box-shadow: inset 3px 0 0 0 rgba(255, 89, 60, 0.8);
-}
-.svp-fw-host {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.svp-fw-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  color: #8a9099;
-  word-break: break-all;
-  user-select: text;
-  -webkit-user-select: text;
-}
-.svp-fw-tag {
-  flex-shrink: 0;
-  font-style: normal;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 20px;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-.svp-fw-tag-block {
-  color: #ffb199;
-  background: rgba(255, 89, 60, 0.2);
-  border: 1px solid rgba(255, 89, 60, 0.45);
-}
-.svp-fw-tag-exfil {
-  color: #ffd08a;
-  background: rgba(255, 159, 10, 0.18);
-  border: 1px solid rgba(255, 159, 10, 0.45);
-}
-.svp-fw-tag-allow {
-  color: #8ef0b0;
-  background: rgba(48, 209, 88, 0.18);
-  border: 1px solid rgba(48, 209, 88, 0.42);
-}
-.svp-fw-tag-third {
-  color: #9aa0a6;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-}
 .svp-sendbar .svp-meta {
   font-size: 12px;
   color: #8a9099;
@@ -1753,34 +1699,44 @@
 }
 .svp-settings-overlay {
   position: absolute;
-  inset: 0;
+  /* ⛔ 不是 inset:0 —— 那样会把 Header（标题 / 标签栏 / 图标按钮）整块盖住，
+     用户既看不到标签栏、也没法按住 Header 拖面板。
+     从 header 下方开始：Header 保持可见可拖，设置页像「内容区的一个视图」。 */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: var(--svp-head-h);
   z-index: 20;
   display: flex;
   flex-direction: column;
   background: #181a1e;
-  border-radius: inherit;
+  /* 上半部分紧贴 header（直角），只有下方两角跟随面板圆角 */
+  border-radius: 0 0 11px 11px;
 }
 .svp-settings-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 16px;
+  /* 比面板 Header 紧凑：它在 Header 之下，只承担「这是设置页 + 关闭」 */
+  padding: 8px 16px 9px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 .svp-settings-title {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 15px;
+  gap: 7px;
+  font-size: 13.5px;
   font-weight: 700;
   color: #e6e8ea;
 }
 .svp-settings-title svg {
+  width: 15px;
+  height: 15px;
   color: var(--svp-primary, #4da3ff);
 }
 .svp-settings-close {
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1798,6 +1754,16 @@
 }
 .svp-settings-close:active {
   transform: scale(0.92);
+}
+/* 插件 settingsCss 的挂载锚点：position:absolute 让它**不是 flex item**
+   —— 否则它会在 .svp-settings-body 的 gap 链里白占上下各一段间距（视觉上空一格）。 */
+.svp-plug-css-anchor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
 }
 .svp-settings-body {
   flex: 1;
@@ -2219,6 +2185,12 @@
     max-height: 86vh !important;
     border-radius: 14px 14px 0 0;
     padding-bottom: env(safe-area-inset-bottom, 0px);
+    /* 窄屏图标按钮热区放大到 36px → header 变成 12+12+36+1 = 61px。
+       ⛔ 必须写在 .svp-panel 上（不能写在 .svp-header 上）：--svp-head-h 同时被
+       **兄弟节点** .svp-settings-overlay 的 top 使用，而 CSS 变量只向下继承 ——
+       写在 header 上时覆盖层读到的还是 55px，会盖住 header 下沿 6px
+       （现象：设置页打开后按不住 header，面板又拖不动了）。 */
+    --svp-head-h: 61px;
   }
   /* 手动拖拽定位在窄屏意义不大且易误触，强制全宽底部抽屉布局 */
   .svp-panel[style] {
