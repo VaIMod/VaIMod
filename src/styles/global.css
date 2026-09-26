@@ -1673,30 +1673,9 @@
 }
 .svp-sys {
   position: relative;
-  padding-bottom: 56px; /* 给右下角「设置」按钮留位，避免遮挡回收站内容 */
 }
 
 /* ===== 设置面板 ===== */
-.svp-settings-trigger {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 13px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #9aa0a6;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 8px;
-  cursor: pointer;
-}
-.svp-settings-trigger:hover {
-  color: #e6e8ea;
-  background: rgba(255, 255, 255, 0.1);
-}
 .svp-settings-overlay {
   position: absolute;
   /* ⛔ 不是 inset:0 —— 那样会把 Header（标题 / 标签栏 / 图标按钮）整块盖住，
@@ -2298,7 +2277,6 @@
 @media (hover: none) {
   .svp-icon-btn:hover,
   .svp-btn:hover,
-  .svp-settings-trigger:hover,
   .svp-icon-act:hover,
   .svp-toggle:hover,
   .svp-tab:hover,

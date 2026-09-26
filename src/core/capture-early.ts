@@ -119,6 +119,17 @@ export function earlyWrapped(vm: object): boolean {
   return wrappedVms.has(vm);
 }
 
+/**
+ * bridge 已给 vm 挂上自己的 tap：登记进 wrappedVms（early 轮询不再重复包装）
+ * 并停掉早期轮询。⚠ 桥接构造时**不能**直接停轮询——构造早于 vm 出现时，
+ * 「vm 出现 → 极快 loadProject（缓存命中）」会落在「早期已停、bridge 未挂」的空窗里，
+ * 初始作品捕获就丢了（用户实报「VM 加载过快获取不到」）。真正的停点 = 桥接挂载完成。
+ */
+export function markBridgeWrapped(vm: object): void {
+  wrappedVms.add(vm);
+  stopEarlyCapturePoll();
+}
+
 /** 收割早期存量捕获（清空缓冲，bridge 合并进自己的捕获列表）。 */
 export function takeEarlyEntries(): EarlyCaptureEntry[] {
   return entries.splice(0, entries.length);

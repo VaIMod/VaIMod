@@ -41,16 +41,11 @@
     variables,
     active = true,
     settings,
-    onOpenSettings,
-    showSettingsEntry = true,
   }: {
     bridge: BridgeLike;
     variables: ScratchVaIMod[];
     active?: boolean;
     settings: Settings;
-    onOpenSettings?: () => void;
-    /** 是否渲染本页右下角设置入口（Header 齿轮隐藏时作为主入口） */
-    showSettingsEntry?: boolean;
   } = $props();
 
   let toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null);
@@ -230,11 +225,17 @@
             cloudFail.push(name);
             continue;
           }
+          // 先记镜像旧值：云端双通道全失败时必须回滚镜像，
+          // 否则本地显示「已还原」而云端没有 → 镜像与云端静默分叉（铁律）。
+          const existed = db.has(name);
+          const prev = existed ? db.get(name) : undefined;
           try {
             db.set(name, value);
             await ccwDataStore.setValue(type, name, value);
             cloudOk.push(name);
           } catch {
+            if (existed) db.set(name, prev);
+            else db.delete(name);
             cloudFail.push(name);
           }
         }
@@ -268,12 +269,22 @@
         return;
       }
       const name = data.name?.trim() || `导入 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+      // 结构校验：vars/cloud 必须是普通对象（或缺省），防止手改 JSON 出错后
+      // 应用时 Object.entries 拿到字符串/数组把还原流程搞乱。
+      const isPlainObj = (x: unknown): x is Record<string, unknown> =>
+        typeof x === 'object' && x !== null && !Array.isArray(x);
+      const kind = data.kind === 'vars' || data.kind === 'cloud' ? data.kind : 'full';
+      const hasAny = isPlainObj(data.vars) || isPlainObj(data.cloud);
+      if (!hasAny) {
+        showToast('JSON 里没有 vars / cloud 数据', 'err');
+        return;
+      }
       markerAdd({
         name,
-        vars: data.vars,
+        vars: isPlainObj(data.vars) ? (data.vars as MarkerEntry['vars']) : undefined,
         lists: undefined,
-        cloud: data.cloud,
-        kind: data.kind ?? 'full',
+        cloud: isPlainObj(data.cloud) ? (data.cloud as MarkerEntry['cloud']) : undefined,
+        kind,
       });
       importText = '';
       markerVer = markerVer + 1;
@@ -534,19 +545,6 @@
           </div>
         {/each}
       </div>
-    {/if}
-
-    <!-- 设置入口（右下角）：仅在 Header 齿轮不显示时作为主入口。
-         已连接且系统页可见时 Header 齿轮隐藏，此处保留入口避免无处可去；
-         否则该按钮与 Header 齿轮重复，交给 Header 即可。 -->
-    {#if showSettingsEntry}
-      <button class="svp-settings-trigger" onclick={onOpenSettings} aria-label="设置">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"></circle>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-        </svg>
-        设置
-      </button>
     {/if}
   </section>
 </div>

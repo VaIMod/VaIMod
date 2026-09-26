@@ -26,10 +26,10 @@ import {
 } from './project-export';
 import {
   earlyWrapped,
+  markBridgeWrapped,
   markEarlyHarvested,
   onEarlyCaptured,
   setEarlyCaptureEnabled,
-  stopEarlyCapturePoll,
   takeEarlyEntries,
 } from './capture-early';
 import type { SecureVariableSnapshot } from './secure-vm';
@@ -103,8 +103,9 @@ export class ScratchVM {
     };
     // 零信任隔离回调：连续验证失败触发隔离时，把连接状态打回未连接（UI 可重连）
     ztna.onIsolate(() => this.handleZtnaIsolate());
-    // 早期捕获盯梢到此为止（此后 vm 出现统一走本桥的 tick 补挂，防双包装）
-    stopEarlyCapturePoll();
+    // 早期捕获盯梢**不在这里停**：构造时 vm 多半还没出现，此时停掉轮询，
+    // 「vm 出现 → 极快 loadProject（缓存命中秒载）」会落在空窗里丢初始捕获。
+    // 真正的停点在 installProjectCapture：桥接给 vm 挂上 tap 后 markBridgeWrapped()。
   }
 
   // 零信任隔离处理：停止轮询/锁定、销毁通道、清快照、状态回 Disconnected
@@ -970,10 +971,14 @@ export class ScratchVM {
     if (earlyWrapped(vm)) {
       // 早期盯梢（capture-early）已装 tap：不叠加第二个 tap，仅登记避免重复检查
       this.captureWrapped.add(vm);
+      markBridgeWrapped(vm); // 早期轮询完成使命，停掉（防与 bridge 长期双跑）
       return;
     }
     if (installLoadProjectTap(vm, (input) => this.recordCapture(input))) {
       this.captureWrapped.add(vm);
+      // 桥接 tap 就位：登记 + 停早期轮询。登记进 wrappedVms 后，早期轮询即使
+      // 还在跑也不会对这个 vm 重复包装（wrapVmLoadProjectEarly 幂等拒绝）。
+      markBridgeWrapped(vm);
     }
   }
 

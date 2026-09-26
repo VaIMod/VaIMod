@@ -278,6 +278,11 @@ function asRecord(v: unknown): Record<string, unknown> {
   return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 }
 
+/** 普通对象判定（marker.vars / marker.cloud 等「缺省优于脏数据」的字段用） */
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return v !== undefined && (v === null ? false : typeof v === 'object' && !Array.isArray(v));
+}
+
 function asArray<T>(v: unknown): T[] {
   return Array.isArray(v) ? (v as T[]) : [];
 }
@@ -388,7 +393,17 @@ export function importVaIModBundle(raw: unknown): VaIModBundle | null {
     robots: asArray<FeishuRobot>(obj.robots).filter(
       (r) => r && typeof r.token === 'string' && r.token.length > 0,
     ),
-    markers: asArray<MarkerEntry>(obj.markers).filter((m) => m && typeof m.id === 'string'),
+    markers: asArray<MarkerEntry>(obj.markers)
+      .filter((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
+      .map((m) => ({
+        ...m,
+        // vars/cloud 必须是普通对象：手改 JSON 塞进数组/字符串会让应用流程
+        // （Object.entries 遍历）行为不可预期，直接置缺省
+        vars: isPlainRecord(m.vars) ? m.vars : undefined,
+        lists: isPlainRecord(m.lists) ? m.lists : undefined,
+        cloud: isPlainRecord(m.cloud) ? m.cloud : undefined,
+        kind: m.kind === 'vars' || m.kind === 'cloud' ? m.kind : 'full',
+      })),
     trash: asArray<TrashEntry>(obj.trash).filter(
       (t) => t && typeof t.scope === 'string' && (t.scope as TrashScope),
     ),

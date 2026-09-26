@@ -170,14 +170,8 @@
     syncPatchPlugins(patchHost);
   });
 
-  // 系统标签页是否可见（设置入口的去处；可见时无需 Header 常驻齿轮）
-  const systemTabVisible = $derived(settings.tabs.some((t) => t.id === 'system' && t.enabled));
-  // Header 设置齿轮显隐：只在「VM 未就绪」或「系统标签页被隐藏」时出现。
-  // 前者保证等待/报错状态下也能改设置；后者保证系统页藏起来后仍有入口。
-  // 两者都不成立（已连接且系统页可见）时隐藏，避免与系统页右下角入口重复占位。
-  const headerSettingsVisible = $derived(
-    status !== BridgeStatus.Connected || !systemTabVisible,
-  );
+  // Header 设置齿轮常驻右上角（所有 Tab、任何连接状态下都可见）——
+  // 系统页不再有右下角入口，这里是设置的唯一入口，绝不能条件隐藏。
   // 初始 activeTab 直接取第一个可见 Tab——vars 被隐藏时不至于默认加载一个看不见的页
   let activeTab = $state<TabId>(bootSettings.tabs.find((t) => t.enabled)?.id ?? 'vars');
   // 当前可见 Tab 的第一个（默认加载用）
@@ -1948,22 +1942,18 @@
           >
             {@html refreshIcon}
           </button>
-          <!-- 设置入口（条件显隐）：VM 未就绪 或 系统标签页被隐藏 时出现。
-               已连接且系统页可见时不显示 —— 系统页右下角已有同源入口，
-               重复放置会让 Header 多占一格，也可能被误当成「面板出问题」。 -->
-          {#if headerSettingsVisible}
-            <button
-              class="svp-icon-btn svp-icon-enter"
-              class:svp-icon-on={showSettings}
-              onclick={() => (showSettings = !showSettings)}
-              aria-label="设置"
-            >
-              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-              </svg>
-            </button>
-          {/if}
+          <!-- 设置入口（常驻右上角）：唯一的设置入口，所有 Tab / 状态下都可见 -->
+          <button
+            class="svp-icon-btn svp-icon-enter"
+            class:svp-icon-on={showSettings}
+            onclick={() => (showSettings = !showSettings)}
+            aria-label="设置"
+          >
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
           <button class="svp-icon-btn" onclick={minimize} aria-label="收起">
             {@html closeIcon}
           </button>
@@ -2145,7 +2135,7 @@
                 <FeishuPanel variables={variables} bind:this={feishuPanel} />
               {/if}
               {#if activeTab === 'system'}
-                <SystemPanel bind:this={systemPanel} bridge={bridge} variables={variables} active={!minimized} {settings} onOpenSettings={() => (showSettings = true)} showSettingsEntry={!headerSettingsVisible} />
+                <SystemPanel bind:this={systemPanel} bridge={bridge} variables={variables} active={!minimized} {settings} />
               {/if}
               {#if activePlugin}
                 <!-- 键只含插件 id：其它插件的注册表事件（安装/启停）不重建本页；
