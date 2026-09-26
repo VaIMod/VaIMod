@@ -39,6 +39,14 @@
 //      innerHTML/outerHTML 覆写拒绝；body.removeChild 拒删 SPA 挂载根；
 //      body 顶层快照兜底恢复。洗白反噬三振停战（对方立刻回写 rgb 就别互写）。
 //
+//   ※ V3（V 3.3.3.3）实测校准（动态插桩跑真实资产确认）：
+//      惩罚 = documentElement.innerHTML='' + html.style.display='none'；
+//      遮罩类名仍是 csense-window；扫描选择器与旧版一致；上报端点不变。
+//      惩罚写指纹按此收窄（csense-window 字面量 + 整页清空），官方弹窗
+//      （含「CSense 拦截器」纯文本）绝不误伤。另加官方孤儿遮罩兜底清扫：
+//      React commit 被惩罚打断时 c-modal-mask 悬空残留 = 全屏蓝遮罩不可点，
+//      无可见 c-modal-wrap 持续 600ms 即移除。
+//
 // 安全底线（对齐 net-firewall 的设计约束）：
 //   1. 导入后默认「未武装」——零钩子、零观察器、零开销；一键武装才动手。
 //   2. 所有包装过的原生方法一律过 `ctx.net.markNative`，toString 白名单兜住。
@@ -154,7 +162,7 @@ VaIMod.plugin({
       let armed = ctx.store.get(KEY.mode, 'off') === 'armed';
       let keepAlive = ctx.store.get(KEY.keep, false) === true;
 
-      const hits = { launder: 0, rescue: 0, auto: 0, fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0, display: 0, wipe: 0, restore: 0 };
+      const hits = { launder: 0, rescue: 0, auto: 0, fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0, display: 0, wipe: 0, restore: 0, mask: 0 };
       let lastHit = null;
       let csenseSignals = [];
       let lastScanAt = 0;
@@ -607,6 +615,7 @@ VaIMod.plugin({
       let chokeInstalled = false;
       let navHandler = null;
       let overlayMo = null;
+      let maskSweepTimer = 0; // 提升到引擎级：uninstallChoke 也要能清理
 
       const hook = (target, prop, make) => {
         try {
@@ -723,6 +732,21 @@ VaIMod.plugin({
       };
 
       /**
+       * 惩罚写指纹（CSense V3 实测校准）。只命中两类真正的惩罚写，绝不误伤官方 UI：
+       *  1. csense-window 类名字面量——官方弹窗 HTML 里的「CSense 拦截器 V3」
+       *     是纯文本，不含类名字面量（实测确认），以 /csense/i 全文匹配会把
+       *     React 对官方弹窗的更新也拒掉 → 弹窗卡死 → 遮罩残留；
+       *  2. 对 documentElement / body 的整页清空（V3 惩罚：html.innerHTML=''）。
+       *     站点自身从不整页清空（React/Vue 不通过 innerHTML 管理根）。
+       */
+      const isPenaltyWrite = (target, v) => {
+        if (typeof v !== 'string') return false;
+        if (/csense-window/i.test(v)) return true;
+        if (v.trim() === '' && (target === document.documentElement || target === document.body)) return true;
+        return false;
+      };
+
+      /**
        * 实例级属性影子：只挡「内容含 csense 指纹」的覆写（遮罩 innerHTML），
        * 其余一律放行——绝不成为站点自身的故障点。
        */
@@ -742,7 +766,7 @@ VaIMod.plugin({
             },
             set(v) {
               try {
-                if (typeof v === 'string' && /csense/i.test(v)) {
+                if (isPenaltyWrite(this, v)) {
                   noteHit('wipe');
                   return undefined;
                 }
@@ -987,15 +1011,52 @@ VaIMod.plugin({
         // 遮罩即时清除：CSense 的遮罩类名是「先插入 DOM、后赋 className」——
         // childList-only 观察器在插入瞬间看不到 csense-window，必然漏检。
         // 必须 childList+subtree+class 属性变化一起盯，命中即删（含深层嵌套）。
+        // 附带：官方弹窗孤儿遮罩兜底清扫（c-modal-mask 悬空 = 全屏蓝遮罩不可点）。
         if (typeof MutationObserver !== 'undefined') {
+          const sweepOrphanMasks = () => {
+            try {
+              if (!document.body) return;
+              let hasVisibleWrap = false;
+              const wraps = document.body.querySelectorAll('.c-modal-wrap');
+              for (const w of wraps) {
+                if (/(^|\s)c-modal-exit(\s|$)/.test(String(w.className || ''))) continue;
+                try {
+                  if (getComputedStyle(w).display !== 'none') {
+                    hasVisibleWrap = true;
+                    break;
+                  }
+                } catch (e) {
+                  /* ignore */
+                }
+              }
+              if (hasVisibleWrap) return;
+              const masks = document.body.querySelectorAll('.c-modal-mask');
+              for (const el of masks) {
+                if (el.parentNode !== document.body) continue; // 只清顶层全屏 mask
+                el.remove();
+                noteHit('mask');
+              }
+            } catch (e) {
+              /* ignore */
+            }
+          };
+          const scheduleMaskSweep = () => {
+            if (maskSweepTimer || !document.body) return;
+            maskSweepTimer = setTimeout(() => {
+              maskSweepTimer = 0;
+              sweepOrphanMasks();
+            }, 600);
+          };
           overlayMo = new MutationObserver((muts) => {
+            let hit = false;
             for (const m of muts) {
               if (m.type === 'attributes') {
                 try {
                   const t = m.target;
-                  if (t && t.parentNode && /csense/i.test(String(t.className || ''))) {
+                  if (t && t.parentNode && /csense-window/i.test(String(t.className || ''))) {
                     t.remove();
                     noteHit('overlay');
+                    hit = true;
                   }
                 } catch (e) {
                   /* ignore */
@@ -1005,16 +1066,18 @@ VaIMod.plugin({
               for (const node of m.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
                 try {
-                  if (/csense/i.test(String(node.className || ''))) {
+                  if (/csense-window/i.test(String(node.className || ''))) {
                     node.remove();
                     noteHit('overlay');
+                    hit = true;
                     continue;
                   }
                   if (node.querySelectorAll) {
-                    const list = node.querySelectorAll('[class*="csense" i]');
+                    const list = node.querySelectorAll('[class*="csense-window" i]');
                     for (const el of list) {
                       el.remove();
                       noteHit('overlay');
+                      hit = true;
                     }
                   }
                 } catch (e) {
@@ -1022,6 +1085,8 @@ VaIMod.plugin({
                 }
               }
             }
+            // 官方 mask 残留与 csense 命中无必然先后，任何覆盖区变化都顺手查
+            scheduleMaskSweep();
           });
           let htmlObserved = false;
           try {
@@ -1079,6 +1144,14 @@ VaIMod.plugin({
             /* ignore */
           }
           overlayMo = null;
+        }
+        if (maskSweepTimer) {
+          try {
+            clearTimeout(maskSweepTimer);
+          } catch (e) {
+            /* ignore */
+          }
+          maskSweepTimer = 0;
         }
       };
 
@@ -1251,13 +1324,13 @@ VaIMod.plugin({
         if (!dyn.stat) return;
         const s = eng.status();
         const cs = s.hits.fetch + s.hits.xhr + s.hits.beacon + s.hits.nav + s.hits.overlay;
-        const domD = s.hits.display + s.hits.wipe + s.hits.restore;
+        const domD = s.hits.display + s.hits.wipe + s.hits.restore + s.hits.mask;
         dyn.stat.textContent =
           (s.armed ? '保护中 · ' : '未武装 · ') +
           '已保护 ' + s.guarded + ' 个元素 · 洗白 ' + s.hits.launder +
           ' 次 · 自动纳管 ' + s.hits.auto + ' 个 · 救回 ' + s.hits.rescue +
           ' 次 · CSense 吞掉 ' + cs + ' 次' +
-          (domD ? ' · DOM 惩罚反制 ' + domD + ' 次（隐藏回滚 ' + s.hits.display + ' / 覆写拒 ' + s.hits.wipe + ' / 恢复 ' + s.hits.restore + '）' : '');
+          (domD ? ' · DOM 惩罚反制 ' + domD + ' 次（隐藏回滚 ' + s.hits.display + ' / 覆写拒 ' + s.hits.wipe + ' / 恢复 ' + s.hits.restore + ' / 孤儿遮罩清 ' + s.hits.mask + '）' : '');
       };
 
       const renderCsense = () => {

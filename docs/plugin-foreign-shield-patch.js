@@ -24,6 +24,13 @@
 //      innerHTML/outerHTML 覆写拒绝；body.removeChild 拒删 SPA 挂载根；
 //      body 顶层快照兜底恢复（整页清空 / 根被摘走时按原序放回）。
 //
+//   ※ V3（V 3.3.3.3）实测校准（动态插桩跑真实资产确认）：惩罚 =
+//      documentElement.innerHTML='' + html.style.display='none'；遮罩类名
+//      仍是 csense-window；扫描选择器与旧版一致；上报端点不变。惩罚写指纹
+//      按此收窄（csense-window 字面量 + 整页清空），官方弹窗（含「CSense
+//      拦截器」纯文本）绝不误伤。另加官方孤儿遮罩兜底清扫（c-modal-mask
+//      悬空残留 = 全屏蓝遮罩不可点；无可见 wrap 持续 600ms 即移除）。
+//
 // 安全底线（对齐本体与扩展版）：
 //   1. 默认未武装：按钮没点过就零钩子、零观察器、零开销。
 //   2. 包装过的原生方法一律过 ctx.net.markNative；卸载先比对再还原。
@@ -253,7 +260,7 @@ VaIMod.plugin({
     // innerHTML 覆写 / display:none 整页隐藏 / 盖遮罩。洗白躲扫描是预防，
     // 这里是已然后的兜底——白屏 = 内容被打掉，必须当场拒绝与恢复。
     // ------------------------------------------------------------------
-    const domHits = { display: 0, wipe: 0, restore: 0, rescue: 0 };
+    const domHits = { display: 0, wipe: 0, restore: 0, rescue: 0, mask: 0 };
     let domUndo = []; // 卸载句柄
     let domSnap = []; // body 顶层子节点快照（arm 时刻）
 
@@ -339,6 +346,21 @@ VaIMod.plugin({
     };
 
     /**
+     * 惩罚写指纹（V3 实测校准）。只命中两类真正的惩罚写，绝不误伤官方 UI：
+     *  1. csense-window 类名字面量——官方弹窗 HTML 里的「CSense 拦截器 V3」
+     *     是纯文本，不含类名字面量（实测确认），以 /csense/i 全文匹配会把
+     *     React 对官方弹窗的更新也拒掉 → 弹窗卡死 → 遮罩残留；
+     *  2. 对 documentElement / body 的整页清空（V3 惩罚：html.innerHTML=''）。
+     *     站点自身从不整页清空（React/Vue 不通过 innerHTML 管理根）。
+     */
+    const isPenaltyWrite = (target, v) => {
+      if (typeof v !== 'string') return false;
+      if (/csense-window/i.test(v)) return true;
+      if (v.trim() === '' && (target === document.documentElement || target === document.body)) return true;
+      return false;
+    };
+
+    /**
      * 实例级属性影子：只挡「内容含 csense 指纹」的覆写（遮罩 innerHTML），
      * 其余一律放行——绝不成为站点自身的故障点。
      */
@@ -358,7 +380,7 @@ VaIMod.plugin({
           },
           set(v) {
             try {
-              if (typeof v === 'string' && /csense/i.test(v)) {
+              if (isPenaltyWrite(this, v)) {
                 domHits.wipe++;
                 return undefined;
               }
@@ -498,6 +520,7 @@ VaIMod.plugin({
     let chokeInstalled = false;
     let navHandler = null;
     let overlayMo = null;
+    let maskSweepTimer = 0; // 提升到引擎级：uninstallChoke 也要能清理
     let topMo = null;
 
     const hook = (target, prop, make) => {
@@ -655,15 +678,58 @@ VaIMod.plugin({
       }
 
       if (typeof MutationObserver !== 'undefined') {
+        // 官方弹窗孤儿遮罩兜底清扫：React 的 commit 被 CSense 惩罚打断时，
+        // c-modal-wrap 已卸载/隐藏而 body 顶层的 c-modal-mask 残留 = 全屏
+        // 蓝遮罩且不可点击（用户实测：两个 z-index:1000 的 mask 悬空）。
+        // 防抖 600ms：无任何可见 wrap（退场中的不算可见）才判孤儿移除。
+        const sweepOrphanMasks = () => {
+          try {
+            if (!document.body) return;
+            let hasVisibleWrap = false;
+            const wraps = document.body.querySelectorAll('.c-modal-wrap');
+            for (const w of wraps) {
+              if (/(^|\s)c-modal-exit(\s|$)/.test(String(w.className || ''))) continue;
+              try {
+                if (getComputedStyle(w).display !== 'none') {
+                  hasVisibleWrap = true;
+                  break;
+                }
+              } catch (e) {
+                /* ignore */
+              }
+            }
+            if (hasVisibleWrap) return;
+            const masks = document.body.querySelectorAll('.c-modal-mask');
+            for (const el of masks) {
+              if (el.parentNode !== document.body) continue; // 只清顶层全屏 mask
+              el.remove();
+              domHits.mask++;
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        };
+        const scheduleMaskSweep = () => {
+          if (maskSweepTimer || !document.body) return;
+          maskSweepTimer = setTimeout(() => {
+            maskSweepTimer = 0;
+            sweepOrphanMasks();
+          }, 600);
+        };
+
         // 遮罩的类名是「先插入 DOM、后赋 className」——childList-only 观察器
         // 在插入瞬间看不到 csense-window，必然漏检。必须 childList+subtree+
         // class 属性变化一起盯，命中即删（含嵌套在遮罩容器里的深层节点）。
         overlayMo = new MutationObserver((muts) => {
+          let hit = false;
           for (const m of muts) {
             if (m.type === 'attributes') {
               try {
                 const t = m.target;
-                if (t && t.parentNode && /csense/i.test(String(t.className || ''))) t.remove();
+                if (t && t.parentNode && /csense-window/i.test(String(t.className || ''))) {
+                  t.remove();
+                  hit = true;
+                }
               } catch (e) {
                 /* ignore */
               }
@@ -672,19 +738,29 @@ VaIMod.plugin({
             for (const node of m.addedNodes) {
               if (!(node instanceof HTMLElement)) continue;
               try {
-                if (/csense/i.test(String(node.className || ''))) {
+                if (/csense-window/i.test(String(node.className || ''))) {
                   node.remove();
+                  hit = true;
                   continue;
                 }
                 if (node.querySelectorAll) {
-                  const list = node.querySelectorAll('[class*="csense" i]');
-                  for (const el of list) el.remove();
+                  const list = node.querySelectorAll('[class*="csense-window" i]');
+                  for (const el of list) {
+                    el.remove();
+                    hit = true;
+                  }
                 }
               } catch (e) {
                 /* ignore */
               }
             }
           }
+          if (hit) {
+            domHits.mask++;
+            scheduleMaskSweep();
+          }
+          // 官方 mask 残留与 csense 命中无必然先后，任何 body 顶层变化都顺手查
+          scheduleMaskSweep();
         });
         let htmlObserved = false;
         try {
@@ -741,6 +817,14 @@ VaIMod.plugin({
           /* ignore */
         }
         overlayMo = null;
+      }
+      if (maskSweepTimer) {
+        try {
+          clearTimeout(maskSweepTimer);
+        } catch (e) {
+          /* ignore */
+        }
+        maskSweepTimer = 0;
       }
     };
 

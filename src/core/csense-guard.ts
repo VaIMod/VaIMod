@@ -349,15 +349,32 @@ function installNavigationKillSwitch(): void {
 // ───── ⑤ 遮罩即时清除 ─────
 
 /**
- * childList 观察器挂 documentElement 与 body（顶层插入两种目标全覆盖）。
+ * childList+class 属性观察器挂 documentElement 与 body（顶层插入两种目标全覆盖）。
  * 铁律：对 UI 根的即时纠正必须挂属性观察器，不能只靠巡检——遮罩从插入到
  * 巡检周期之间有最长数秒的可见窗口，观察器把这个窗口压到 0。
- * 选择器窄口径：只删 .csense-window，其余任何节点零接触。
+ * V3 实测（动态插桩确认）：遮罩的 className 是「先插入 DOM、后赋值」——
+ * childList-only 观察器在插入瞬间看不到 csense-window，必然漏检；必须同时盯
+ * class 属性变化，赋类那一刻命中即删。
+ * 选择器窄口径：只删 className 含 csense-window 的节点，其余任何节点零接触
+ * （官方弹窗里的「CSense 拦截器」纯文本不是 className，绝不误伤）。
  */
 function installOverlayStripper(): void {
   if (overlayMo || typeof MutationObserver === 'undefined') return;
   overlayMo = new MutationObserver((muts) => {
     for (const m of muts) {
+      if (m.type === 'attributes') {
+        // 「先插入、后赋 className」路径：赋类那一刻命中即删
+        try {
+          const t = m.target as HTMLElement | null;
+          if (t && t.parentNode && t.classList.contains('csense-window')) {
+            t.remove();
+            noteHit('overlay');
+          }
+        } catch {
+          /* ignore */
+        }
+        continue;
+      }
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
         try {
@@ -376,7 +393,7 @@ function installOverlayStripper(): void {
     }
   });
   try {
-    overlayMo.observe(document.documentElement, { childList: true });
+    overlayMo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   } catch {
     /* ignore */
   }
