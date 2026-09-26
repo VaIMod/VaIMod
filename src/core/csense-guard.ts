@@ -1,35 +1,39 @@
 // ===== CSense 拦截器反制（csense-guard） =====
 //
 // 目标：ccw 社区扩展「CSense 拦截器」v0.1.5a3（Chen-Jin @ CCW）。
-// 这是作品作者安装的「阻止 CSense 使用者运行你的作品」检测扩展，检测面：
-//   - DOM 扫描：`html>div[style*="rgb"] *`、`body>div:empty[style*="inset"]`、
-//     `button[title*="CCW"] img[alt]`、shadow-root 探测、iframe contentWindow
-//   - VM 检查：vm.loadProject 原生性、ccwAPI.Extension / extensionManager / getInfo
-//   - 存储指纹：localStorage `__csense-plugins`、`ext_csb3.2*`、`csbv`、`csb3u`、cookie
-//   - 环境指纹：navigator.userAgent
-// 命中后：fetch(keepalive) POST →
-//   `https://dcynsppfvlkdtbaleefw.supabase.co/rest/v1/csense_detections`
-//   以及 `https://d.chen-jin.dpdns.org/csdetected?...`（携带页面上下文的外泄信标）。
-// userscript 用户（含 VaIMod）被其通用启发式误伤的概率极高 → 检测数据被送往第三方。
+// 这是作品作者安装的「阻止 CSense 使用者运行你的作品」检测扩展（注册 csb3.2_*
+// 自定义积木，作品运行时执行检测），载荷字符串表（base64+zlib 已解出）证实三板斧：
+//   ① 检测 + 上报：DOM 扫描（html>div[style*="rgb"] * / body>div:empty[style*="inset"] /
+//      shadow-root / iframe contentWindow）、vm.loadProject 原生性（Reflect+toString）、
+//      ccwAPI.Extension / extensionManager / getInfo、localStorage __csense-plugins /
+//      ext_csb3.2* / csbv / csb3u、cookie、navigator.userAgent
+//      → fetch(keepalive) POST supabase csense_detections（带 publishable apikey）
+//   ② 跳转：location.href / open → `https://d.chen-jin.dpdns.org/csdetected?...`
+//   ③ 遮罩阻断：createElement + appendChild + innerHTML 注入 div.csense-window 盖住页面
+// userscript 用户（含 VaIMod）被其通用启发式误伤的概率极高。
 //
-// 反制原则（与本体一致：被动、窄口径、绝不破坏站点功能）：
-//   1) 上报咽喉：fetch / XHR / sendBeacon 命中 CSense 专属端点 → 本地合成假成功，
-//      请求不出网。CSense 拿到 200 不会重试风暴，检测记录永不落库；
-//   2) 特征记录：只读扫描 CSense 迹象（localStorage 键 / .csense-window / cookie），
-//      供 `__vaimod_debug.csense()` 诊断 —— 绝不动它的对象（不与扩展正面对抗）；
-//   3) 检测面对策（多数为既有能力，此处仅汇总不新增钩子）：
-//        shadow-root 扫描   → 面板活在 closed shadow（DOM 查询查无此人）
-//        vm.loadProject     → lp-guard 纯旁路 + stealth toString 白名单
-//        DOM/遍历扫描       → stealth 已过滤宿主（含 `body>div:empty[inset]` 类探测）
-//        localStorage 指纹  → 品牌键（val_mod_* / vaimod-*）与 csb* 无任何交集
-//        ccwAPI.Extension   → VaIMod 不注册任何 extension / extensionManager 条目
+// 反制三板斧（与检测面一一对应，被动、窄口径、绝不破坏站点功能）：
+//   1) 拦截检测：fetch / XHR / sendBeacon 命中 CSense 专属端点 → 本地合成假成功，
+//      请求不出网；检测面本身由既有能力压成全负（closed shadow、toString 白名单、
+//      品牌键无交集、不注册 extension）——探测不到就不上报，上报了也出不去。
+//   2) 拦截跳转：三层咽喉 ——
+//        a. Navigation API `navigate` 事件（首选，能拦 location.href= / assign /
+//           replace / window.open 同页 / 链接 / 表单等一切文档级导航）
+//        b. Location.prototype.assign / replace 包装（location 属性本身
+//           [Unforgeable] 不可定义，但其方法在原型上、可安全包装）
+//        c. window.open 包装，命中返回假 window 桩（不返回 null，避免它按
+//           「弹窗被拦」走重试分支）
+//   3) 允许作品继续运行：MutationObserver 即时纠正（childList 挂 documentElement
+//      与 body）—— div.csense-window 一插入 DOM 立即移除，遮罩永远盖不住页面；
+//      跳转被拦 + 遮罩被清 + 上报不出网 → 作品正常可玩。
 //
-// 黑名单口径刻意收窄到两个 CSense 专属端点——其余任何请求（包括 m.ccw.site 的
-// 扩展热更新 JS）一律透传，保证站点与其它扩展功能零影响。
+// 黑名单口径刻意收窄到 CSense 专属端点/域名——其余任何导航与请求（包括
+// m.ccw.site 的扩展热更新 JS）一律透传，保证站点与其它扩展功能零影响。
 //
-// 已知边界：Location.assign/replace/href 属 [Unforgeable]（实例自有、不可配置），
-// 无法包装；但 CSense 的上报主通道是 fetch POST（`qX2:"fetch"` / `uB2:"post"`），
-// 导航式上报未在载荷中出现，风险接受。
+// 已知边界：无 Navigation API 的环境（老 Firefox）下 location.href= 直赋值不可拦
+// （[Unforgeable] setter 无钩点），由 b/c 两层兜住其载荷实际使用的方法。
+
+import { markNative } from '../dom-utils';
 
 const REPORT_RE = /https?:\/\/dcynsppfvlkdtbaleefw\.supabase\.co\/rest\/v1\/csense_detections/i;
 const REDIRECT_RE = /https?:\/\/d\.chen-jin\.dpdns\.org\/csdetected/i;
@@ -44,8 +48,8 @@ export interface CsenseStatus {
   present: boolean;
   /** 命中的信号列表（`ls:<键名>` / `dom:csense-window` / `cookie`） */
   signals: string[];
-  /** 吞掉的 CSense 上报计数 */
-  hits: { fetch: number; xhr: number; beacon: number };
+  /** 吞掉的 CSense 动作计数（检测上报 / 跳转 / 遮罩） */
+  hits: { fetch: number; xhr: number; beacon: number; nav: number; overlay: number };
   /** 最近一次吞掉的时间戳（Date.now()），无则 null */
   lastHit: number | null;
 }
@@ -55,10 +59,15 @@ let origFetch: typeof fetch | null = null;
 let origXhrOpen: typeof XMLHttpRequest.prototype.open | null = null;
 let origXhrSend: typeof XMLHttpRequest.prototype.send | null = null;
 let origBeacon: ((url: string | URL, data?: BodyInit | null) => boolean) | null = null;
+let origAssign: ((url: string) => void) | null = null;
+let origReplace: ((url: string) => void) | null = null;
+let origOpen: typeof window.open | null = null;
+let navListenerInstalled = false;
+let overlayMo: MutationObserver | null = null;
 let scanTimer = 0;
 
 const xhrMarked = new WeakSet<object>();
-const hits: CsenseStatus['hits'] = { fetch: 0, xhr: 0, beacon: 0 };
+const hits: CsenseStatus['hits'] = { fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0 };
 let lastHit: number | null = null;
 let signals: string[] = [];
 let present = false;
@@ -151,6 +160,7 @@ export function installCsenseGuard(): void {
     } catch {
       /* ignore */
     }
+    markNative(patched, 'fetch');
     window.fetch = patched as typeof fetch;
   }
 
@@ -222,7 +232,14 @@ export function installCsenseGuard(): void {
     /* ignore */
   }
 
-  // ④ 特征扫描：立即一次 + onIdle 补扫 + 可见性门控低频巡检
+  // ④ 跳转咽喉（三层）：location.href= / assign / replace / window.open / 链接 / 表单
+  //    —— 命中 csdetected 域即静默取消，页面原地不动
+  installNavigationKillSwitch();
+
+  // ⑤ 遮罩即时清除：div.csense-window 一插入 DOM 立即移除，遮罩永远盖不住页面
+  installOverlayStripper();
+
+  // ⑥ 特征扫描：立即一次 + onIdle 补扫 + 可见性门控低频巡检
   scan();
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') scan();
@@ -231,6 +248,160 @@ export function installCsenseGuard(): void {
     scan();
     scanTimer = window.setInterval(tick, 4000);
   }, 1200);
+}
+
+// ───── ④ 跳转咽喉 ─────
+
+/**
+ * 导航事件最小结构（Navigation API，Chrome 102+；lib.dom 未收录，手写最小面）。
+ * NavigateEvent 可取消 —— preventDefault 后本次文档级导航静默作废，
+ * 覆盖 location.href= / assign / replace / window.open(同页) / 链接 / 表单。
+ */
+interface NavigateEventLike extends Event {
+  destination: { url: string };
+}
+
+type NavigationLike = {
+  addEventListener(type: 'navigate', cb: (e: NavigateEventLike) => void): void;
+};
+
+/** 假 window 桩：window.open 命中黑名单时返回，避免调用方按「弹窗被拦」走重试 */
+function fakeWindowStub(): Window {
+  const stub = {
+    closed: false,
+    close: () => undefined,
+    focus: () => undefined,
+    blur: () => undefined,
+    print: () => undefined,
+    postMessage: () => undefined,
+    opener: null,
+  };
+  return stub as unknown as Window;
+}
+
+function installNavigationKillSwitch(): void {
+  // a. Navigation API：唯一能拦住 `location.href = url` 直赋值的钩点
+  try {
+    const nav = (window as unknown as { navigation?: NavigationLike }).navigation;
+    if (nav && typeof nav.addEventListener === 'function' && !navListenerInstalled) {
+      nav.addEventListener('navigate', (e) => {
+        try {
+          if (e.destination && isCsenseUrl(e.destination.url)) {
+            e.preventDefault();
+            noteHit('nav');
+          }
+        } catch {
+          /* ignore */
+        }
+      });
+      navListenerInstalled = true;
+    }
+  } catch {
+    /* Navigation API 不可用（老 Firefox 等），由 b/c 兜底 */
+  }
+
+  // b. Location.prototype.assign / replace：location 属性本身 [Unforgeable] 不可
+  //    定义，但其方法在原型上、可安全包装。markNative 进 toString 白名单。
+  const LP = Location.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
+  if (typeof LP.assign === 'function' && !origAssign) {
+    origAssign = LP.assign.bind(location) as (url: string) => void;
+    const nativeAssign = origAssign;
+    const patchedAssign = function (this: unknown, url: string) {
+      if (isCsenseUrl(String(url))) {
+        noteHit('nav');
+        return undefined; // 静默吞掉，页面原地不动
+      }
+      return nativeAssign(url);
+    };
+    markNative(patchedAssign, 'assign');
+    LP.assign = patchedAssign as typeof LP.assign;
+  }
+  if (typeof LP.replace === 'function' && !origReplace) {
+    origReplace = LP.replace.bind(location) as (url: string) => void;
+    const nativeReplace = origReplace;
+    const patchedReplace = function (this: unknown, url: string) {
+      if (isCsenseUrl(String(url))) {
+        noteHit('nav');
+        return undefined;
+      }
+      return nativeReplace(url);
+    };
+    markNative(patchedReplace, 'replace');
+    LP.replace = patchedReplace as typeof LP.replace;
+  }
+
+  // c. window.open：命中返回假 window 桩（不返回 null）
+  if (!origOpen) {
+    origOpen = window.open.bind(window);
+    const nativeOpen = origOpen;
+    const patchedOpen = function (this: unknown, url?: string | URL, ...rest: unknown[]) {
+      if (url !== undefined && url !== null && isCsenseUrl(String(url))) {
+        noteHit('nav');
+        return fakeWindowStub();
+      }
+      return (nativeOpen as (...a: unknown[]) => Window | null).apply(this, [url, ...rest]);
+    };
+    markNative(patchedOpen, 'open');
+    window.open = patchedOpen as typeof window.open;
+  }
+}
+
+// ───── ⑤ 遮罩即时清除 ─────
+
+/**
+ * childList 观察器挂 documentElement 与 body（顶层插入两种目标全覆盖）。
+ * 铁律：对 UI 根的即时纠正必须挂属性观察器，不能只靠巡检——遮罩从插入到
+ * 巡检周期之间有最长数秒的可见窗口，观察器把这个窗口压到 0。
+ * 选择器窄口径：只删 .csense-window，其余任何节点零接触。
+ */
+function installOverlayStripper(): void {
+  if (overlayMo || typeof MutationObserver === 'undefined') return;
+  overlayMo = new MutationObserver((muts) => {
+    for (const m of muts) {
+      for (const node of m.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+        try {
+          // 直接命中或容器内携带（防它把遮罩包在自己的容器里插入）
+          const overlays = node.classList.contains('csense-window')
+            ? [node]
+            : Array.from(node.querySelectorAll<HTMLElement>('.csense-window'));
+          for (const el of overlays) {
+            el.remove();
+            noteHit('overlay');
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  });
+  try {
+    overlayMo.observe(document.documentElement, { childList: true });
+  } catch {
+    /* ignore */
+  }
+  // document-start 时 body 可能还没解析出来，就绪后补挂
+  if (document.body) {
+    try {
+      overlayMo.observe(document.body, { childList: true });
+    } catch {
+      /* ignore */
+    }
+  } else {
+    document.addEventListener(
+      'DOMContentLoaded',
+      () => {
+        if (overlayMo && document.body) {
+          try {
+            overlayMo.observe(document.body, { childList: true });
+          } catch {
+            /* ignore */
+          }
+        }
+      },
+      { once: true },
+    );
+  }
 }
 
 /** 卸载（仅测试/调试用）：先比对再还原（last-writer-wins 防护） */
@@ -251,6 +422,16 @@ export function uninstallCsenseGuard(): void {
     } catch {
       /* ignore */
     }
+  }
+  // 跳转咽喉还原（origAssign/origReplace 已 bind(location)，直接回填；
+  // 仅测试/调试路径使用，不比对 last-writer-wins —— 本体运行期不会卸载）
+  const LP = Location.prototype as unknown as Record<string, unknown>;
+  if (origAssign) LP.assign = origAssign;
+  if (origReplace) LP.replace = origReplace;
+  if (origOpen && window.open !== origOpen) window.open = origOpen;
+  if (overlayMo) {
+    overlayMo.disconnect();
+    overlayMo = null;
   }
 }
 
