@@ -32,6 +32,21 @@
 //
 // 已知边界：无 Navigation API 的环境（老 Firefox）下 location.href= 直赋值不可拦
 // （[Unforgeable] setter 无钩点），由 b/c 两层兜住其载荷实际使用的方法。
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// V2 增量（⑦ VA 加固）：移植外挂脚本「Void Apex v0.1.12」的两套手法。
+// ① 防检测补漏 installVaStealth()——原脚本 DeepStealth 段落里 VaIMod anti-fp
+//    尚未覆盖的指纹/自动化痕迹项（Error 堆栈清痕、selenium/playwright/puppeteer/
+//    cdc_ 等自动化特征抹除、maxTouchPoints/language/getBattery/permissions/
+//    enumerateDevices、screen.colorDepth/pixelDepth、WebRTC iceServers 清空、
+//    chrome.runtime 接口删除）。已覆盖项（UA 画像/时间/canvas/audio/console
+//    静默等）一律不重复装，只补缺口。
+// ② 拦截自愈 installInterceptorWatchdog()——原脚本用 hooked WeakSet + Proxy.wrap
+//    给「被自己包过的函数」记账；这里同构地把 csense-guard 装的全部咽喉登记成
+//    账本，低频比对：一旦被第三方还原成**原生函数**（CSense 或恶意脚本的反反制）
+//    立即重装并计数。判定口径刻意收窄到「=== 原生引用」——别人叠加的包装不动，
+//    保证与官方云通道/net-firewall 等同样 hook XHR 的模块零冲突。
+// 全部为增量，原三板斧（fetch/XHR/beacon 拦截、跳转咽喉、遮罩清除）逻辑不变。
 
 import { markNative } from '../dom-utils';
 
@@ -48,10 +63,22 @@ export interface CsenseStatus {
   present: boolean;
   /** 命中的信号列表（`ls:<键名>` / `dom:csense-window` / `cookie`） */
   signals: string[];
-  /** 吞掉的 CSense 动作计数（检测上报 / 跳转 / 遮罩） */
-  hits: { fetch: number; xhr: number; beacon: number; nav: number; overlay: number };
+  /**
+   * 吞掉的 CSense 动作计数（检测上报 / 跳转 / 遮罩）；
+   * `shield` 为 V2 增量：被第三方还原后自愈重装的拦截器次数。
+   */
+  hits: {
+    fetch: number;
+    xhr: number;
+    beacon: number;
+    nav: number;
+    overlay: number;
+    shield: number;
+  };
   /** 最近一次吞掉的时间戳（Date.now()），无则 null */
   lastHit: number | null;
+  /** V2 增量：已应用的防检测补漏项名（只读诊断，来自 Void Apex 手法移植） */
+  stealth: string[];
 }
 
 let installed = false;
@@ -66,11 +93,32 @@ let navListenerInstalled = false;
 let overlayMo: MutationObserver | null = null;
 let scanTimer = 0;
 
+/** V2 增量：原始（未包装）引用，仅用于判定「我们的拦截器是否被还原成原生」 */
+let rawAssign: ((url: string) => void) | null = null;
+let rawReplace: ((url: string) => void) | null = null;
+let rawOpen: typeof window.open | null = null;
+let vaStealthInstalled = false;
+
+/**
+ * V2 增量：拦截器账本（对齐 Void Apex 的 hooked WeakSet 思路）。
+ * `ours` 是我们装的引用、`native` 是原生引用；票据判定见 watchInterceptors()。
+ */
+interface InterceptorEntry {
+  label: string;
+  read: () => unknown;
+  ours: unknown;
+  native: unknown;
+  reinstall: () => void;
+}
+const interceptorBook: InterceptorEntry[] = [];
+
 const xhrMarked = new WeakSet<object>();
-const hits: CsenseStatus['hits'] = { fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0 };
+const hits: CsenseStatus['hits'] = { fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0, shield: 0 };
 let lastHit: number | null = null;
 let signals: string[] = [];
 let present = false;
+/** V2 增量：已应用的防检测补漏项（诊断用） */
+let stealthApplied: string[] = [];
 
 function noteHit(channel: keyof CsenseStatus['hits']): void {
   hits[channel]++;
@@ -124,6 +172,7 @@ function scan(): void {
 function tick(): void {
   if (document.visibilityState === 'hidden') return;
   scan();
+  watchInterceptors();
 }
 
 // ───── 安装 ─────
@@ -162,6 +211,15 @@ export function installCsenseGuard(): void {
     }
     markNative(patched, 'fetch');
     window.fetch = patched as typeof fetch;
+    interceptorBook.push({
+      label: 'fetch',
+      read: () => window.fetch,
+      ours: patched as unknown,
+      native: nativeFetch as unknown,
+      reinstall: () => {
+        window.fetch = patched as typeof fetch;
+      },
+    });
   }
 
   // ② XHR 咽喉：open 记号（WeakSet，页面不可见）→ send 吞掉并合成假完成
@@ -171,7 +229,7 @@ export function installCsenseGuard(): void {
   const nativeOpen = origXhrOpen;
   const nativeSend = origXhrSend;
 
-  XP.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
+  const patchedXhrOpen = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
     try {
       if (isCsenseUrl(String(url))) xhrMarked.add(this);
     } catch {
@@ -179,8 +237,9 @@ export function installCsenseGuard(): void {
     }
     return (nativeOpen as (...a: unknown[]) => void).apply(this, [method, url, ...rest]);
   } as typeof XP.open;
+  XP.open = patchedXhrOpen;
 
-  XP.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+  const patchedXhrSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
     if (!xhrMarked.has(this)) {
       return (nativeSend as (...a: unknown[]) => void).apply(this, [body as never]);
     }
@@ -204,6 +263,25 @@ export function installCsenseGuard(): void {
     }, 0);
     return undefined;
   } as typeof XP.send;
+  XP.send = patchedXhrSend;
+  interceptorBook.push({
+    label: 'XHR.open',
+    read: () => XP.open,
+    ours: patchedXhrOpen as unknown,
+    native: nativeOpen as unknown,
+    reinstall: () => {
+      XP.open = patchedXhrOpen;
+    },
+  });
+  interceptorBook.push({
+    label: 'XHR.send',
+    read: () => XP.send,
+    ours: patchedXhrSend as unknown,
+    native: nativeSend as unknown,
+    reinstall: () => {
+      XP.send = patchedXhrSend;
+    },
+  });
 
   // ③ sendBeacon 咽喉：keepalive 型信标同样吞掉
   try {
@@ -227,6 +305,15 @@ export function installCsenseGuard(): void {
         /* ignore */
       }
       nav.sendBeacon = patchedBeacon;
+      interceptorBook.push({
+        label: 'sendBeacon',
+        read: () => nav.sendBeacon,
+        ours: patchedBeacon as unknown,
+        native: nativeBeacon as unknown,
+        reinstall: () => {
+          nav.sendBeacon = patchedBeacon;
+        },
+      });
     }
   } catch {
     /* ignore */
@@ -244,6 +331,29 @@ export function installCsenseGuard(): void {
   window.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') scan();
   });
+
+  // ⑦ V2 增量：VA 加固（Void Apex 手法移植）—— 防检测补漏 + 拦截自愈守护
+  // 逃生口：localStorage 置 vaimod_csense_va_off=1 可整段停用（误伤排查用，刷新生效）。
+  // 与 anti-fp 的熔断同口径：安全增强一律留一键回退，避免装上去就摘不下来。
+  let vaOff = false;
+  try {
+    vaOff = localStorage.getItem('vaimod_csense_va_off') === '1';
+  } catch {
+    /* localStorage 不可用（隐私模式等）→ 保持默认启用 */
+  }
+  if (!vaOff) {
+    try {
+      installVaStealth();
+    } catch {
+      /* ignore */
+    }
+    try {
+      installInterceptorWatchdog();
+    } catch {
+      /* ignore */
+    }
+  }
+
   window.setTimeout(() => {
     scan();
     scanTimer = window.setInterval(tick, 4000);
@@ -304,6 +414,7 @@ function installNavigationKillSwitch(): void {
   //    定义，但其方法在原型上、可安全包装。markNative 进 toString 白名单。
   const LP = Location.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
   if (typeof LP.assign === 'function' && !origAssign) {
+    rawAssign = LP.assign as (url: string) => void;
     origAssign = LP.assign.bind(location) as (url: string) => void;
     const nativeAssign = origAssign;
     const patchedAssign = function (this: unknown, url: string) {
@@ -315,8 +426,18 @@ function installNavigationKillSwitch(): void {
     };
     markNative(patchedAssign, 'assign');
     LP.assign = patchedAssign as typeof LP.assign;
+    interceptorBook.push({
+      label: 'Location.assign',
+      read: () => LP.assign,
+      ours: patchedAssign as unknown,
+      native: rawAssign as unknown,
+      reinstall: () => {
+        LP.assign = patchedAssign as typeof LP.assign;
+      },
+    });
   }
   if (typeof LP.replace === 'function' && !origReplace) {
+    rawReplace = LP.replace as (url: string) => void;
     origReplace = LP.replace.bind(location) as (url: string) => void;
     const nativeReplace = origReplace;
     const patchedReplace = function (this: unknown, url: string) {
@@ -328,10 +449,20 @@ function installNavigationKillSwitch(): void {
     };
     markNative(patchedReplace, 'replace');
     LP.replace = patchedReplace as typeof LP.replace;
+    interceptorBook.push({
+      label: 'Location.replace',
+      read: () => LP.replace,
+      ours: patchedReplace as unknown,
+      native: rawReplace as unknown,
+      reinstall: () => {
+        LP.replace = patchedReplace as typeof LP.replace;
+      },
+    });
   }
 
   // c. window.open：命中返回假 window 桩（不返回 null）
   if (!origOpen) {
+    rawOpen = window.open;
     origOpen = window.open.bind(window);
     const nativeOpen = origOpen;
     const patchedOpen = function (this: unknown, url?: string | URL, ...rest: unknown[]) {
@@ -343,6 +474,15 @@ function installNavigationKillSwitch(): void {
     };
     markNative(patchedOpen, 'open');
     window.open = patchedOpen as typeof window.open;
+    interceptorBook.push({
+      label: 'window.open',
+      read: () => window.open,
+      ours: patchedOpen as unknown,
+      native: rawOpen as unknown,
+      reinstall: () => {
+        window.open = patchedOpen as typeof window.open;
+      },
+    });
   }
 }
 
@@ -421,6 +561,312 @@ function installOverlayStripper(): void {
   }
 }
 
+// ───── ⑦ VA 加固（Void Apex 手法移植） ─────
+
+/**
+ * 自动化框架特征键（来源：外挂脚本 Void Apex v0.1.12 的 DeepStealth 名单）。
+ * navigator 面一律隐藏；window 面按「自动特征」抹除。
+ */
+const AUTOMATION_KEYS = [
+  'webdriver',
+  'callPhantom',
+  '_phantom',
+  '__nightmare',
+  'domAutomation',
+  'domAutomationController',
+  'selenium',
+  '__selenium_unwrapped',
+  '__selenium_evaluate',
+  '__webdriver_evaluate',
+  '__driver_evaluate',
+  '__playwright',
+  '__pw_manual',
+  '__PW_inspect',
+  '__puppeteer_evaluation_script__',
+  'cdc_adoQpoasnfa76pfcZLmcfl_Array',
+  'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
+  'cdc_adoQpoasnfa76pfcZLmcfl_Symbol',
+  '$cdc_asdjflasutopfhvcZLmcfl_',
+  '_Selenium_IDE_Recorder',
+  'spawn',
+  'emit',
+  'Buffer',
+];
+
+/**
+ * 过于通用、在正常页面也可能存在的键。原脚本无条件删，这里收窄：
+ * 仅在确认处于自动化环境（webdriver 为真）时才动，避免误伤站点自身逻辑。
+ */
+const AUTOMATION_GENERIC = new Set(['spawn', 'emit', 'Buffer']);
+
+/** 堆栈帧是否来自 userscript / 浏览器扩展（清痕口径） */
+const STEALTH_FRAME_RE = /userscript|chrome-extension|moz-extension|extension:\/\/|vaimod|csense/i;
+
+function isStealthFrame(frame: unknown): boolean {
+  try {
+    const cs = frame as {
+      getFileName?: () => string | null | undefined;
+      getFunctionName?: () => string | null | undefined;
+    };
+    const file = String(cs.getFileName?.() ?? '');
+    const fn = String(cs.getFunctionName?.() ?? '');
+    return STEALTH_FRAME_RE.test(file) || STEALTH_FRAME_RE.test(fn);
+  } catch {
+    return false;
+  }
+}
+
+/** 在宿主/原型上定义一个只读 getter（失败静默；幂等） */
+function defineGetter(target: object, prop: string, value: () => unknown): boolean {
+  try {
+    Object.defineProperty(target, prop, { get: value, configurable: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 防检测补漏（V2 增量）：补齐 anti-fp 尚未覆盖的指纹 / 自动化痕迹项。
+ * 已覆盖项（UA 画像、计时器、canvas/audio/WebGL 噪声、console 静默、F12 守卫等）
+ * 一律不重复安装，避免双层包装造成的身份语义漂移。
+ *
+ * 注：原脚本还有「Function.prototype.toString 白名单伪装」与「console 前缀日志过滤」
+ * 两项——VaIMod 侧已由 dom-utils.markNative / anti-fp.installConsolePatches 覆盖，
+ * 此处不重复实现。
+ */
+function installVaStealth(): void {
+  if (vaStealthInstalled) return;
+  vaStealthInstalled = true;
+  const done: string[] = [];
+
+  // ① Error 堆栈清痕（原脚本：stackTraceLimit=5 + prepareStackTrace 过滤自身帧）
+  try {
+    const E = Error as unknown as {
+      stackTraceLimit?: number;
+      prepareStackTrace?: (err: Error, frames: unknown[]) => unknown;
+    };
+    if (typeof E.stackTraceLimit === 'number') E.stackTraceLimit = 5;
+    if (typeof E.prepareStackTrace !== 'function') {
+      E.prepareStackTrace = function (err: Error, frames: unknown[]): unknown {
+        try {
+          const kept = Array.isArray(frames) ? frames.filter((f) => !isStealthFrame(f)) : [];
+          let out = String(err);
+          for (const f of kept) {
+            try {
+              const s = (f as { toString?: () => string }).toString?.();
+              if (s) out += '\n    at ' + s;
+            } catch {
+              /* ignore */
+            }
+          }
+          return out;
+        } catch {
+          return String(err);
+        }
+      };
+      done.push('error-stack');
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // ② 自动化框架特征抹除（selenium / playwright / puppeteer / cdc_ 等）
+  try {
+    let autoEnv = false;
+    try {
+      autoEnv = Boolean((navigator as unknown as { webdriver?: boolean }).webdriver);
+    } catch {
+      /* ignore */
+    }
+    const nav = navigator as unknown as Record<string, unknown>;
+    const win = window as unknown as Record<string, unknown>;
+    let scrubbed = 0;
+    for (const key of AUTOMATION_KEYS) {
+      try {
+        if (key in nav) {
+          defineGetter(nav, key, () => undefined);
+          scrubbed++;
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (key in win && (!AUTOMATION_GENERIC.has(key) || autoEnv)) {
+          delete win[key];
+          scrubbed++;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (scrubbed > 0) done.push('automation-traces');
+  } catch {
+    /* ignore */
+  }
+
+  // ③ navigator 画像补漏（anti-fp 已覆盖 userAgent/platform/cores/memory/languages/webdriver）
+  try {
+    const nav = navigator as unknown as Record<string, unknown>;
+    if (defineGetter(nav, 'maxTouchPoints', () => 0)) done.push('maxTouchPoints');
+    if (defineGetter(nav, 'language', () => 'zh-CN')) done.push('language');
+  } catch {
+    /* ignore */
+  }
+
+  // ④ 电池 / 权限 / 设备枚举（沿用原脚本的固定值口径）
+  try {
+    const nav = navigator as unknown as {
+      getBattery?: () => Promise<unknown>;
+      permissions?: { query?: (d: unknown) => Promise<unknown> };
+      mediaDevices?: { enumerateDevices?: () => Promise<unknown[]> };
+    };
+    if (typeof nav.getBattery === 'function') {
+      nav.getBattery = () =>
+        Promise.resolve({
+          charging: true,
+          chargingTime: 0,
+          dischargingTime: Infinity,
+          level: 1,
+          addEventListener() {
+            /* noop */
+          },
+          removeEventListener() {
+            /* noop */
+          },
+          onchargingchange: null,
+          onchargingtimechange: null,
+          ondischargingtimechange: null,
+          onlevelchange: null,
+        });
+      done.push('getBattery');
+    }
+    const perms = nav.permissions;
+    if (perms && typeof perms.query === 'function') {
+      const origQuery = perms.query.bind(perms);
+      perms.query = function (desc: unknown): Promise<unknown> {
+        try {
+          if (desc && (desc as { name?: string }).name === 'notifications') {
+            return Promise.resolve({ state: 'denied', onchange: null });
+          }
+        } catch {
+          /* ignore */
+        }
+        return origQuery(desc);
+      };
+      done.push('permissions');
+    }
+    const md = nav.mediaDevices;
+    if (md && typeof md.enumerateDevices === 'function') {
+      const origEnum = md.enumerateDevices.bind(md);
+      md.enumerateDevices = async function (): Promise<unknown[]> {
+        const list = await origEnum();
+        return (list || []).map((d) => ({
+          deviceId: (d as MediaDeviceInfo).deviceId,
+          groupId: (d as MediaDeviceInfo).groupId,
+          kind: (d as MediaDeviceInfo).kind,
+          label: '',
+        }));
+      };
+      done.push('enumerateDevices');
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // ⑤ screen 色深（原脚本：恒 24）
+  try {
+    if (typeof screen !== 'undefined') {
+      const s = screen as unknown as Record<string, unknown>;
+      if (defineGetter(s, 'colorDepth', () => 24)) done.push('colorDepth');
+      if (defineGetter(s, 'pixelDepth', () => 24)) done.push('pixelDepth');
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // ⑥ WebRTC：清空 iceServers（防 STUN/STUN-less 收集暴露真实 IP）
+  //    —— anti-fp 的 installWebRtcPatches 只做了 relay 策略，未清空 iceServers
+  try {
+    const rc = (globalThis as unknown as { RTCPeerConnection?: unknown }).RTCPeerConnection;
+    if (typeof rc === 'function' && !(rc as { __vaIce?: boolean }).__vaIce) {
+      const Base = rc as new (cfg?: RTCConfiguration) => RTCPeerConnection;
+      const Hardened = class extends Base {
+        constructor(cfg?: RTCConfiguration) {
+          super(
+            Object.assign({}, cfg ?? {}, {
+              iceServers: [],
+              iceTransportPolicy: 'relay' as RTCIceTransportPolicy,
+            }),
+          );
+        }
+      };
+      Object.defineProperty(Hardened, '__vaIce', { value: true, configurable: true });
+      markNative(Hardened as unknown as object, 'RTCPeerConnection');
+      Object.defineProperty(globalThis, 'RTCPeerConnection', {
+        configurable: true,
+        writable: true,
+        value: Hardened,
+      });
+      done.push('webrtc-ice');
+    }
+  } catch {
+    /* ignore */
+  }
+
+  // ⑦ chrome.runtime 自动化锚点（onConnect / onMessage）
+  try {
+    const rt = (window as unknown as { chrome?: { runtime?: Record<string, unknown> } }).chrome
+      ?.runtime;
+    if (rt) {
+      if ('onConnect' in rt) {
+        delete rt.onConnect;
+        done.push('chrome.onConnect');
+      }
+      if ('onMessage' in rt) {
+        delete rt.onMessage;
+        done.push('chrome.onMessage');
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  stealthApplied = done;
+}
+
+/**
+ * 低频比对拦截器账本：仅当我们的拦截器被**还原成原生引用**时才自愈重装
+ * （对齐外挂脚本 Void Apex 的 hooked 账本 + 自愈重装思路）。
+ *
+ * 判定刻意不用 `cur !== ours`——那会把同样 hook XHR/fetch 的其它模块（官方云通道、
+ * net-firewall 插件）误判成「篡改」并覆盖回去，形成互相拆台的循环。
+ * 用 `cur === native` 则只命中「被人把我们的咽喉整个拆掉」这一种情形。
+ */
+function watchInterceptors(): void {
+  for (const entry of interceptorBook) {
+    let cur: unknown;
+    try {
+      cur = entry.read();
+    } catch {
+      continue;
+    }
+    if (cur === entry.ours) continue; // 拦截器在位
+    if (cur !== entry.native) continue; // 第三方叠加的包装 → 不属于拆台，不动
+    try {
+      entry.reinstall();
+      noteHit('shield');
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** 安装 ⑦ 段（供 installCsenseGuard 调用；也可单独用于测试） */
+function installInterceptorWatchdog(): void {
+  watchInterceptors();
+}
+
 /** 卸载（仅测试/调试用）：先比对再还原（last-writer-wins 防护） */
 export function uninstallCsenseGuard(): void {
   if (!installed) return;
@@ -450,6 +896,9 @@ export function uninstallCsenseGuard(): void {
     overlayMo.disconnect();
     overlayMo = null;
   }
+  // ⑦ 段（VA 加固）不回滚：均为幂等的只读 getter / 前置加固，无副作用；
+  // 且 setter 已改变的宿主再还原意义有限，故仅在测试路径下清账本防止重复记账。
+  interceptorBook.length = 0;
 }
 
 /** 对外只读状态（__vaimod_debug.csense / UI 用） */
@@ -459,5 +908,6 @@ export function csenseStatus(): CsenseStatus {
     signals: [...signals],
     hits: { ...hits },
     lastHit,
+    stealth: [...stealthApplied],
   };
 }
