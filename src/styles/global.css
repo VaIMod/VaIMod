@@ -1670,9 +1670,11 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-.svp-sys {
   position: relative;
+}
+/* 系统页底部留白：移除右下角设置按钮后内容贴边，会显得局促 */
+.svp-sys {
+  padding-bottom: 18px;
 }
 
 /* ===== 设置面板 ===== */
