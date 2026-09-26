@@ -3,155 +3,271 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VaIMod · 安装</title>
-<meta name="description" content="安装 VaIMod —— ccw.site 的隐形变量手术台。">
+<title>VaIMod · 安装 — ccw.site 变量手术台</title>
+<meta name="description" content="30 秒安装 VaIMod：Tampermonkey → 一键安装 → 打开 ccw.site。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 :root{
-  --bg:#0c1014;--panel-2:#0a0d10;
-  --ink:#e8e6df;--dim:#9aa3ab;--faint:#5f6870;
-  --amber:#e8a33d;--amber-hi:#f4bd63;--ok:#8fbd97;
-  --hair:rgba(232,230,223,.1);--hair-2:rgba(232,230,223,.2);
-  --disp:'Syne','Noto Sans SC',sans-serif;
-  --body:'Noto Sans SC',sans-serif;
-  --mono:'JetBrains Mono',monospace;
-  --ease:cubic-bezier(.22,1,.36,1);
+  --bg:#0d1117; --bg-soft:#10161d; --panel:#151b23; --panel-2:#111820;
+  --border:#232b36; --border-soft:#1c242e;
+  --text:#e6edf3; --muted:#8b98a5; --faint:#5b6773;
+  --accent:#4493f8; --accent-soft:rgba(68,147,248,.12);
+  --success:#3fb950; --danger:#f85149;
+  --mono:'JetBrains Mono',ui-monospace,Consolas,monospace;
+  --sans:'Inter','Noto Sans SC',system-ui,-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{
-  background:var(--bg);color:var(--ink);font-family:var(--body);
-  font-size:15.5px;line-height:1.75;-webkit-font-smoothing:antialiased;
-  min-height:100vh;display:flex;flex-direction:column;
-}
-body::before{
-  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
-  background:
-    radial-gradient(ellipse 70% 42% at 50% -8%,rgba(232,163,61,.07),transparent 62%),
-    repeating-linear-gradient(0deg,transparent 0 39px,rgba(232,230,223,.02) 39px 40px),
-    repeating-linear-gradient(90deg,transparent 0 39px,rgba(232,230,223,.02) 39px 40px);
-}
-.wrap{position:relative;z-index:1;width:100%;max-width:880px;margin:0 auto;padding:0 clamp(18px,4vw,40px);display:flex;flex-direction:column;flex:1}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65;-webkit-font-smoothing:antialiased;min-height:100vh;display:flex;flex-direction:column;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+::selection{background:rgba(68,147,248,.35)}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px;width:100%}
+@media(max-width:640px){.wrap{padding:0 16px}}
 
-.top{display:flex;align-items:center;justify-content:space-between;padding:24px 0;border-bottom:1px solid var(--hair)}
-.brand{font-family:var(--disp);font-weight:800;font-size:16px;color:var(--ink);text-decoration:none;letter-spacing:.02em}
-.brand b{color:var(--amber)}
-.top nav{display:flex;gap:24px;font-family:var(--mono);font-size:12px;letter-spacing:.08em}
-.top a:not(.brand){color:var(--dim);text-decoration:none;transition:color .25s var(--ease)}
-.top a:not(.brand):hover{color:var(--amber)}
+/* nav */
+nav{position:sticky;top:0;z-index:50;background:rgba(13,17,23,.82);backdrop-filter:blur(12px);border-bottom:1px solid var(--border-soft)}
+.nav-in{max-width:880px;margin:0 auto;padding:0 24px;height:58px;display:flex;align-items:center}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:16px}
+.logo .mark{width:25px;height:25px;border-radius:7px;background:linear-gradient(135deg,#4493f8,#1f6feb);display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:12px;color:#fff}
+.logo small{font-size:11px;color:var(--faint);font-weight:500;margin-left:6px;font-family:var(--mono)}
+.nav-home{margin-left:auto;font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:7px;padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:var(--panel);transition:.2s}
+.nav-home:hover{border-color:var(--accent);color:var(--accent)}
 
-main{flex:1;padding:clamp(48px,9vh,96px) 0}
-.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.24em;color:var(--amber);margin-bottom:20px}
-h1{font-family:var(--disp);font-weight:800;font-size:clamp(38px,7vw,64px);line-height:1.02;letter-spacing:-.01em}
-h1 b{color:var(--amber)}
-.lede{margin-top:18px;color:var(--dim);max-width:560px}
-.lede strong{color:var(--ink);font-weight:500}
+/* hero */
+.hero{padding:72px 0 44px;text-align:center;position:relative}
+.hero::before{content:"";position:absolute;inset:0;background:radial-gradient(560px 280px at 50% -40px,rgba(68,147,248,.14),transparent 70%);pointer-events:none}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:5px 14px;border:1px solid var(--border);border-radius:999px;font-size:12.5px;color:var(--muted);background:var(--panel);margin-bottom:22px}
+.chip .dot{width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 8px rgba(63,185,80,.8)}
+.hero h1{font-size:clamp(32px,5.5vw,50px);font-weight:800;letter-spacing:-.02em}
+.hero h1 .grad{background:linear-gradient(120deg,#58a6ff,#4493f8 45%,#bc8cff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{max-width:540px;margin:16px auto 0;color:var(--muted);font-size:16px}
 
-.chips{margin-top:26px;display:flex;flex-wrap:wrap;gap:8px}
-.chip{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--dim);border:1px solid var(--hair);padding:5px 12px;border-radius:2px}
-.chip.ok{border-color:rgba(143,189,151,.4);color:var(--ok)}
+/* url box */
+.urlwrap{max-width:640px;margin:34px auto 0}
+.urlbox{display:flex;align-items:center;gap:12px;background:#0a0e13;border:1px solid var(--border);border-radius:11px;padding:13px 16px 13px 18px;font-family:var(--mono);font-size:13px;color:var(--accent)}
+.urlbox .cur{color:var(--success);animation:blink 1.1s steps(1) infinite;flex-shrink:0}
+@keyframes blink{50%{opacity:0}}
+.urlbox .copy{margin-left:auto;background:var(--panel);border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:11.5px;padding:5px 12px;border-radius:7px;cursor:pointer;transition:.2s;flex-shrink:0}
+.urlbox .copy:hover{border-color:var(--accent);color:var(--accent)}
+@media(max-width:560px){.urlbox{font-size:10.5px}.urlbox .copy{display:none}}
+.bigbtn{display:flex;justify-content:center;margin-top:26px}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:15px 34px;border-radius:11px;font-weight:700;font-size:16px;transition:.2s;border:1px solid transparent}
+.btn-primary{background:var(--accent);color:#fff;box-shadow:0 6px 26px rgba(68,147,248,.3)}
+.btn-primary:hover{background:#3d87ec;transform:translateY(-1px)}
+.bigbtn small{display:block;margin-top:12px;font-size:12.5px;color:var(--faint);text-align:center}
 
-.cta{margin-top:38px;display:flex;gap:14px;flex-wrap:wrap}
-.btn{display:inline-flex;align-items:center;gap:10px;font-weight:700;font-size:14.5px;padding:15px 30px;border-radius:2px;text-decoration:none;transition:transform .3s var(--ease),background .3s var(--ease),border-color .3s var(--ease),color .3s var(--ease)}
-.btn-p{background:var(--amber);color:#16130c;border:1px solid var(--amber)}
-.btn-p:hover{background:var(--amber-hi);border-color:var(--amber-hi);transform:translateY(-2px)}
-.btn-g{color:var(--ink);border:1px solid var(--hair-2)}
-.btn-g:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-2px)}
-.btn .arr{font-family:var(--mono);font-weight:400}
+/* steps */
+section{padding:56px 0}
+.sec-head{text-align:center;margin-bottom:40px}
+.sec-head .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:10px}
+.sec-head h2{font-size:clamp(23px,3.5vw,30px);font-weight:800}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+@media(max-width:820px){.steps{grid-template-columns:1fr}}
+.step{background:var(--panel);border:1px solid var(--border);border-radius:13px;padding:26px 24px;position:relative;transition:.25s}
+.step:hover{border-color:rgba(68,147,248,.45);transform:translateY(-2px)}
+.step .num{position:absolute;top:-14px;left:22px;width:28px;height:28px;border-radius:8px;background:var(--accent);color:#fff;font-family:var(--mono);font-weight:700;font-size:13px;display:grid;place-items:center;box-shadow:0 4px 14px rgba(68,147,248,.35)}
+.step h3{font-size:16.5px;font-weight:700;margin:8px 0 8px}
+.step p{font-size:13.8px;color:var(--muted)}
+.step p b{color:var(--text)}
+.step .tag{display:inline-block;margin-top:12px;font-family:var(--mono);font-size:11.5px;color:var(--accent);background:var(--accent-soft);padding:3px 10px;border-radius:6px}
 
-.urlbox{margin-top:30px;font-family:var(--mono);font-size:12.5px;color:var(--ok);background:var(--panel-2);border:1px solid var(--hair);padding:14px 18px;overflow-x:auto;white-space:nowrap;border-radius:2px}
-.urlbox::before{content:"$ ";color:var(--faint)}
+/* features */
+.feat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+@media(max-width:680px){.feat-grid{grid-template-columns:1fr}}
+.feat{display:flex;gap:14px;align-items:flex-start;background:var(--panel-2);border:1px solid var(--border-soft);border-radius:11px;padding:16px 18px;transition:.25s}
+.feat:hover{border-color:rgba(68,147,248,.4)}
+.feat .ic{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);display:grid;place-items:center;color:var(--accent);flex-shrink:0}
+.feat h4{font-size:14.5px;font-weight:700;margin-bottom:3px}
+.feat p{font-size:12.8px;color:var(--muted)}
 
-.steps{margin-top:clamp(48px,8vh,72px);border-top:1px solid var(--hair)}
-.step{display:grid;grid-template-columns:52px minmax(0,5fr) minmax(0,7fr);gap:clamp(14px,3vw,36px);padding:24px 0;border-bottom:1px solid var(--hair)}
-.step .no{font-family:var(--mono);font-size:22px;color:var(--faint);transition:color .4s var(--ease)}
-.step:hover .no{color:var(--amber)}
-.step h3{font-family:var(--disp);font-weight:700;font-size:16px}
-.step p{color:var(--dim);font-size:14px;margin-top:4px}
-.step a{color:var(--amber);text-decoration:none;border-bottom:1px solid rgba(232,163,61,.4)}
-.step a:hover{color:var(--amber-hi);border-color:var(--amber-hi)}
-@media(max-width:640px){.step{grid-template-columns:40px 1fr}.step p{grid-column:2}}
+/* faq-lite */
+.qa{max-width:720px;margin:0 auto}
+.qa details{background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden}
+.qa details[open]{border-color:rgba(68,147,248,.4)}
+.qa summary{cursor:pointer;padding:14px 20px;font-weight:600;font-size:14.5px;list-style:none;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.qa summary::-webkit-details-marker{display:none}
+.qa summary::after{content:"+";font-family:var(--mono);color:var(--accent);font-size:18px}
+.qa details[open] summary::after{transform:rotate(45deg)}
+.qa .ans{padding:0 20px 16px;color:var(--muted);font-size:13.8px}
 
-.note{margin-top:30px;font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em;line-height:2}
-.note b{color:var(--dim);font-weight:500}
-.note a{color:var(--dim);text-decoration:none;border-bottom:1px solid var(--hair-2)}
-.note a:hover{color:var(--amber);border-color:var(--amber)}
+/* cta band */
+.cta-band{background:linear-gradient(180deg,var(--panel),var(--bg-soft));border:1px solid var(--border);border-radius:16px;padding:44px 28px;text-align:center}
+.cta-band h2{font-size:clamp(21px,3.5vw,28px);font-weight:800;margin-bottom:10px}
+.cta-band p{color:var(--muted);font-size:14.5px;margin-bottom:24px}
 
-footer{border-top:1px solid var(--hair);padding:26px 0 34px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
-footer a{color:var(--dim);text-decoration:none}
-footer a:hover{color:var(--amber)}
-footer .brand{font-size:13px}
-@media(max-width:640px){.step{grid-template-columns:40px 1fr}.step p{grid-column:2}}
-.rv{opacity:0;transform:translateY(18px);transition:opacity .7s var(--ease),transform .7s var(--ease)}
+/* footer */
+footer{border-top:1px solid var(--border-soft);padding:28px 0;margin-top:auto;color:var(--faint);font-size:13px}
+footer .wrap{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+footer a:hover{color:var(--accent)}
+footer .sp{margin-left:auto}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
 .rv.in{opacity:1;transform:none}
 @media(prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
 </style>
 </head>
 <body>
-<div class="wrap">
 
-<header class="top">
-  <a class="brand" href="https://vaimod.github.io/">Va<b>I</b>Mod</a>
-  <nav>
-    <a href="https://github.com/VaIMod/VaIMod">GITHUB</a>
-    <a href="https://github.com/VaIMod/VaIMod/releases">RELEASES</a>
-  </nav>
+<nav>
+  <div class="nav-in">
+    <a class="logo" href="https://vaimod.github.io/"><span class="mark">V</span>VaIMod<small>· 安装</small></a>
+    <a class="nav-home" href="https://vaimod.github.io/">← 返回主页</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="chip"><span class="dot"></span>最新版 · v0.1.32 · 自动更新已内置</div>
+    <h1>三十秒，<span class="grad">完成隐身。</span></h1>
+    <p>Tampermonkey 里点一下，刷新 ccw.site 即可。之后的所有防御、更新与配置同步全自动。</p>
+    <div class="urlwrap">
+      <div class="urlbox">https://vaimod.github.io/VaIMod/VaIMod.user.js<span class="cur">▍</span><button class="copy" onclick="navigator.clipboard.writeText('https://vaimod.github.io/VaIMod/VaIMod.user.js');this.textContent='已复制';setTimeout(()=>this.textContent='复制',1500)">复制</button></div>
+    </div>
+    <div class="bigbtn">
+      <div>
+        <a class="btn btn-primary" href="VaIMod.user.js">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 21h16"/></svg>
+          一键安装 VaIMod
+        </a>
+        <small>点击后 Tampermonkey 会自动弹出安装确认</small>
+      </div>
+    </div>
+  </div>
 </header>
 
-<main>
-  <div class="kicker rv">INSTALL · USERSCRIPT</div>
-  <h1 class="rv">安装 <b>VaIMod</b></h1>
-  <p class="lede rv">ccw.site 的<strong>隐形变量手术台</strong>：明文读写每一个变量、直改云数据、一键回滚任意时刻。装好后打开任意作品页，面板自己出现。</p>
-
-  <div class="chips rv">
-    <span class="chip ok">自动更新</span>
-    <span class="chip ok">document-start 注入</span>
-    <span class="chip ok">closed Shadow DOM</span>
-    <span class="chip">仅 ccw.site 生效</span>
-  </div>
-
-  <div class="cta rv">
-    <a class="btn btn-p" href="VaIMod.user.js">点击安装脚本 <span class="arr">→</span></a>
-    <a class="btn btn-g" href="https://github.com/VaIMod/VaIMod/releases">Releases <span class="arr">↗</span></a>
-  </div>
-
-  <div class="urlbox rv">https://vaimod.github.io/VaIMod/VaIMod.user.js</div>
-
-  <div class="steps">
-    <div class="step rv">
-      <div class="no">01</div>
-      <div><h3>安装 Tampermonkey</h3></div>
-      <p>需要一款用户脚本管理器，推荐 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>（Chrome / Edge / Firefox 均可，Violentmonkey 同样支持）。</p>
+<!-- 步骤 -->
+<section>
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker">Setup</div>
+      <h2>三步装好</h2>
     </div>
-    <div class="step rv">
-      <div class="no">02</div>
-      <div><h3>点击上方「安装脚本」</h3></div>
-      <p>Tampermonkey 弹出安装确认，源码可先审计再装。之后每次发布新版本<b style="color:var(--ink)">自动更新</b>，无需手动重装。</p>
-    </div>
-    <div class="step rv">
-      <div class="no">03</div>
-      <div><h3>打开 ccw.site 任意作品</h3></div>
-      <p>面板自动挂载（closed Shadow DOM，页面脚本探测不到）。右上角齿轮进设置；防火墙等能力在插件页按需导入。</p>
+    <div class="steps rv">
+      <div class="step">
+        <div class="num">1</div>
+        <h3>装 Tampermonkey</h3>
+        <p>Chrome / Edge / Firefox 均可，去应用商店搜索 <b>Tampermonkey</b> 安装扩展。</p>
+        <span class="tag">浏览器扩展</span>
+      </div>
+      <div class="step">
+        <div class="num">2</div>
+        <h3>点「一键安装」</h3>
+        <p>上方蓝色按钮或复制 URL 粘进 Tampermonkey 新建脚本页，确认 <b>@version 0.1.32</b> 后安装。</p>
+        <span class="tag">.user.js</span>
+      </div>
+      <div class="step">
+        <div class="num">3</div>
+        <h3>打开 ccw.site</h3>
+        <p>进入任意作品页，面板自动挂载——变量、云数据、还原点全部就绪。</p>
+        <span class="tag">document-start</span>
+      </div>
     </div>
   </div>
+</section>
 
-  <p class="note rv">
-    <b>提示</b> · 脚本仅在 www.ccw.site 生效 · 构建产物头部逐字校验 ·
-    开源 <a href="https://github.com/VaIMod/VaIMod">github.com/VaIMod/VaIMod</a>
-  </p>
-</main>
+<!-- 你会得到什么 -->
+<section style="padding-top:8px">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker">What you get</div>
+      <h2>装完即刻拥有</h2>
+    </div>
+    <div class="feat-grid rv">
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-4z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <div><h4>隐身宿主</h4><p>闭式 Shadow DOM 面板，querySelectorAll 查无此人；属性观察器即时回滚隐藏攻击。</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.6 7.6a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L19 4m-3.5 3.5L18 10"/></svg></div>
+        <div><h4>变量手术台</h4><p>整表读写、单值手术、监视器开关；云变量可改可锁不可误删，2854 项快照 3.9x 提速。</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></div>
+        <div><h4>云数据 + 还原点</h4><p>双通道写入，失败必回滚；快照导入导出随时回到过去，绝不静默分叉。</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+        <div><h4>配置包系统</h4><p>JSON 主配置一键携带：重命名规则、变量锁定、value:"*" 自带检测。</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7l8.7 5 8.7-5M12 22V12"/></svg></div>
+        <div><h4>插件系统</h4><p>waitVm / lazy / load / refresh 生命周期钩子，导入即享全套隐身与完整性保护。</p></div>
+      </div>
+      <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div><h4>自动更新</h4><p>updateURL 已内置，新版本发布后 Tampermonkey 自动拉取，无需手动重装。</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FAQ -->
+<section style="padding-top:8px">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="kicker">FAQ</div>
+      <h2>安装前你可能想问</h2>
+    </div>
+    <div class="qa rv">
+      <details>
+        <summary>会被站点检测到吗？</summary>
+        <div class="ans">DOM、函数包装、网络流量三个检测面分别被闭式 Shadow DOM、markNative 白名单、单次出网编码覆盖。详见主页的反检测实录。</div>
+      </details>
+      <details>
+        <summary>为什么装完面板没出现？</summary>
+        <div class="ans">脚本在 document-start 注入，面板等待 VM 就绪后挂载。确认 Tampermonkey 已启用、脚本版本 ≥0.1.32，刷新作品页即可。若站点在脚本注入前就完成全部初始化（极少见），属于 userscript 注入时机的物理极限。</div>
+      </details>
+      <details>
+        <summary>如何更新 / 卸载？</summary>
+        <div class="ans">更新全自动（updateURL 内置）；卸载在 Tampermonkey 管理面板删除脚本即可，本地数据可在面板「系统」页清除。</div>
+      </details>
+      <details>
+        <summary>开源吗？代码在哪？</summary>
+        <div class="ans">完全开源：<a href="https://github.com/VaIMod/VaIMod" target="_blank" rel="noopener" style="color:var(--accent)">github.com/VaIMod/VaIMod</a>。每一段防御代码都可审计——防护针对运行时探测与篡改，开源保护的是你的信任。</div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section>
+  <div class="wrap">
+    <div class="cta-band rv">
+      <h2>还没装？</h2>
+      <p>装完刷新 ccw.site，一切自动就绪。</p>
+      <a class="btn btn-primary" href="VaIMod.user.js">一键安装 VaIMod</a>
+    </div>
+  </div>
+</section>
 
 <footer>
-  <span class="brand">Va<b style="color:var(--amber)">I</b>Mod</span>
-  <span>STEALTH-FIRST VARIABLE SURGERY</span>
-  <span><a href="https://github.com/VaIMod">MAXKORE@GITHUB</a></span>
+  <div class="wrap">
+    <span>© 2026 VaIMod</span>
+    <a href="https://vaimod.github.io/">主页</a>
+    <a href="https://github.com/VaIMod/VaIMod" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/VaIMod/VaIMod/releases" target="_blank" rel="noopener">Releases</a>
+    <span class="sp">Not affiliated with ccw.site · Use responsibly</span>
+  </div>
 </footer>
 
-</div>
 <script>
-const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}},{threshold:.15});
-document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) {
+    els.forEach(function(el){ el.classList.add('in'); });
+    return;
+  }
+  var io = new IntersectionObserver(function(entries){
+    entries.forEach(function(e){
+      if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+    });
+  }, { threshold: .1 });
+  els.forEach(function(el){ io.observe(el); });
+})();
 </script>
 </body>
 </html>
