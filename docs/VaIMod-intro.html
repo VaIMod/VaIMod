@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VaIMod — ccw.site 的隐形变量手术台</title>
+<meta name="description" content="VaIMod：为 ccw.site 打造的变量手术台。明文读写、云数据直改、还原点、插件体系，以及一套 document-start 就位的纵深安全系统。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#111519;
+  --bg-raise:#171d23;
+  --bg-deep:#0c1014;
+  --ink:#e8e5dd;
+  --ink-dim:#a8a69e;
+  --ink-faint:#6e6d66;
+  --amber:#e6a23c;
+  --amber-hi:#f4bd63;
+  --ok:#8fbd97;
+  --danger:#d96b5a;
+  --hair:rgba(232,229,221,.11);
+  --hair-strong:rgba(232,229,221,.22);
+  --disp:'Syne','Noto Sans SC',sans-serif;
+  --body:'Noto Sans SC',sans-serif;
+  --mono:'JetBrains Mono',monospace;
+  --ease:cubic-bezier(.22,1,.36,1);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--body);
+  font-size:16px;
+  line-height:1.75;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+::selection{background:var(--amber);color:#141518}
+
+/* ---------- 背景细纹：极淡的斜向扫描线，暗示"监视器" ---------- */
+body::before{
+  content:"";
+  position:fixed;inset:0;
+  background:repeating-linear-gradient(-45deg,transparent 0 34px,rgba(232,229,221,.012) 34px 35px);
+  pointer-events:none;z-index:0;
+}
+.wrap{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:0 clamp(20px,4vw,48px)}
+
+/* ---------- 顶部 ---------- */
+header.top{
+  display:flex;justify-content:space-between;align-items:center;
+  padding:26px 0 22px;
+  border-bottom:1px solid var(--hair);
+  font-family:var(--mono);font-size:12px;color:var(--ink-faint);
+  letter-spacing:.08em;
+}
+header.top .brand{font-family:var(--disp);font-weight:800;font-size:15px;color:var(--ink);letter-spacing:.02em}
+header.top .brand b{color:var(--amber);font-weight:800}
+header.top nav{display:flex;gap:26px}
+header.top a{color:var(--ink-dim);text-decoration:none;transition:color .25s var(--ease)}
+header.top a:hover{color:var(--amber)}
+@media(max-width:640px){header.top nav{display:none}}
+
+/* ---------- Hero ---------- */
+.hero{padding:clamp(72px,12vh,150px) 0 clamp(56px,9vh,110px);position:relative}
+.hero .kicker{
+  font-family:var(--mono);font-size:12px;letter-spacing:.22em;
+  color:var(--amber);margin-bottom:26px;
+  display:flex;align-items:center;gap:14px;
+}
+.hero .kicker::after{content:"";height:1px;width:72px;background:var(--amber);opacity:.5}
+.hero h1{
+  font-family:var(--disp);font-weight:800;
+  font-size:clamp(56px,11vw,148px);
+  line-height:.95;letter-spacing:-.015em;
+}
+.hero h1 .vai{color:var(--ink)}
+.hero h1 .i{color:var(--amber);display:inline-block;transform:translateY(-.02em)}
+.hero h1 .mod{color:var(--ink)}
+.hero .sub{
+  margin-top:34px;max-width:560px;
+  font-size:clamp(16px,1.6vw,19px);color:var(--ink-dim);
+}
+.hero .sub strong{color:var(--ink);font-weight:500}
+.hero .meta{
+  margin-top:44px;display:flex;flex-wrap:wrap;gap:10px 34px;
+  font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.06em;
+}
+.hero .meta span b{color:var(--ink-dim);font-weight:500}
+.hero .cta{margin-top:44px;display:flex;gap:14px;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:10px;
+  font-family:var(--body);font-weight:700;font-size:14px;
+  padding:14px 26px;border-radius:2px;text-decoration:none;
+  transition:transform .3s var(--ease),background .3s var(--ease),border-color .3s var(--ease);
+}
+.btn-primary{background:var(--amber);color:#16130c;border:1px solid var(--amber)}
+.btn-primary:hover{background:var(--amber-hi);border-color:var(--amber-hi);transform:translateY(-2px)}
+.btn-ghost{color:var(--ink);border:1px solid var(--hair-strong)}
+.btn-ghost:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-2px)}
+.btn .arr{font-family:var(--mono);font-weight:400}
+
+/* ---------- 章节骨架 ---------- */
+section{padding:clamp(64px,10vh,120px) 0;border-top:1px solid var(--hair)}
+.sec-head{display:flex;align-items:baseline;gap:22px;margin-bottom:clamp(40px,7vh,72px)}
+.sec-head .no{
+  font-family:var(--mono);font-size:13px;color:var(--amber);letter-spacing:.1em;
+  white-space:nowrap;
+}
+.sec-head h2{
+  font-family:var(--disp);font-weight:700;
+  font-size:clamp(28px,4.4vw,46px);letter-spacing:-.01em;line-height:1.1;
+}
+.sec-head .hint{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.08em}
+@media(max-width:720px){.sec-head .hint{display:none}}
+
+/* ---------- 功能：非对称行式布局 ---------- */
+.feat{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(24px,4vw,64px);padding:clamp(30px,4.5vh,46px) 0;border-top:1px solid var(--hair)}
+.feat:first-of-type{border-top:none;padding-top:0}
+.feat:last-of-type{padding-bottom:0}
+@media(max-width:780px){.feat{grid-template-columns:1fr;gap:14px}}
+.feat h3{
+  font-family:var(--disp);font-weight:700;font-size:clamp(20px,2.4vw,26px);
+  line-height:1.25;
+}
+.feat h3 em{font-style:normal;color:var(--amber)}
+.feat .tagline{font-family:var(--mono);font-size:11.5px;color:var(--ink-faint);letter-spacing:.14em;margin-top:10px}
+.feat .desc{color:var(--ink-dim);font-size:15.5px}
+.feat .desc p+p{margin-top:12px}
+.feat .desc b{color:var(--ink);font-weight:500}
+.specs{margin-top:20px;display:flex;flex-wrap:wrap;gap:8px}
+.spec{
+  font-family:var(--mono);font-size:11.5px;letter-spacing:.05em;
+  color:var(--ink-dim);border:1px solid var(--hair);border-radius:2px;
+  padding:5px 12px;transition:border-color .3s var(--ease),color .3s var(--ease);
+}
+.spec:hover{border-color:var(--amber);color:var(--amber)}
+.spec.ok{border-color:rgba(143,189,151,.4);color:var(--ok)}
+
+/* ---------- 安全系统：启动链时间线 ---------- */
+.chain{position:relative;margin:0 0 clamp(48px,7vh,80px);padding-left:0}
+.chain-item{
+  display:grid;grid-template-columns:88px minmax(0,4fr) minmax(0,6fr);
+  gap:clamp(16px,3vw,44px);
+  padding:26px 0;border-top:1px solid var(--hair);position:relative;
+}
+.chain-item:last-child{border-bottom:1px solid var(--hair)}
+@media(max-width:780px){.chain-item{grid-template-columns:64px 1fr;grid-template-rows:auto auto}.chain-item .cd{grid-column:2}}
+.chain-item .step{
+  font-family:var(--mono);font-size:clamp(26px,3.4vw,38px);
+  color:var(--ink-faint);line-height:1;font-weight:500;
+  transition:color .4s var(--ease);
+}
+.chain-item:hover .step{color:var(--amber)}
+.chain-item h4{font-family:var(--disp);font-weight:700;font-size:17px;letter-spacing:.01em}
+.chain-item h4 code{
+  font-family:var(--mono);font-size:12px;color:var(--amber);
+  background:rgba(230,162,60,.08);padding:2px 7px;border-radius:2px;margin-left:8px;font-weight:500;
+}
+.chain-item .cd{font-family:var(--mono);font-size:11px;color:var(--ink-faint);letter-spacing:.1em;margin-top:8px}
+.chain-item .ct{color:var(--ink-dim);font-size:14.5px}
+.chain-item .ct b{color:var(--ink);font-weight:500}
+
+/* ---------- 防线细节：错落双列 ---------- */
+.layers{display:grid;grid-template-columns:1fr 1fr;gap:0 clamp(28px,5vw,72px)}
+@media(max-width:780px){.layers{grid-template-columns:1fr}}
+.layer{padding:30px 0;border-top:1px solid var(--hair)}
+.layer:nth-child(1),.layer:nth-child(2){border-top:none}
+@media(max-width:780px){.layer:nth-child(2){border-top:1px solid var(--hair}}
+.layer h4{
+  font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.16em;
+  color:var(--amber);margin-bottom:12px;text-transform:uppercase;
+}
+.layer p{color:var(--ink-dim);font-size:14.5px}
+.layer p b{color:var(--ink);font-weight:500}
+
+/* ---------- 原则带 ---------- */
+.principles{margin-top:clamp(48px,7vh,80px);border:1px solid var(--hair-strong);padding:clamp(26px,4vw,44px);position:relative}
+.principles::before{
+  content:"DESIGN RULES";position:absolute;top:-9px;left:22px;
+  background:var(--bg);padding:0 10px;
+  font-family:var(--mono);font-size:11px;letter-spacing:.2em;color:var(--amber);
+}
+.principles ul{list-style:none;display:grid;grid-template-columns:1fr 1fr;gap:14px 40px}
+@media(max-width:680px){.principles ul{grid-template-columns:1fr}}
+.principles li{
+  color:var(--ink-dim);font-size:14.5px;padding-left:20px;position:relative;
+}
+.principles li::before{content:"▸";position:absolute;left:0;color:var(--amber);font-size:12px;top:2px}
+.principles li b{color:var(--ink);font-weight:500}
+
+/* ---------- 安装 ---------- */
+.install{display:grid;grid-template-columns:1fr 1fr;gap:clamp(24px,4vw,56px)}
+@media(max-width:780px){.install{grid-template-columns:1fr}}
+.inst-box{border:1px solid var(--hair);padding:clamp(24px,3.5vw,40px);transition:border-color .3s var(--ease)}
+.inst-box:hover{border-color:var(--hair-strong)}
+.inst-box .way{font-family:var(--mono);font-size:11px;letter-spacing:.18em;color:var(--ink-faint);margin-bottom:14px}
+.inst-box h4{font-family:var(--disp);font-weight:700;font-size:19px;margin-bottom:10px}
+.inst-box p{color:var(--ink-dim);font-size:14px;margin-bottom:20px}
+.inst-box code{
+  display:block;font-family:var(--mono);font-size:12px;color:var(--ok);
+  background:var(--bg-deep);border:1px solid var(--hair);padding:12px 14px;
+  overflow-x:auto;white-space:nowrap;
+}
+.footnote{margin-top:34px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.05em}
+.footnote a{color:var(--ink-dim);text-decoration:none;border-bottom:1px solid var(--hair-strong)}
+.footnote a:hover{color:var(--amber);border-color:var(--amber)}
+
+/* ---------- 页脚 ---------- */
+footer{border-top:1px solid var(--hair);padding:40px 0 56px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;
+  font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.06em}
+footer .brand{font-family:var(--disp);font-weight:800;color:var(--ink-dim)}
+footer .brand b{color:var(--amber)}
+
+/* ---------- 滚动显现 ---------- */
+.rv{opacity:0;transform:translateY(22px);transition:opacity .8s var(--ease),transform .8s var(--ease)}
+.rv.in{opacity:1;transform:none}
+.rv-d1{transition-delay:.08s}.rv-d2{transition-delay:.16s}.rv-d3{transition-delay:.24s}
+@media(prefers-reduced-motion:reduce){
+  .rv{opacity:1;transform:none;transition:none}
+  html{scroll-behavior:auto}
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand">Va<b>I</b>Mod</div>
+  <nav>
+    <a href="#features">功能</a>
+    <a href="#security">安全系统</a>
+    <a href="#install">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<!-- ================= HERO ================= -->
+<div class="hero">
+  <div class="kicker rv">CCW.SITE · USERSCRIPT · STEALTH-FIRST</div>
+  <h1 class="rv rv-d1"><span class="vai">Va</span><span class="i">I</span><span class="mod">Mod</span></h1>
+  <p class="sub rv rv-d2">
+    一把装进浏览器的<strong>隐形变量手术台</strong>：明文读写每一个变量、直改云数据、
+    一键回滚任意时刻。从 <strong>document-start</strong> 那一刻起，整套纵深安全系统已经在岗——
+    面板在 closed shadow 里，别人看不见，也碰不到。
+  </p>
+  <div class="meta rv rv-d3">
+    <span>版本 <b id="ver">v0.1.31</b></span>
+    <span>注入时机 <b>document-start</b></span>
+    <span>面板 <b>closed Shadow DOM</b></span>
+    <span>回归基线 <b>339 项全绿</b></span>
+  </div>
+  <div class="cta rv rv-d3">
+    <a class="btn btn-primary" href="https://vaimod.github.io/VaIMod/VaIMod.user.js">安装最新版 <span class="arr">→</span></a>
+    <a class="btn btn-ghost" href="https://github.com/VaIMod/VaIMod/releases">Releases <span class="arr">↗</span></a>
+  </div>
+</div>
+
+<!-- ================= 01 功能 ================= -->
+<section id="features">
+  <div class="sec-head rv">
+    <span class="no">01</span>
+    <h2>功能</h2>
+    <span class="hint">SIX SURFACES · ONE PANEL</span>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>变量面板<em>。</em>所见即明文</h3>
+      <div class="tagline">VARS · READ / WRITE / LOCK</div>
+    </div>
+    <div class="desc">
+      <p>读接口永远返回<b>明文真值</b>——不编码、不混淆，改了什么就是什么。
+      每个变量可以单独<b>锁定</b>：锁住的值对游戏逻辑只读，防手滑也防覆盖。
+      系统临时槽位会被自动识别并标锁，避免误改跨过程暂存。</p>
+      <div class="specs">
+        <span class="spec">明文快照 · 整表读取比逐条快 ~4x</span>
+        <span class="spec ok">本地重命名 · 强制开启</span>
+        <span class="spec ok">value:"*" 自带检测</span>
+        <span class="spec">监视器开关</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>云数据<em>。</em>双库直改</h3>
+      <div class="tagline">CLOUD · PROJECT / USER</div>
+    </div>
+    <div class="desc">
+      <p>作品库与用户库两个作用域<b>直接读写</b>，本地镜像实时同步。
+      保存走双通道，任何一路失败都会<b>回滚镜像并明确报错</b>——
+      绝不出现「提示已保存，实际云端没写进去」的静默分叉。</p>
+      <div class="specs">
+        <span class="spec">project / user 双作用域</span>
+        <span class="spec ok">失败必回滚镜像</span>
+        <span class="spec">支持整键增删</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>还原点<em>。</em>任意时刻可回退</h3>
+      <div class="tagline">RESTORE POINTS · SNAPSHOT / APPLY</div>
+    </div>
+    <div class="desc">
+      <p>变量、列表、云数据打包成命名快照。应用时逐项写回，
+      云数据写入失败<b>自动回滚本地镜像</b>，不会留下半应用状态。
+      快照可以导出成 JSON 分享，导入时<b>结构校验</b>，坏数据直接拒绝。</p>
+      <div class="specs">
+        <span class="spec ok">导入前结构校验</span>
+        <span class="spec ok">应用失败回滚</span>
+        <span class="spec">JSON 导入 / 导出</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>插件体系<em>。</em>能力无上限</h3>
+      <div class="tagline">PLUGINS · IMPORT / SANDBOX EDGE / INTEGRITY</div>
+    </div>
+    <div class="desc">
+      <p>一个 .js 文件就是一个插件。导入后自动获得全套环境红利：
+      UI 住进 closed shadow、源码落盘即<b>指纹校验（bodySig）</b>、
+      HTML 部分强制消毒、包装原生方法有 <b>toString 白名单</b>接口。
+      异步装载支持 waitVm → load → code 三段式，防火墙等网络能力全部以插件形式分发。</p>
+      <div class="specs">
+        <span class="spec ok">bodySig 启动校验 · 改写即隔离</span>
+        <span class="spec ok">sanitizePluginHtml</span>
+        <span class="spec">ctx.net / ctx.vm / ctx.ui</span>
+        <span class="spec">防火墙 = 独立插件</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>配置包<em>。</em>一次携带全部</h3>
+      <div class="tagline">BUNDLE · ONE FILE, EVERYTHING</div>
+    </div>
+    <div class="desc">
+      <p>变量重命名规则、锁定表、还原点、插件清单全部走一份 JSON 主配置。
+      导入按条目<b>合并</b>而非粗暴覆盖，插件包可声明
+      <b>pluginsOnly</b> 只装插件不动本地数据。</p>
+      <div class="specs">
+        <span class="spec">rename / lock / markers / plugins</span>
+        <span class="spec ok">条目级合并 · 不清空用户数据</span>
+        <span class="spec">pluginsOnly 导入</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="feat rv">
+    <div>
+      <h3>更多面板<em>。</em>按需生长</h3>
+      <div class="tagline">TOOLS · FEISHU · SYSTEM · FIREWALL</div>
+    </div>
+    <div class="desc">
+      <p>工具页内置 SB3 工具箱；飞书页直连文档与图床；系统页集中
+      还原点、回收站与运行诊断。所有页面共用同一套拖拽、
+      自适应与动画引擎——合成层位移、零布局抖动。</p>
+      <div class="specs">
+        <span class="spec">rAF 合帧拖拽</span>
+        <span class="spec">宽度自适应 · 永不振荡</span>
+        <span class="spec">默认面板：变量 + 云数据</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 02 安全系统 ================= -->
+<section id="security">
+  <div class="sec-head rv">
+    <span class="no">02</span>
+    <h2>安全系统如何运作</h2>
+    <span class="hint">BOOT CHAIN · DEPTH BY LAYER</span>
+  </div>
+
+  <p class="rv" style="max-width:640px;color:var(--ink-dim);font-size:15.5px;margin-bottom:clamp(36px,6vh,60px)">
+    防御不是事后补丁，而是<b style="color:var(--ink)">一条在页面第一行代码之前就排好队的纵深链</b>。
+    每层只做一件事，上层失效下层兜底：
+  </p>
+
+  <div class="chain">
+    <div class="chain-item rv">
+      <div class="step">⓪</div>
+      <div>
+        <h4>SecureGuard 前哨<code>secure-guardFront</code></h4>
+        <div class="cd">DOCUMENT-START · 第一优先级</div>
+      </div>
+      <div class="ct">抢先净化易被利用的全局实例，<b>变量名保护</b>同步上膛——在游戏代码有机会动手之前。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">⓪′</div>
+      <div>
+        <h4>SigGuard 双注册咽喉<code>sig-guardFront</code></h4>
+        <div class="cd">EXTENSIONS.REGISTER + EXTENSIONMANAGER</div>
+      </div>
+      <div class="ct">官方扩展注册与项目扩展管理器<b>双路设卡</b>，新注册的类原型逐个过检；作品加载完成的 burst 信号触发全量重扫，2 秒 tick 兜底漏网。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">①</div>
+      <div>
+        <h4>Stealth 隐身宿主<code>stealth.ts</code></h4>
+        <div class="cd">CLOSED SHADOW DOM</div>
+      </div>
+      <div class="ct">面板的全部 UI 住进 <b>closed 模式 Shadow DOM</b>：页面脚本 querySelectorAll 永远查不进去，创建时登记的宿主清单是唯一入口。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">②</div>
+      <div>
+        <h4>XSS 防线<code>xssGuard</code></h4>
+        <div class="cd">SANITIZE AT BOUNDARY</div>
+      </div>
+      <div class="ct">一切进入 UI 的动态内容在边界消毒：脚本、iframe、内联事件、伪协议一律剥除。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">③</div>
+      <div>
+        <h4>云 API 旁路<code>hookOfficialCloudApi</code></h4>
+        <div class="cd">PASSTHROUGH TAP · NO IMPOSTOR</div>
+      </div>
+      <div class="ct">对官方云接口挂<b>纯旁路透传</b>的捕获钩子——绝不伪装 vm 实例、不改写访问器，游戏加载照常、数据照常，我们只是看着。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">④</div>
+      <div>
+        <h4>蜜罐哨兵<code>honeypotGuard</code></h4>
+        <div class="cd">DECOY · 8S PATROL</div>
+      </div>
+      <div class="ct">布下探测者才看得见的诱饵面：谁伸手碰诱饵，等于自报家门。8 秒一轮的巡逻持续确认诱饵完好。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">④+</div>
+      <div>
+        <h4>飞书 & UI 卫兵<code>feishuGuard · uiGuard</code></h4>
+        <div class="cd">ATTRIBUTE OBSERVER · 1S PATROL</div>
+      </div>
+      <div class="ct">uiGuard 给宿主挂<b>属性观察器</b>：敌扩展写入的隐藏样式被即时回滚，不等巡检；zIndex 与挂载点被挪动也会自动归位。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">⑤</div>
+      <div>
+        <h4>Veil 动态面纱<code>veilGuard</code></h4>
+        <div class="cd">DYNAMIC VEIL CHAIN · ONIDLE</div>
+      </div>
+      <div class="ct">boot 完成后叠加动态面纱链：对外呈现的接口面随时间变化，探测者拿到的是<b>永远对不上号的快照</b>。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">VM</div>
+      <div>
+        <h4>ScratchVM 桥接 + 早期捕获<code>capture-early</code></h4>
+        <div class="cd">25MS POLL · LOADPROJECT TAP</div>
+      </div>
+      <div class="ct">document-start 起 25ms 轮询盯住 window.vm；loadProject 挂<b>幂等旁路 tap</b>，VM 加载多快都逃不过捕获，绝不双重包装。</div>
+    </div>
+  </div>
+
+  <div class="layers">
+    <div class="layer rv">
+      <h4>Integrity · 完整性</h4>
+      <p>插件源码落盘即算 <b>bodySig 指纹</b>，每次启动复验；localStorage 条目被外部改写 → 隔离扣留并亮出告警，<b>宁可不加载，不带毒启动</b>。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Anti-Fingerprint · 反指纹</h4>
+      <p>包装过的原生方法登记进 <b>Function.prototype.toString 白名单</b>并同步 name——反作弊最常查的一处，查出来永远"是原生的"。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Net Marking · 网络标记</h4>
+      <p>本体请求用 <b>WeakSet 打标</b>：页面探测不到也伪造不了。网络类插件据此放行内部流量，用户拉黑域名不会误伤云数据。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Self-Patrol · 自巡逻</h4>
+      <p>全部常驻轮询<b>可见性门控</b>：页面隐藏即休眠，回前台立刻补跑。守护自己，不浪费你的电池。</p>
+    </div>
+  </div>
+
+  <div class="principles rv">
+    <ul>
+      <li><b>只旁路，不伪装</b>——捕获永远透传，绝不冒充 vm 实例</li>
+      <li><b>读接口必明文</b>——不做非幂等编码，UI 四条读路径全部一致</li>
+      <li><b>失败必回滚</b>——双通道任一失败，镜像与云端绝不分叉</li>
+      <li><b>锁值不进面板</b>——锁定元数据与业务数据物理隔离</li>
+      <li><b>动静分层</b>——位移走合成层，绝不让动画逼出整页布局</li>
+      <li><b>插件同级信任</b>——插件代码是页面级脚本，享受保护而非沙箱隔离</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================= 03 安装 ================= -->
+<section id="install">
+  <div class="sec-head rv">
+    <span class="no">03</span>
+    <h2>安装</h2>
+    <span class="hint">TAMPERMONKEY · ONE CLICK</span>
+  </div>
+  <div class="install">
+    <div class="inst-box rv">
+      <div class="way">WAY 01 · 自动更新源</div>
+      <h4>Pages 直装（推荐）</h4>
+      <p>安装后随版本自动更新。每次构建产物头部逐字校验，版本号与 Release 对齐。</p>
+      <code>https://vaimod.github.io/VaIMod/VaIMod.user.js</code>
+    </div>
+    <div class="inst-box rv rv-d1">
+      <div class="way">WAY 02 · 手动版本</div>
+      <h4>GitHub Releases</h4>
+      <p>每个版本附带构建产物，可回滚、可校验、可审计。</p>
+      <code>github.com/VaIMod/VaIMod/releases</code>
+    </div>
+  </div>
+  <p class="footnote rv">
+    需要 <a href="https://www.tampermonkey.net/">Tampermonkey</a>（或任意 UserScript 管理器）·
+    仅在 <a href="https://www.ccw.site/">ccw.site</a> 生效 ·
+    开源于 <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+  </p>
+</section>
+
+<footer>
+  <div class="brand">Va<b>I</b>Mod</div>
+  <div>STEALTH-FIRST VARIABLE SURGERY · CCW.SITE</div>
+  <div id="yr"></div>
+</footer>
+
+</div>
+
+<script>
+document.getElementById('yr').textContent = new Date().getFullYear() + ' · MAXKORE@GITHUB';
+const io = new IntersectionObserver((es)=>{
+  for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+},{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
