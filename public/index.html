@@ -197,6 +197,10 @@ footer .sp{margin-left:auto}
         <div><h4>插件系统</h4><p>waitVm / lazy / load / refresh 生命周期钩子，导入即享全套隐身与完整性保护。</p></div>
       </div>
       <div class="feat">
+        <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+        <div><h4>CSense 反制</h4><p>检测上报不出网、跳转三层拦截、遮罩即时清除——检测型扩展以为自己还在工作，作品照常可玩。</p></div>
+      </div>
+      <div class="feat">
         <div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
         <div><h4>自动更新</h4><p>updateURL 已内置，新版本发布后 Tampermonkey 自动拉取，无需手动重装。</p></div>
       </div>
@@ -217,8 +221,12 @@ footer .sp{margin-left:auto}
         <div class="ans">DOM、函数包装、网络流量三个检测面分别被闭式 Shadow DOM、markNative 白名单、单次出网编码覆盖。详见主页的反检测实录。</div>
       </details>
       <details>
+        <summary>遇到「CSense 拦截器」检测怎么办？</summary>
+        <div class="ans">内置 csense-guard：检测上报本地合成假 200 不出网、跳转三层拦截（Navigation API + location 方法 + window.open 桩）、div.csense-window 遮罩一插入立即移除——作品照常可玩。开 <code>vaimod_debug=1</code> 后 <code>__vaimod_debug.csense()</code> 可查拦截计数。</div>
+      </details>
+      <details>
         <summary>为什么装完面板没出现？</summary>
-        <div class="ans">脚本在 document-start 注入，面板等待 VM 就绪后挂载。确认 Tampermonkey 已启用、脚本版本 ≥0.1.32，刷新作品页即可。若站点在脚本注入前就完成全部初始化（极少见），属于 userscript 注入时机的物理极限。</div>
+        <div class="ans">脚本在 document-start 注入，面板等待 VM 就绪后挂载。确认 Tampermonkey 已启用、脚本版本 ≥0.1.33，刷新作品页即可。若站点在脚本注入前就完成全部初始化（极少见），属于 userscript 注入时机的物理极限。</div>
       </details>
       <details>
         <summary>如何更新 / 卸载？</summary>
