@@ -1,47 +1,157 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VaIMod-安装脚本</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      max-width: 560px;
-      margin: 0 auto;
-      padding: 48px 24px;
-      font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-      color: #000;
-      line-height: 1.7;
-    }
-    h1 { font-size: 32px; margin-bottom: 24px; }
-    p { margin-bottom: 24px; }
-    a.install {
-      display: block;
-      width: 100%;
-      padding: 14px;
-      border: 1px solid #000;
-      color: #000;
-      text-align: center;
-      text-decoration: none;
-      font-size: 16px;
-      margin-bottom: 32px;
-    }
-    ol { padding-left: 24px; margin-bottom: 24px; }
-    a.link { color: #000; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VaIMod · 安装</title>
+<meta name="description" content="安装 VaIMod —— ccw.site 的隐形变量手术台。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0c1014;--panel-2:#0a0d10;
+  --ink:#e8e6df;--dim:#9aa3ab;--faint:#5f6870;
+  --amber:#e8a33d;--amber-hi:#f4bd63;--ok:#8fbd97;
+  --hair:rgba(232,230,223,.1);--hair-2:rgba(232,230,223,.2);
+  --disp:'Syne','Noto Sans SC',sans-serif;
+  --body:'Noto Sans SC',sans-serif;
+  --mono:'JetBrains Mono',monospace;
+  --ease:cubic-bezier(.22,1,.36,1);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:var(--bg);color:var(--ink);font-family:var(--body);
+  font-size:15.5px;line-height:1.75;-webkit-font-smoothing:antialiased;
+  min-height:100vh;display:flex;flex-direction:column;
+}
+body::before{
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 70% 42% at 50% -8%,rgba(232,163,61,.07),transparent 62%),
+    repeating-linear-gradient(0deg,transparent 0 39px,rgba(232,230,223,.02) 39px 40px),
+    repeating-linear-gradient(90deg,transparent 0 39px,rgba(232,230,223,.02) 39px 40px);
+}
+.wrap{position:relative;z-index:1;width:100%;max-width:880px;margin:0 auto;padding:0 clamp(18px,4vw,40px);display:flex;flex-direction:column;flex:1}
+
+.top{display:flex;align-items:center;justify-content:space-between;padding:24px 0;border-bottom:1px solid var(--hair)}
+.brand{font-family:var(--disp);font-weight:800;font-size:16px;color:var(--ink);text-decoration:none;letter-spacing:.02em}
+.brand b{color:var(--amber)}
+.top nav{display:flex;gap:24px;font-family:var(--mono);font-size:12px;letter-spacing:.08em}
+.top a:not(.brand){color:var(--dim);text-decoration:none;transition:color .25s var(--ease)}
+.top a:not(.brand):hover{color:var(--amber)}
+
+main{flex:1;padding:clamp(48px,9vh,96px) 0}
+.kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.24em;color:var(--amber);margin-bottom:20px}
+h1{font-family:var(--disp);font-weight:800;font-size:clamp(38px,7vw,64px);line-height:1.02;letter-spacing:-.01em}
+h1 b{color:var(--amber)}
+.lede{margin-top:18px;color:var(--dim);max-width:560px}
+.lede strong{color:var(--ink);font-weight:500}
+
+.chips{margin-top:26px;display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:.06em;color:var(--dim);border:1px solid var(--hair);padding:5px 12px;border-radius:2px}
+.chip.ok{border-color:rgba(143,189,151,.4);color:var(--ok)}
+
+.cta{margin-top:38px;display:flex;gap:14px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:10px;font-weight:700;font-size:14.5px;padding:15px 30px;border-radius:2px;text-decoration:none;transition:transform .3s var(--ease),background .3s var(--ease),border-color .3s var(--ease),color .3s var(--ease)}
+.btn-p{background:var(--amber);color:#16130c;border:1px solid var(--amber)}
+.btn-p:hover{background:var(--amber-hi);border-color:var(--amber-hi);transform:translateY(-2px)}
+.btn-g{color:var(--ink);border:1px solid var(--hair-2)}
+.btn-g:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-2px)}
+.btn .arr{font-family:var(--mono);font-weight:400}
+
+.urlbox{margin-top:30px;font-family:var(--mono);font-size:12.5px;color:var(--ok);background:var(--panel-2);border:1px solid var(--hair);padding:14px 18px;overflow-x:auto;white-space:nowrap;border-radius:2px}
+.urlbox::before{content:"$ ";color:var(--faint)}
+
+.steps{margin-top:clamp(48px,8vh,72px);border-top:1px solid var(--hair)}
+.step{display:grid;grid-template-columns:52px minmax(0,5fr) minmax(0,7fr);gap:clamp(14px,3vw,36px);padding:24px 0;border-bottom:1px solid var(--hair)}
+.step .no{font-family:var(--mono);font-size:22px;color:var(--faint);transition:color .4s var(--ease)}
+.step:hover .no{color:var(--amber)}
+.step h3{font-family:var(--disp);font-weight:700;font-size:16px}
+.step p{color:var(--dim);font-size:14px;margin-top:4px}
+.step a{color:var(--amber);text-decoration:none;border-bottom:1px solid rgba(232,163,61,.4)}
+.step a:hover{color:var(--amber-hi);border-color:var(--amber-hi)}
+@media(max-width:640px){.step{grid-template-columns:40px 1fr}.step p{grid-column:2}}
+
+.note{margin-top:30px;font-family:var(--mono);font-size:12px;color:var(--faint);letter-spacing:.04em;line-height:2}
+.note b{color:var(--dim);font-weight:500}
+.note a{color:var(--dim);text-decoration:none;border-bottom:1px solid var(--hair-2)}
+.note a:hover{color:var(--amber);border-color:var(--amber)}
+
+footer{border-top:1px solid var(--hair);padding:26px 0 34px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-family:var(--mono);font-size:11.5px;color:var(--faint);letter-spacing:.06em}
+footer a{color:var(--dim);text-decoration:none}
+footer a:hover{color:var(--amber)}
+footer .brand{font-size:13px}
+@media(max-width:640px){.step{grid-template-columns:40px 1fr}.step p{grid-column:2}}
+.rv{opacity:0;transform:translateY(18px);transition:opacity .7s var(--ease),transform .7s var(--ease)}
+.rv.in{opacity:1;transform:none}
+@media(prefers-reduced-motion:reduce){.rv{opacity:1;transform:none;transition:none}}
+</style>
 </head>
 <body>
-  <h1>VaIMod</h1>
-  <p>Scratch 变量修改器</p>
+<div class="wrap">
 
-  <a class="install" href="https://VaIMod.github.io/VaIMod/VaIMod.user.js">点击安装脚本</a>
+<header class="top">
+  <a class="brand" href="https://vaimod.github.io/">Va<b>I</b>Mod</a>
+  <nav>
+    <a href="https://github.com/VaIMod/VaIMod">GITHUB</a>
+    <a href="https://github.com/VaIMod/VaIMod/releases">RELEASES</a>
+  </nav>
+</header>
 
-  <ol>
-    <li>安装 <a class="link" href="https://www.tampermonkey.net/" target="_blank" rel="noopener">篡改猴插件</a>（或 Violentmonkey）扩展</li>
-    <li>点击上方「点击安装脚本」按钮</li>
-    <li>在 篡改猴 弹窗中点击「安装」</li>
-  </ol>
+<main>
+  <div class="kicker rv">INSTALL · USERSCRIPT</div>
+  <h1 class="rv">安装 <b>VaIMod</b></h1>
+  <p class="lede rv">ccw.site 的<strong>隐形变量手术台</strong>：明文读写每一个变量、直改云数据、一键回滚任意时刻。装好后打开任意作品页，面板自己出现。</p>
 
+  <div class="chips rv">
+    <span class="chip ok">自动更新</span>
+    <span class="chip ok">document-start 注入</span>
+    <span class="chip ok">closed Shadow DOM</span>
+    <span class="chip">仅 ccw.site 生效</span>
+  </div>
+
+  <div class="cta rv">
+    <a class="btn btn-p" href="VaIMod.user.js">点击安装脚本 <span class="arr">→</span></a>
+    <a class="btn btn-g" href="https://github.com/VaIMod/VaIMod/releases">Releases <span class="arr">↗</span></a>
+  </div>
+
+  <div class="urlbox rv">https://vaimod.github.io/VaIMod/VaIMod.user.js</div>
+
+  <div class="steps">
+    <div class="step rv">
+      <div class="no">01</div>
+      <div><h3>安装 Tampermonkey</h3></div>
+      <p>需要一款用户脚本管理器，推荐 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>（Chrome / Edge / Firefox 均可，Violentmonkey 同样支持）。</p>
+    </div>
+    <div class="step rv">
+      <div class="no">02</div>
+      <div><h3>点击上方「安装脚本」</h3></div>
+      <p>Tampermonkey 弹出安装确认，源码可先审计再装。之后每次发布新版本<b style="color:var(--ink)">自动更新</b>，无需手动重装。</p>
+    </div>
+    <div class="step rv">
+      <div class="no">03</div>
+      <div><h3>打开 ccw.site 任意作品</h3></div>
+      <p>面板自动挂载（closed Shadow DOM，页面脚本探测不到）。右上角齿轮进设置；防火墙等能力在插件页按需导入。</p>
+    </div>
+  </div>
+
+  <p class="note rv">
+    <b>提示</b> · 脚本仅在 www.ccw.site 生效 · 构建产物头部逐字校验 ·
+    开源 <a href="https://github.com/VaIMod/VaIMod">github.com/VaIMod/VaIMod</a>
+  </p>
+</main>
+
+<footer>
+  <span class="brand">Va<b style="color:var(--amber)">I</b>Mod</span>
+  <span>STEALTH-FIRST VARIABLE SURGERY</span>
+  <span><a href="https://github.com/VaIMod">MAXKORE@GITHUB</a></span>
+</footer>
+
+</div>
+<script>
+const io=new IntersectionObserver(es=>{for(const e of es)if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}},{threshold:.15});
+document.querySelectorAll('.rv').forEach(el=>io.observe(el));
+</script>
 </body>
 </html>
