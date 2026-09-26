@@ -144,6 +144,31 @@
     void plugVer;
     return pluginRegistry.get(pid);
   });
+  // ---------- 按 Tab 粒度的 VM 状态门（真实状态，不是假动画） ----------
+  // 数据源是作品变量的内置页（变量/工具）在未连接时显示「等待获取vm」；
+  // 云数据 / 飞书 / 系统 / 未声明 waitVm 的插件页**不依赖 VM**——连接中照常可用
+  //（就算作品没有云数据和变量也要能正常使用）。
+  // 插件声明了 waitVm：未连接 → 「等待获取vm」；就绪后若声明的 aspect 为空
+  //（无任何变量 / 无任何云变量）→ 显示真实的「没有」空态，数据出现才真正挂载。
+  const VM_BUILTIN_TABS: ReadonlySet<string> = new Set(['vars', 'tools']);
+  type VmGate = 'none' | 'wait' | 'no-vars' | 'no-cloud';
+  const activeVmGate = $derived.by<VmGate>(() => {
+    if (status !== BridgeStatus.Connected) {
+      // Error 由错误分支单独呈现（含重试按钮），这里不重复表态
+      if (status === BridgeStatus.Error) return 'none';
+      const p = activePlugin;
+      if (p) return p.def.async.waitVm ? 'wait' : 'none';
+      return VM_BUILTIN_TABS.has(activeTab) ? 'wait' : 'none';
+    }
+    const p = activePlugin;
+    if (p && p.def.async.waitVm) {
+      // 就绪后按声明的方面查真实数据：空 → 「没有」空态（variables 由轮询实时刷新，
+      // 数据一出现门自动放行、插件真正挂载——全链路无任何假状态）
+      if (p.def.async.aspect === 'vars' && variables.length === 0) return 'no-vars';
+      if (p.def.async.aspect === 'cloud' && !variables.some((v) => v.isCloud)) return 'no-cloud';
+    }
+    return 'none';
+  });
   /**
    * 常驻扩展（`async.lazy === false`）：不打开标签页也要跑 code。
    *
@@ -190,8 +215,8 @@
   let refreshTimer: ReturnType<typeof setTimeout> | undefined;
   // 刷新图标旋转时长：给用户明确反馈（真刷新数据重取在后面紧接着发生）
   const REFRESH_SPIN_MS = 420;
-  // 插件 async.waitVm 声明 timeout: 0（不限制）时面板侧的兜底上限：见 waitVm()
-  const VM_WAIT_MAX_MS = 120_000;
+  // 插件 waitVm 语义：一直等待真实桥接状态（连接成功 / 出错），不再有计时器上限——
+  // 「需要 VM 的插件和标签页一直显示等待获取vm」是产品语义，不是假动画。
   let ccwPanel: { animateRefresh: () => void } | null = $state(null);
   let toolsPanel: { refresh: () => void } | null = $state(null);
   let feishuPanel: { refresh: () => void } | null = $state(null);
@@ -1409,25 +1434,26 @@
    * （runPluginBoot 是 await 语义，需要明确结论，不能像 whenReady 那样静默放弃）。
    *
    * 与 whenReady 的分工：whenReady 是「就绪后做某事」的回调式（面板自身刷新用，
-   * 超时就悄悄收工）；这里必须 resolve 一个布尔值——true=就绪、false=超时/桥接出错，
+   * 超时就悄悄收工）；这里必须 resolve 一个布尔值——true=就绪、false=桥接出错，
    * 插件侧据此决定是否执行 code（见 runPluginBoot 的契约）。
    *
-   * timeoutMs <= 0（插件清单里 timeout: 0 = 不限制）时按 VM_WAIT_MAX_MS 兜底：
-   * 桥接从未就绪时无限挂起会留下永不清理的定时器，这里给一个「实际等于不限制、
-   * 但一定会终止」的上限。
+   * timeoutMs <= 0 = 不限制：一直轮询真实桥接状态，连接成功 resolve(true)，
+   * 桥接 Error resolve(false)——绝不按计时器判死（「一直显示等待获取vm」是
+   * 产品语义）。代价：插件在永不连接的页面上卸载时，轮询会存活到页面关闭
+   * （一次 150ms 的状态读取，可忽略）；换取的是慢加载作品绝不被误杀。
    */
   function waitVm(timeoutMs: number): Promise<boolean> {
     if (bridge.getStatus() === BridgeStatus.Connected) return Promise.resolve(true);
     if (bridge.getStatus() === BridgeStatus.Error) return Promise.resolve(false);
-    const limit = timeoutMs > 0 ? timeoutMs : VM_WAIT_MAX_MS;
+    const limited = timeoutMs > 0;
+    const startedAt = Date.now();
     return new Promise<boolean>((resolve) => {
-      const startedAt = Date.now();
       const timer = setInterval(() => {
         const st = bridge.getStatus();
         if (st === BridgeStatus.Connected) {
           clearInterval(timer);
           resolve(true);
-        } else if (st === BridgeStatus.Error || Date.now() - startedAt >= limit) {
+        } else if (st === BridgeStatus.Error || (limited && Date.now() - startedAt >= timeoutMs)) {
           clearInterval(timer);
           resolve(false);
         }
@@ -1986,8 +2012,12 @@
             <p>{errorMsg}</p>
             <button class="svp-btn" onclick={connect}>重新获取</button>
           </div>
-        {:else if status === BridgeStatus.Connecting || status === BridgeStatus.Disconnected}
+        {:else if activeVmGate === 'wait'}
           <div class="svp-loading">等待获取vm</div>
+        {:else if activeVmGate === 'no-vars'}
+          <div class="svp-empty">该项目没有变量</div>
+        {:else if activeVmGate === 'no-cloud'}
+          <div class="svp-empty">该项目没有云数据</div>
         {:else}
           <div class="svp-body-content" bind:this={contentEl}>
             {#if tabLoading}

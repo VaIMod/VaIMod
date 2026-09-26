@@ -79,9 +79,11 @@ export type PluginType = 'patch' | 'ext';
  *     ...
  *     async: {
  *       code: true,                     // code 是异步的（返回 Promise）
- *       waitVm: true,                   // 等 vm 就绪（桥接连接）后再执行 code
+ *       waitVm: true,                   // 等 vm 就绪（桥接连接）后再执行 code；
+ *                                       // 未就绪期间标签页一直显示「等待获取vm」
+ *       aspect: 'vars',                 // 依赖的数据方面：'vars'/'cloud'/不写；
+ *                                       // 就绪后方面为空 → 标签页显示「没有」空态
  *       lazy: true,                      // 打开该标签页时才执行（扩展默认如此）
- *       timeout: 15000,                 // 异步超时（ms），超时按加载失败处理
  *       load: `await fetch(...);`,      // 预加载钩子：在 code 之前执行，可异步
  *     },
  *   });
@@ -117,13 +119,28 @@ export interface PluginMarketDef {
 export interface PluginAsyncDef {
   /** code 是异步的（返回 Promise）。清理函数在 Promise 落定后才接管 */
   code: boolean;
-  /** 等到 vm 就绪后再执行 code；未就绪期间标签页显示等待态而不是空面板 */
+  /**
+   * 等到 vm 就绪后再执行 code。未就绪期间**一直等待**（标签页显示真实的
+   * 「等待获取vm」状态，由桥接状态驱动），不再按超时判失败；只有桥接
+   * 进入 Error 才按加载失败处理。等待是真实状态，不是假刷新动画。
+   */
   waitVm: boolean;
+  /**
+   * 依赖的数据方面（与 waitVm 搭配使用）：'vars'=作品变量、'cloud'=云数据、
+   * ''=不依赖具体方面（vm 就绪即加载，空数据自己处理）。
+   * 声明了方面且 vm 就绪后该方面为空（无任何变量 / 无任何云变量）时，
+   * 标签页显示真实的「没有」空态（没有变量 / 没有云数据），数据出现才真正
+   * 加载 code——绝不带着空数据产生副作用。
+   */
+  aspect: 'vars' | 'cloud' | '';
   /** 懒加载：标签页未打开就不执行 code。扩展默认 true；补丁强制 false（必须常驻） */
   lazy: boolean;
   /** 预加载钩子：在 code 之前执行，可异步。用于按需拉取远程资源 / 初始化大依赖 */
   load: string;
-  /** 异步加载超时（ms）；0 = 不限制。超时按失败处理并在标签页内提示 */
+  /**
+   * 历史兼容字段：waitVm 阶段已不超时（一直等待是产品语义）。字段保留解析，
+   * 未来若引入可超时的预加载阶段可复用；写了对 waitVm 行为无影响。
+   */
   timeout: number;
 }
 
@@ -600,7 +617,7 @@ export function parsePluginSource(src: string): PluginDef {
   const KNOWN_TAGS = new Set([
     'id', 'name', 'version', 'author', 'desc', 'type', 'priority',
     'css', 'html', 'code', 'refresh', 'settingscss', 'settings',
-    'async', 'waitvm', 'lazy', 'timeout', 'load', 'document', 'market',
+    'async', 'waitvm', 'aspect', 'lazy', 'timeout', 'load', 'document', 'market',
   ]);
   const marketTags: Record<string, string> = {};
   const otherTags: Record<string, string> = {};
@@ -675,6 +692,12 @@ export function parsePluginSource(src: string): PluginDef {
       typeof asyncObj.code === 'function' ||
       typeof asyncObj.code === 'string',
     waitVm: asyncObj.waitVm === true || tagBool(tags.get('waitvm')) === true,
+    // 数据方面声明：对象写法优先，`@aspect vars|cloud` 标签回退；写歪一律回落 ''
+    aspect: (() => {
+      const raw = hasAsyncObj ? asyncObj.aspect : undefined;
+      const v = typeof raw === 'string' && raw ? raw : (tags.get('aspect') ?? '');
+      return v === 'vars' || v === 'cloud' ? v : '';
+    })(),
     // 扩展默认懒加载（本来就是打开标签页才跑）；写 false 可关掉；补丁稍后强制 false
     lazy: asyncObj.lazy !== false && tagBool(tags.get('lazy')) !== false,
     load:

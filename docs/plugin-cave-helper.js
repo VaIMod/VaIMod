@@ -25,7 +25,10 @@ VaIMod.plugin({
   version: '1.0.0',
   author: 'VaIMod',
   desc: 'cave.io 变量名还原 + 一键作弊 + 聊天指令生成（基于 .sb3 逆向）',
-  async: { waitVm: true, timeout: 20000 },
+  // waitVm：未就绪期间标签页一直显示真实的「等待获取vm」（不再按超时判失败）。
+  // aspect:'vars'：作品一个变量都没有 → 标签页显示「该项目没有变量」空态，
+  // 出现变量后才真正加载（全链路真实状态，无假刷新动画）。
+  async: { waitVm: true, aspect: 'vars' },
   market: {
     category: '游戏辅助',
     tags: ['cave.io', 'Scratch', '联机', '逆向'],

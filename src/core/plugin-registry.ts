@@ -627,11 +627,15 @@ export function runPluginCode(def: PluginDef, ctx: PluginContext): () => void {
 
 /** runPluginBoot 的宿主依赖（由面板注入：只有面板能看到桥接状态与 UI 状态） */
 export interface PluginBootDeps {
-  /** 等 vm 就绪；resolve(false) = 超时或桥接出错。未注入时 waitVm 定义一律按失败处理 */
+  /**
+   * 等 vm 就绪；resolve(true) = 桥接已连接。resolve(false) 仅在桥接进入
+   * Error 时发生（超时不再判失败——「一直等待获取vm」是真实状态语义）。
+   * 未注入时 waitVm 定义一律按失败处理（宁可不跑，也不带空数据产生副作用）。
+   */
   waitVm?: (timeoutMs: number) => Promise<boolean>;
   /** 异步阶段结束、即将执行 code 时回调（面板据此关掉「加载中」提示） */
   onBooting?: (booting: boolean) => void;
-  /** 异步装载失败（等待超时 / load 钩子抛错）时回调，由面板显示在标签页内 */
+  /** 异步装载失败（桥接出错 / load 钩子抛错）时回调，由面板显示在标签页内 */
   onFail?: (message: string) => void;
 }
 
@@ -642,8 +646,10 @@ export interface PluginBootDeps {
  * 异步边界，保持既有插件的时序不变。
  *
  * 契约（与 PluginAsyncDef 的注释一致）：
- *   - waitVm：等不到 vm 就绪 → 按**加载失败**处理，不执行 code（面板显示原因）；
- *     这样「我只在有 vm 时才工作」的插件不会带着空数据跑起来产生副作用。
+ *   - waitVm：**一直等到 vm 就绪**（timeoutMs 传 0），面板侧标签页在此期间显示
+ *     真实的「等待获取vm」；只有桥接 Error 才按**加载失败**处理。这样「我只在
+ *     有 vm 时才工作」的插件不会带着空数据跑起来产生副作用，也不会在慢加载的
+ *     作品上被超时误杀。
  *   - load：预加载钩子，与 code 同一沙箱边界；抛错同样按失败处理（code 可能依赖它）。
  *   - 返回的清理函数始终可用：code 尚未到达就卸载时，迟到的清理函数也会补执行，
  *     避免插件注册的定时器/监听器泄漏（与 runPluginCode 的处理一致）。
@@ -663,9 +669,11 @@ export function runPluginBoot(
   void (async () => {
     try {
       if (a.waitVm) {
-        const ok = deps.waitVm ? await deps.waitVm(a.timeout) : false;
+        // timeoutMs 一律传 0 = 不限制：等待由真实桥接状态驱动（连接成功 or 出错），
+        // 绝不按计时器判死——「一直显示等待获取vm」是产品语义（用户明确要求）。
+        const ok = deps.waitVm ? await deps.waitVm(0) : false;
         if (!ok) {
-          throw new Error(`等待 VM 就绪超时（async.timeout = ${a.timeout > 0 ? a.timeout : 15000} ms）`);
+          throw new Error('无法获取 VM（桥接出错，可在面板里重试连接）');
         }
         if (destroyed) return;
       }
