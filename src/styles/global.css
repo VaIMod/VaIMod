@@ -624,12 +624,6 @@
   flex-shrink: 0;
 }
 
-/* 收起（叉）按钮：比其它图标更细更小，弱化视觉权重 */
-.svp-icon-btn.svp-icon-close svg {
-  width: 15px;
-  height: 15px;
-}
-
 .svp-error {
   display: flex;
   flex-direction: column;
