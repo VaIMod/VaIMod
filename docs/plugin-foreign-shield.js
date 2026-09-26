@@ -28,9 +28,16 @@
 //
 //   ③ CSense 反制兜底：网络咽喉（fetch/XHR/sendBeacon 命中 CSense 专属端点
 //      → 本地合成假成功）+ 跳转三层（Navigation API / Location.prototype.
-//      assign/replace / window.open 假窗桩）+ .csense-window 遮罩即时清除。
+//      assign/replace / window.open 假窗桩）+ 遮罩即时清除（遮罩类名是先
+//      插入后赋——childList+class 属性双盯才不漏检）。
 //      与本体 csense-guard 叠装无害（双方都是只拦黑名单 URL 的透传过滤器，
 //      谁先命中谁吃掉）；卸载时**比对再还原**（last-writer-wins 防护）。
+//
+//   ④ DOM 惩罚反制：CSense 的惩罚经 iframe.contentWindow 伸进顶层文档
+//      （移除节点 / innerHTML 覆写 / display:none 整页隐藏）。武装期：
+//      body/html/挂载根的 inline display:none 当场回滚；含 csense 指纹的
+//      innerHTML/outerHTML 覆写拒绝；body.removeChild 拒删 SPA 挂载根；
+//      body 顶层快照兜底恢复。洗白反噬三振停战（对方立刻回写 rgb 就别互写）。
 //
 // 安全底线（对齐 net-firewall 的设计约束）：
 //   1. 导入后默认「未武装」——零钩子、零观察器、零开销；一键武装才动手。
@@ -147,7 +154,7 @@ VaIMod.plugin({
       let armed = ctx.store.get(KEY.mode, 'off') === 'armed';
       let keepAlive = ctx.store.get(KEY.keep, false) === true;
 
-      const hits = { launder: 0, rescue: 0, auto: 0, fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0 };
+      const hits = { launder: 0, rescue: 0, auto: 0, fetch: 0, xhr: 0, beacon: 0, nav: 0, overlay: 0, display: 0, wipe: 0, restore: 0 };
       let lastHit = null;
       let csenseSignals = [];
       let lastScanAt = 0;
@@ -371,10 +378,28 @@ VaIMod.plugin({
             parentMo: null,
             rescues: [],
             gaveUp: false,
+            fights: 0,
           };
           // 样式观察器：外挂自己改 style 就地重洗。
           // 自己写回也会进这里——launderEl 算出「无变化就不写」，链路必收敛。
-          rec.styleMo = new MutationObserver(() => launderEl(el));
+          rec.styleMo = new MutationObserver(() => {
+            launderEl(el);
+            // 反噬检测：洗白后属性文本仍含 rgb = 对方在跟我们互写。三振停战，
+            // 撤观察器——互写死循环烧 CPU，也只会进一步激怒对方的反噬惩罚。
+            try {
+              if (/rgb\(/i.test(el.getAttribute('style') || '')) {
+                rec.fights++;
+                if (rec.fights >= 3) {
+                  rec.gaveUp = true;
+                  unguardEl(rec.id);
+                }
+              } else {
+                rec.fights = 0;
+              }
+            } catch (e) {
+              /* ignore */
+            }
+          });
           rec.styleMo.observe(el, { attributes: true, attributeFilter: ['style'] });
           // 父节点观察器：防删保活（默认关）；顺带维护原位引用
           if (rec.parent) {
@@ -427,6 +452,8 @@ VaIMod.plugin({
         TEMPLATE: 1, BASE: 1, TITLE: 1, BR: 1, HEAD: 1,
       };
       const SITE_RE = /^(?:app|root|wrap|wrapper|page|main|container|content|layout|__next|__nuxt|q-app|q-layout)/i;
+      /** SPA 挂载根 id：不纳管、且绝不允许被第三方 removeChild（React 从不删自己的根） */
+      const ROOT_ID_RE = /^(root|app|__next|__nuxt|q-app|mount)$/i;
 
       const describe = (el) => {
         let s = String(el.tagName || '?').toLowerCase();
@@ -450,6 +477,11 @@ VaIMod.plugin({
        */
       const classify = (el) => {
         if (!el || SKIP_TAGS[el.tagName]) return null;
+        // body / SPA 挂载根（#root 等）不列候选：洗站点容器毫无意义且徒增
+        // 冲突面。React portal **保留**——洗掉 rgb 指纹正是防止 CSense 扫描
+        // 命中后删它、把 React 打崩成白屏的关键。
+        if (el === document.body || el === document.documentElement) return null;
+        if (ROOT_ID_RE.test(el.id || '')) return null;
         // VaIMod 隐身宿主一类：light DOM 全空且不悬浮 → 没有可描述可保护的
         // 可见面，跳过（真正外挂面板几乎必有 light DOM 子树或 fixed/absolute 定位）
         let fixedish = false;
@@ -527,12 +559,23 @@ VaIMod.plugin({
       const installTopMo = () => {
         if (topMo || typeof MutationObserver === 'undefined') return;
         topMo = new MutationObserver((muts) => {
+          let removed = 0;
           for (const m of muts) {
+            removed += m.removedNodes.length;
             for (const n of m.addedNodes) {
               if (!(n instanceof HTMLElement)) continue;
               const p = n.parentNode;
               if (p === document.documentElement || p === document.body) autoAdopt(n);
             }
+          }
+          // 整页清空 / 挂载根被摘走的兜底恢复（洗白躲扫描是预防，这里是已然后）
+          try {
+            if (removed >= 2) {
+              rescueRoots();
+              if (document.body && document.body.childElementCount === 0 && domSnap.length > 2) restoreDomSnapshot();
+            }
+          } catch (e) {
+            /* ignore */
           }
         });
         try {
@@ -599,9 +642,201 @@ VaIMod.plugin({
         return stub;
       };
 
+      // ---------- ③′ DOM 惩罚反制（武装期生效） ----------
+      // CSense 的惩罚经 iframe.contentWindow 伸进顶层文档打：移除节点 /
+      // innerHTML 覆写 / display:none 整页隐藏 / 盖遮罩。洗白躲扫描是预防，
+      // 这里是已然后的兜底——白屏 = 内容被打掉，必须当场拒绝与恢复。
+      let domUndo = []; // 卸载句柄
+      let domSnap = []; // body 顶层子节点快照（arm 时刻）
+
+      const takeDomSnapshot = () => {
+        try {
+          domSnap = Array.from(document.body ? document.body.children : []);
+        } catch (e) {
+          domSnap = [];
+        }
+      };
+
+      /** 清空场景按原序追回快照节点（React 容器被放回后凭 retained 引用可继续工作） */
+      const restoreDomSnapshot = () => {
+        const body = document.body;
+        if (!body || !domSnap.length) return;
+        let restored = 0;
+        for (const el of domSnap) {
+          try {
+            if (el.isConnected) continue;
+            body.appendChild(el);
+            restored++;
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        if (restored) noteHit('restore');
+      };
+
+      /** 快照里的挂载根被单独摘走（body 还剩别的）也要立刻放回 */
+      const rescueRoots = () => {
+        if (!domSnap.length) return;
+        const body = document.body;
+        if (!body) return;
+        for (const el of domSnap) {
+          try {
+            if (el.isConnected) continue;
+            if (el.nodeType === 1 && ROOT_ID_RE.test(el.id || '')) {
+              body.appendChild(el);
+              noteHit('rescue');
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        }
+      };
+
+      /**
+       * display:none 突袭回滚：第三方把 body / html / 站点根内联隐藏 = 白屏。
+       * 只回滚「inline display:none + 当前真的不可见」，站点/本体的 class 隐藏不动。
+       */
+      const watchDisplay = (target) => {
+        if (!target || typeof MutationObserver === 'undefined') return;
+        const mo = new MutationObserver(() => {
+          try {
+            if (/display\s*:\s*none/i.test(target.getAttribute('style') || '') && getComputedStyle(target).display === 'none') {
+              target.style.removeProperty('display');
+              noteHit('display');
+            }
+          } catch (e) {
+            /* ignore */
+          }
+        });
+        try {
+          mo.observe(target, { attributes: true, attributeFilter: ['style', 'class'] });
+          domUndo.push(() => {
+            try {
+              mo.disconnect();
+            } catch (e) {
+              /* ignore */
+            }
+          });
+        } catch (e) {
+          /* ignore */
+        }
+      };
+
+      /**
+       * 实例级属性影子：只挡「内容含 csense 指纹」的覆写（遮罩 innerHTML），
+       * 其余一律放行——绝不成为站点自身的故障点。
+       */
+      const shadowProp = (target, prop) => {
+        try {
+          if (Object.getOwnPropertyDescriptor(target, prop)) return;
+          let pd = null;
+          let proto = Object.getPrototypeOf(target);
+          while (proto && !pd) {
+            pd = Object.getOwnPropertyDescriptor(proto, prop);
+            if (!pd) proto = Object.getPrototypeOf(proto);
+          }
+          if (!pd || !pd.set || !pd.get) return;
+          const shadow = {
+            get() {
+              return pd.get.call(this);
+            },
+            set(v) {
+              try {
+                if (typeof v === 'string' && /csense/i.test(v)) {
+                  noteHit('wipe');
+                  return undefined;
+                }
+              } catch (e) {
+                /* ignore */
+              }
+              return pd.set.call(this, v);
+            },
+            configurable: true,
+          };
+          Object.defineProperty(target, prop, shadow);
+          domUndo.push(() => {
+            try {
+              delete target[prop];
+            } catch (e) {
+              /* ignore */
+            }
+          });
+        } catch (e) {
+          /* ignore */
+        }
+      };
+
+      /**
+       * body.removeChild 影子：只拒删 SPA 挂载根（#root 等被摘走 = 整页白屏，
+       * 且 React 自己从不 removeChild 挂载根）。React portal 的增删是正常
+       * 提交流量，绝不能拒——它们的防删由「洗白使其不命中 CSense 扫描」承担。
+       */
+      const shadowBodyRemoveChild = () => {
+        const body = document.body;
+        if (!body) return;
+        try {
+          if (Object.getOwnPropertyDescriptor(body, 'removeChild')) return;
+          let pd = null;
+          let proto = Object.getPrototypeOf(body);
+          while (proto && !pd) {
+            pd = Object.getOwnPropertyDescriptor(proto, 'removeChild');
+            if (!pd) proto = Object.getPrototypeOf(proto);
+          }
+          if (!pd || typeof pd.value !== 'function') return;
+          const shadow = function (child) {
+            try {
+              if (child && child.nodeType === 1 && ROOT_ID_RE.test(child.id || '')) {
+                noteHit('rescue');
+                return child;
+              }
+            } catch (e) {
+              /* ignore */
+            }
+            return pd.value.apply(this, arguments);
+          };
+          Object.defineProperty(body, 'removeChild', { value: shadow, writable: true, configurable: true });
+          domUndo.push(() => {
+            try {
+              delete body.removeChild;
+            } catch (e) {
+              /* ignore */
+            }
+          });
+        } catch (e) {
+          /* ignore */
+        }
+      };
+
+      const installDomGuard = () => {
+        takeDomSnapshot();
+        if (document.body) watchDisplay(document.body);
+        if (document.documentElement) watchDisplay(document.documentElement);
+        const rootEl = document.getElementById('root');
+        if (rootEl) watchDisplay(rootEl);
+        if (document.body) shadowProp(document.body, 'innerHTML');
+        if (document.documentElement) {
+          shadowProp(document.documentElement, 'innerHTML');
+          shadowProp(document.documentElement, 'outerHTML');
+        }
+        shadowBodyRemoveChild();
+      };
+
+      const uninstallDomGuard = () => {
+        while (domUndo.length) {
+          const fn = domUndo.pop();
+          try {
+            fn();
+          } catch (e) {
+            /* ignore */
+          }
+        }
+        domSnap = [];
+      };
+
       const installChoke = () => {
         if (chokeInstalled) return;
         chokeInstalled = true;
+        installDomGuard();
 
         // fetch 咽喉
         if (typeof window.fetch === 'function') {
@@ -749,19 +984,38 @@ VaIMod.plugin({
           );
         }
 
-        // 遮罩即时清除：.csense-window 一插入 DOM 立即移除
+        // 遮罩即时清除：CSense 的遮罩类名是「先插入 DOM、后赋 className」——
+        // childList-only 观察器在插入瞬间看不到 csense-window，必然漏检。
+        // 必须 childList+subtree+class 属性变化一起盯，命中即删（含深层嵌套）。
         if (typeof MutationObserver !== 'undefined') {
           overlayMo = new MutationObserver((muts) => {
             for (const m of muts) {
+              if (m.type === 'attributes') {
+                try {
+                  const t = m.target;
+                  if (t && t.parentNode && /csense/i.test(String(t.className || ''))) {
+                    t.remove();
+                    noteHit('overlay');
+                  }
+                } catch (e) {
+                  /* ignore */
+                }
+                continue;
+              }
               for (const node of m.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
                 try {
-                  const list = node.matches && node.matches('.csense-window')
-                    ? [node]
-                    : node.querySelectorAll ? Array.from(node.querySelectorAll('.csense-window')) : [];
-                  for (const el of list) {
-                    el.remove();
+                  if (/csense/i.test(String(node.className || ''))) {
+                    node.remove();
                     noteHit('overlay');
+                    continue;
+                  }
+                  if (node.querySelectorAll) {
+                    const list = node.querySelectorAll('[class*="csense" i]');
+                    for (const el of list) {
+                      el.remove();
+                      noteHit('overlay');
+                    }
                   }
                 } catch (e) {
                   /* ignore */
@@ -769,14 +1023,26 @@ VaIMod.plugin({
               }
             }
           });
+          let htmlObserved = false;
           try {
-            overlayMo.observe(document.documentElement, { childList: true });
+            overlayMo.observe(document.documentElement, {
+              childList: true,
+              subtree: true,
+              attributes: true,
+              attributeFilter: ['class'],
+            });
+            htmlObserved = true;
           } catch (e) {
             /* ignore */
           }
-          if (document.body) {
+          if (!htmlObserved && document.body) {
             try {
-              overlayMo.observe(document.body, { childList: true });
+              overlayMo.observe(document.body, {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['class'],
+              });
             } catch (e) {
               /* ignore */
             }
@@ -787,6 +1053,7 @@ VaIMod.plugin({
       const uninstallChoke = () => {
         if (!chokeInstalled) return;
         chokeInstalled = false;
+        uninstallDomGuard();
         while (saved.length) {
           const item = saved.pop();
           try {
@@ -933,6 +1200,9 @@ VaIMod.plugin({
               beacon: hits.beacon,
               nav: hits.nav,
               overlay: hits.overlay,
+              display: hits.display,
+              wipe: hits.wipe,
+              restore: hits.restore,
             },
             lastHit: lastHit,
             csenseSignals: csenseSignals.slice(),
@@ -981,11 +1251,13 @@ VaIMod.plugin({
         if (!dyn.stat) return;
         const s = eng.status();
         const cs = s.hits.fetch + s.hits.xhr + s.hits.beacon + s.hits.nav + s.hits.overlay;
+        const domD = s.hits.display + s.hits.wipe + s.hits.restore;
         dyn.stat.textContent =
           (s.armed ? '保护中 · ' : '未武装 · ') +
           '已保护 ' + s.guarded + ' 个元素 · 洗白 ' + s.hits.launder +
           ' 次 · 自动纳管 ' + s.hits.auto + ' 个 · 救回 ' + s.hits.rescue +
-          ' 次 · CSense 吞掉 ' + cs + ' 次';
+          ' 次 · CSense 吞掉 ' + cs + ' 次' +
+          (domD ? ' · DOM 惩罚反制 ' + domD + ' 次（隐藏回滚 ' + s.hits.display + ' / 覆写拒 ' + s.hits.wipe + ' / 恢复 ' + s.hits.restore + '）' : '');
       };
 
       const renderCsense = () => {
