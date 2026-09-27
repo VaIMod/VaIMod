@@ -12,6 +12,7 @@
 // - 命中记录与「记住该机器人」写入 localStorage，配置包可一并带走。
 
 import { loadSettings, saveSettings, type FeishuInterceptMode } from './settings';
+import { markNative } from '../dom-utils';
 
 /** 飞书 webhook 地址特征（群机器人 / 捷径触发器） */
 const HOOK_RE = /open\.feishu\.cn\/open-apis\/bot\/v2\/hook\/([A-Za-z0-9\-_]+)/;
@@ -268,6 +269,7 @@ export function installFeishuGuard(): void {
     } catch {
       /* ignore */
     }
+    markNative(patched, 'fetch'); // toString 白名单：与 csense-guard 同口径
     window.fetch = patched as typeof fetch;
   }
 
@@ -277,7 +279,7 @@ export function installFeishuGuard(): void {
   const nativeOpen = origXhrOpen;
   const nativeSend = origXhrSend;
 
-  XP.open = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
+  const patchedXhrOpen = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
     try {
       (this as unknown as Record<string, unknown>).__vaimod_fs = {
         method: String(method || 'GET'),
@@ -288,8 +290,10 @@ export function installFeishuGuard(): void {
     }
     return (nativeOpen as (...a: unknown[]) => void).apply(this, [method, url, ...rest]);
   } as typeof XP.open;
+  markNative(patchedXhrOpen, 'open');
+  XP.open = patchedXhrOpen;
 
-  XP.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+  const patchedXhrSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
     const info = (this as unknown as { __vaimod_fs?: { method: string; url: string } }).__vaimod_fs;
     if (!info || mode() === 'off') {
       return (nativeSend as (...a: unknown[]) => void).apply(this, [body as never]);
@@ -322,6 +326,8 @@ export function installFeishuGuard(): void {
     });
     return undefined;
   } as typeof XP.send;
+  markNative(patchedXhrSend, 'send');
+  XP.send = patchedXhrSend;
 }
 
 /** 卸载（仅测试/调试用） */

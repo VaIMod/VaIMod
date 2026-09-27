@@ -86,17 +86,15 @@ let origFetch: typeof fetch | null = null;
 let origXhrOpen: typeof XMLHttpRequest.prototype.open | null = null;
 let origXhrSend: typeof XMLHttpRequest.prototype.send | null = null;
 let origBeacon: ((url: string | URL, data?: BodyInit | null) => boolean) | null = null;
-let origAssign: ((url: string) => void) | null = null;
-let origReplace: ((url: string) => void) | null = null;
 let origOpen: typeof window.open | null = null;
 let navListenerInstalled = false;
 let overlayMo: MutationObserver | null = null;
 let scanTimer = 0;
 
 /** V2 增量：原始（未包装）引用，仅用于判定「我们的拦截器是否被还原成原生」 */
-let rawAssign: ((url: string) => void) | null = null;
-let rawReplace: ((url: string) => void) | null = null;
 let rawOpen: typeof window.open | null = null;
+let rawBeacon: ((this: Navigator, url: string | URL, data?: BodyInit | null) => boolean) | null =
+  null;
 let vaStealthInstalled = false;
 
 /**
@@ -237,6 +235,7 @@ export function installCsenseGuard(): void {
     }
     return (nativeOpen as (...a: unknown[]) => void).apply(this, [method, url, ...rest]);
   } as typeof XP.open;
+  markNative(patchedXhrOpen, 'open'); // toString 白名单：open 探测只见 [native code]
   XP.open = patchedXhrOpen;
 
   const patchedXhrSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
@@ -263,6 +262,7 @@ export function installCsenseGuard(): void {
     }, 0);
     return undefined;
   } as typeof XP.send;
+  markNative(patchedXhrSend, 'send'); // toString 白名单：send 探测只见 [native code]
   XP.send = patchedXhrSend;
   interceptorBook.push({
     label: 'XHR.open',
@@ -283,20 +283,37 @@ export function installCsenseGuard(): void {
     },
   });
 
-  // ③ sendBeacon 咽喉：keepalive 型信标同样吞掉
+  // ③ sendBeacon 咽喉：keepalive 型信标同样吞掉。
+  //    必须挂 Navigator.prototype——挂 navigator 实例会造出 own property：
+  //    (a) 与原生特征不符（原生 sendBeacon 在原型上）＝指纹破绽；
+  //    (b) **遮蔽**原型方法，之后任何模块/插件再 hook 原型版 sendBeacon
+  //        （如 net-firewall 的审计通道）都收不到调用。
   try {
-    const nav = navigator as Navigator & {
-      sendBeacon?: (url: string | URL, data?: BodyInit | null) => boolean;
-    };
-    if (typeof nav.sendBeacon === 'function') {
-      origBeacon = nav.sendBeacon.bind(navigator);
-      const nativeBeacon = origBeacon;
-      const patchedBeacon = (url: string | URL, data?: BodyInit | null): boolean => {
+    const NP = (
+      Navigator as unknown as {
+        prototype: Navigator & {
+          sendBeacon?: (this: Navigator, url: string | URL, data?: BodyInit | null) => boolean;
+        };
+      }
+    ).prototype;
+    if (NP && typeof NP.sendBeacon === 'function' && !origBeacon) {
+      const nativeBeacon = NP.sendBeacon;
+      rawBeacon = nativeBeacon;
+      origBeacon = nativeBeacon.bind(navigator);
+      const patchedBeacon = function (
+        this: Navigator,
+        url: string | URL,
+        data?: BodyInit | null,
+      ): boolean {
         if (isCsenseUrl(String(url))) {
           noteHit('beacon');
           return true; // 假成功，不出网
         }
-        return nativeBeacon(url, data);
+        return (origBeacon as (u: string | URL, d?: BodyInit | null) => boolean).call(
+          this,
+          url,
+          data,
+        );
       };
       try {
         Object.defineProperty(patchedBeacon, 'name', { configurable: true, value: 'sendBeacon' });
@@ -304,14 +321,15 @@ export function installCsenseGuard(): void {
       } catch {
         /* ignore */
       }
-      nav.sendBeacon = patchedBeacon;
+      markNative(patchedBeacon, 'sendBeacon'); // toString 白名单（与 fetch/open 同口径）
+      NP.sendBeacon = patchedBeacon;
       interceptorBook.push({
         label: 'sendBeacon',
-        read: () => nav.sendBeacon,
+        read: () => NP.sendBeacon,
         ours: patchedBeacon as unknown,
         native: nativeBeacon as unknown,
         reinstall: () => {
-          nav.sendBeacon = patchedBeacon;
+          NP.sendBeacon = patchedBeacon;
         },
       });
     }
@@ -319,8 +337,9 @@ export function installCsenseGuard(): void {
     /* ignore */
   }
 
-  // ④ 跳转咽喉（三层）：location.href= / assign / replace / window.open / 链接 / 表单
-  //    —— 命中 csdetected 域即静默取消，页面原地不动
+  // ④ 跳转咽喉（两层钩点 + 平台能力）：Navigation API（唯一能拦
+  //    location.href= 直赋值的钩点，同时覆盖 assign/replace/链接/表单）
+  //    + window.open 假窗桩。assign/replace 本体无 JS 钩点，见下方说明。
   installNavigationKillSwitch();
 
   // ⑤ 遮罩即时清除：div.csense-window 一插入 DOM 立即移除，遮罩永远盖不住页面
@@ -410,55 +429,16 @@ function installNavigationKillSwitch(): void {
     /* Navigation API 不可用（老 Firefox 等），由 b/c 兜底 */
   }
 
-  // b. Location.prototype.assign / replace：location 属性本身 [Unforgeable] 不可
-  //    定义，但其方法在原型上、可安全包装。markNative 进 toString 白名单。
-  const LP = Location.prototype as unknown as Record<string, (...a: unknown[]) => unknown>;
-  if (typeof LP.assign === 'function' && !origAssign) {
-    rawAssign = LP.assign as (url: string) => void;
-    origAssign = LP.assign.bind(location) as (url: string) => void;
-    const nativeAssign = origAssign;
-    const patchedAssign = function (this: unknown, url: string) {
-      if (isCsenseUrl(String(url))) {
-        noteHit('nav');
-        return undefined; // 静默吞掉，页面原地不动
-      }
-      return nativeAssign(url);
-    };
-    markNative(patchedAssign, 'assign');
-    LP.assign = patchedAssign as typeof LP.assign;
-    interceptorBook.push({
-      label: 'Location.assign',
-      read: () => LP.assign,
-      ours: patchedAssign as unknown,
-      native: rawAssign as unknown,
-      reinstall: () => {
-        LP.assign = patchedAssign as typeof LP.assign;
-      },
-    });
-  }
-  if (typeof LP.replace === 'function' && !origReplace) {
-    rawReplace = LP.replace as (url: string) => void;
-    origReplace = LP.replace.bind(location) as (url: string) => void;
-    const nativeReplace = origReplace;
-    const patchedReplace = function (this: unknown, url: string) {
-      if (isCsenseUrl(String(url))) {
-        noteHit('nav');
-        return undefined;
-      }
-      return nativeReplace(url);
-    };
-    markNative(patchedReplace, 'replace');
-    LP.replace = patchedReplace as typeof LP.replace;
-    interceptorBook.push({
-      label: 'Location.replace',
-      read: () => LP.replace,
-      ours: patchedReplace as unknown,
-      native: rawReplace as unknown,
-      reinstall: () => {
-        LP.replace = patchedReplace as typeof LP.replace;
-      },
-    });
-  }
+  // b. location.assign / replace：**没有任何 JS 钩点**。
+  //    实测（Edge/Chrome，符合 WebIDL 规范）：这两个方法是 [LegacyUnforgeable]
+  //    —— 只存在于 location 实例上（Location.prototype.assign === undefined），
+  //    且实例属性 configurable:false / writable:false，defineProperty 直接抛错。
+  //    旧版尝试包装 Location.prototype.assign 是静默空转的死代码（typeof 恒
+  //    不是 function，安装被跳过），已删除。
+  //    防护不缩水：assign/replace 触发的文档级导航同样走 (a) 的 navigate
+  //    事件（可 preventDefault），Chromium 系全覆盖；assign 的 URL 在
+  //    e.destination.url 里一并被审计。非 Chromium（无 Navigation API）
+  //    拦不住 assign 直跳——平台能力边界，如实记录，不做假实现。
 
   // c. window.open：命中返回假 window 桩（不返回 null）
   if (!origOpen) {
@@ -739,21 +719,29 @@ function installVaStealth(): void {
           ondischargingtimechange: null,
           onlevelchange: null,
         });
+      markNative(nav.getBattery, 'getBattery'); // toString 白名单
       done.push('getBattery');
     }
     const perms = nav.permissions;
     if (perms && typeof perms.query === 'function') {
       const origQuery = perms.query.bind(perms);
+      // 不硬编码 'denied'：那会与真实 Notification.permission 自相矛盾
+      //（检测器专门比对这两者的一致性），且用户真开了通知时会被误伤。
+      // 正确口径 = 镜像真实值（puppeteer-extra-stealth 同款）：default→prompt。
       perms.query = function (desc: unknown): Promise<unknown> {
         try {
           if (desc && (desc as { name?: string }).name === 'notifications') {
-            return Promise.resolve({ state: 'denied', onchange: null });
+            const np =
+              typeof Notification !== 'undefined' ? Notification.permission : 'default';
+            const state = np === 'granted' ? 'granted' : np === 'denied' ? 'denied' : 'prompt';
+            return Promise.resolve({ state, onchange: null });
           }
         } catch {
           /* ignore */
         }
         return origQuery(desc);
       };
+      markNative(perms.query, 'query'); // toString 白名单
       done.push('permissions');
     }
     const md = nav.mediaDevices;
@@ -768,6 +756,7 @@ function installVaStealth(): void {
           label: '',
         }));
       };
+      markNative(md.enumerateDevices, 'enumerateDevices'); // toString 白名单
       done.push('enumerateDevices');
     }
   } catch {
@@ -879,19 +868,18 @@ export function uninstallCsenseGuard(): void {
   const XP = XMLHttpRequest.prototype;
   if (origXhrOpen && XP.open !== origXhrOpen) XP.open = origXhrOpen;
   if (origXhrSend && XP.send !== origXhrSend) XP.send = origXhrSend;
-  if (origBeacon) {
+  if (rawBeacon) {
     try {
-      (navigator as Navigator & { sendBeacon?: typeof origBeacon }).sendBeacon = origBeacon;
+      // 原型级钩子还原为原型上的原生方法（与安装面一致，不留实例 own property）
+      (Navigator.prototype as unknown as Record<string, unknown>).sendBeacon = rawBeacon;
     } catch {
       /* ignore */
     }
   }
-  // 跳转咽喉还原（origAssign/origReplace 已 bind(location)，直接回填；
-  // 仅测试/调试路径使用，不比对 last-writer-wins —— 本体运行期不会卸载）
-  const LP = Location.prototype as unknown as Record<string, unknown>;
-  if (origAssign) LP.assign = origAssign;
-  if (origReplace) LP.replace = origReplace;
+  // window.open 还原（仅测试/调试路径使用，不比对 last-writer-wins ——
+  // 本体运行期不会卸载；assign/replace 无钩点，无需还原）
   if (origOpen && window.open !== origOpen) window.open = origOpen;
+  navListenerInstalled = false; // 允许卸载后重装时重新挂 Navigation API 咽喉
   if (overlayMo) {
     overlayMo.disconnect();
     overlayMo = null;
