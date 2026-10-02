@@ -1,24 +1,37 @@
 // ===== 飞书消息请求拦截（document-start 安装，UI 内嵌在面板里） =====
-// 目标：拦下页面/作品发往飞书群机器人 webhook 的请求，**在内嵌于 VaIMod 面板的 UI 里**
-// 让人决定放行还是拒绝（对齐「飞书拦截器」脚本的能力，但不往页面 DOM 注入任何浮层）。
+// 拦截算法整体移植自「飞书拦截器」脚本 v3.0（用户提供的参考实现）：
+// - 命中判定 isTargetUrl：宽松匹配 `open.feishu.cn/open-apis/bot/v2/hook/` 路径，
+//   不在 hook 路径上的请求一律直通（脚本同款 CONFIG.interceptPattern）；
+// - 机器人 ID extractBotId：`/hook/([^/?]+)` 萃取，取不到记「未知」；
+// - 消息内容 extractMessageContent：string/URLSearchParams/FormData 展开 → JSON.parse →
+//   content.text → JSON.stringify(content) → String(content) → text → 原文截断 500；
+// - 决策流 shouldAllowRequest：先记录后裁决；blockAll 一律拒绝、manual 挂起问人；
+// - fetch：string / Request 双形态提取——Request 的 body 是 ReadableStream 不能读
+//   （读了会破坏原请求），只认 init.body（脚本同款注释与行为）；
+// - XHR：**实例级 HookedXHR 包装**（脚本同款）：每个实例创建真 XHR 后覆盖实例自身的
+//   open/send，`HookedXHR.prototype = XMLHttpRequest.prototype` 保持 instanceof 不失效，
+//   防 axios 之类缓存原型方法的库绕过；
+// - 拒绝合成：readyState=4 / status=0（defineProperty 绕过只读）+ error 通知（脚本同款）。
 //
-// 设计要点：
-// - 默认模式 off：不匹配、不排队、不影响任何既有请求，行为与未安装完全一致；
-// - hook 在 document-start 安装：作品/站点的请求都发生在页面脚本运行之后，
-//   只有先占住 fetch/XHR 才拦得住（与官方云 API 观察钩子同一思路）；
-// - VaIMod 自身发出的飞书消息带内部标记，直接放行，避免自己拦自己；
-// - 唤醒式决策：命中后把请求挂起（fetch 返回 pending Promise / XHR 延迟 send），
-//   等 UI 决策；无人应答按超时兜底，绝不让请求永久悬挂；
-// - 命中记录与「记住该机器人」写入 localStorage，配置包可一并带走。
+// 与脚本的刻意差异（VaIMod 硬约束所需，行为为脚本的超集，不改变算法语义）：
+// - 决策 UI 内嵌在面板的「飞书」标签页里（脚本往页面 DOM 插浮层对话框——违反
+//   「零宿主干扰」红线；面板内嵌同样完成「问人」这一步，且不被作品 DOM 干扰）；
+// - 拒绝合成用 dispatchEvent 投递：IDL 属性回调（onerror/onreadystatechange）同样会被
+//   触发，脚本里手动调回调会漏掉 addEventListener 型调用方（axios 等其 Promise 永不
+//   settle）——dispatchEvent 是脚本行为的无损超集；
+// - VaIMod 自身发出的飞书消息带 FEISHU_BYPASS 直通，避免自己拦自己；
+// - 所有包装函数进 toString 白名单（markNative / markNativeCtor），探测只见 [native code]；
+// - 不往 window 暴露 __feishuInterceptor 调试全局（window own property 是指纹面），
+//   等价能力由面板提供（模式切换 / 清空记录）。
+//
+// 其余 VaIMod 侧保留件：off 默认零影响、manual 超时兜底、「记住该机器人」规则、
+// 命中记录与规则落盘（配置包可带走）、面板只读 API 契约不变。
 
 import { loadSettings, saveSettings, type FeishuInterceptMode } from './settings';
-import { markNative } from '../dom-utils';
+import { markNative, markNativeCtor } from '../dom-utils';
 
-/** 飞书 webhook 地址特征（群机器人 / 捷径触发器） */
-const HOOK_RE = /open\.feishu\.cn\/open-apis\/bot\/v2\/hook\/([A-Za-z0-9\-_]+)/;
-const FLOW_RE = /(?:www\.|open\.)?feishu\.cn\/flow\/api\/trigger-webhook\/([A-Za-z0-9\-_]+)/;
-/** 宽松命中：只要落在飞书域名上就算候选，交由上面两条抓 bot id */
-const CANDIDATE_RE = /(^|\.)(open\.)?feishu\.cn\/|(^|\.)feishu\.cn\//i;
+/** 飞书 webhook 地址特征（对齐脚本：包含 hook 路径即命中） */
+const HOOK_PATH_RE = /open\.feishu\.cn\/open-apis\/bot\/v2\/hook\//;
 
 const RULES_KEY = ['vai', 'mod', '_fs_rules'].join('');
 const NS_LOG_LIMIT = 200;
@@ -62,8 +75,7 @@ const resolvers = new Map<number, (allow: boolean, decision: FeishuDecision) => 
 const rules = new Map<string, boolean>();
 /** 已安装的原始实现（内部放行用） */
 let origFetch: typeof fetch | null = null;
-let origXhrOpen: typeof XMLHttpRequest.prototype.open | null = null;
-let origXhrSend: typeof XMLHttpRequest.prototype.send | null = null;
+let nativeXhrCtor: typeof XMLHttpRequest | null = null;
 
 /** 内部标记：VaIMod 自身发出的请求带它即跳过拦截（symbol 页面不可见） */
 export const FEISHU_BYPASS = Symbol('vaimod-internal');
@@ -105,7 +117,25 @@ function mode(): FeishuInterceptMode {
   return loadSettings().feishuIntercept;
 }
 
-// ---------- body 文本萃取 ----------
+// ---------- 脚本算法移植：URL 判定 / botId / 消息内容 ----------
+
+/** 宽松匹配（脚本同款）：包含 hook 路径即命中，其余一律直通 */
+function isTargetUrl(url: unknown): boolean {
+  if (!url) return false;
+  try {
+    const u = typeof url === 'string' ? url : String(url);
+    return HOOK_PATH_RE.test(u);
+  } catch {
+    return false;
+  }
+}
+
+/** 脚本同款：`/hook/([^/?]+)` 萃取机器人 ID，取不到记「未知」 */
+function extractBotId(url: string): string {
+  const match = String(url).match(/\/hook\/([^/?]+)/);
+  return match ? match[1] : '未知';
+}
+
 function bodyToRaw(body: unknown): string {
   if (body == null) return '';
   if (typeof body === 'string') return body;
@@ -128,61 +158,69 @@ function bodyToRaw(body: unknown): string {
   }
 }
 
-/** 把 webhook body 萃取成「人能看懂的一行/多行文本」 */
-function extractText(raw: string): string {
-  if (!raw) return '(无内容)';
+/** 脚本同款 extractMessageContent：把 webhook body 萃取成「人能看懂的」消息正文 */
+function extractMessageContent(body: unknown): string {
+  if (body === null || body === undefined) return '(无内容)';
+  let raw = '';
+  if (typeof body === 'string') raw = body;
+  else if (body instanceof URLSearchParams) raw = body.toString();
+  else if (typeof FormData !== 'undefined' && body instanceof FormData) {
+    const parts: string[] = [];
+    try {
+      for (const [k, v] of body.entries()) parts.push(`${k}=${typeof v === 'string' ? v : '[file]'}`);
+    } catch {
+      /* ignore */
+    }
+    raw = parts.join('&');
+  } else if (typeof Blob !== 'undefined' && body instanceof Blob) return '(Blob 数据)';
+  else if (typeof ArrayBuffer !== 'undefined' && body instanceof ArrayBuffer) return '(ArrayBuffer 数据)';
+  else raw = String(body);
+
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const content = parsed.content;
     if (content && typeof content === 'object') {
       const c = content as Record<string, unknown>;
-      if (typeof c.text === 'string') return c.text;
+      if (c.text) return String(c.text);
       return JSON.stringify(content);
     }
-    if (typeof content === 'string') return content;
-    if (typeof parsed.text === 'string') return parsed.text;
-    return raw.slice(0, 800);
+    if (content) return String(content);
+    if (parsed.text) return String(parsed.text);
+    return raw.slice(0, 500);
   } catch {
-    return raw.slice(0, 800);
+    return raw.slice(0, 500);
   }
 }
 
-function classifyBot(url: string): { botId: string; kind: FeishuHit['kind'] } {
-  const h = url.match(HOOK_RE);
-  if (h) return { botId: h[1], kind: 'hook' };
-  const f = url.match(FLOW_RE);
-  if (f) return { botId: f[1], kind: 'flow' };
-  return { botId: '未知', kind: 'other' };
-}
-
 /**
- * 命中判定 + 决策。返回 true = 放行。
- * manual 模式下唤醒 UI 并等待；无人应答按超时兜底。
+ * 命中判定 + 决策（脚本 shouldAllowRequest 语义：先记录后按模式裁决）。
+ * 返回 null = 与目标无关，调用方直通；Promise<boolean>：true 放行 / false 拒绝。
+ * manual 模式下唤醒面板 UI 并等待；无人应答按超时兜底。
  */
 function decide(url: string, method: string, body: unknown, via: FeishuHit['via']): Promise<boolean> | null {
   const m = mode();
   if (m === 'off') return null;
-  if (!CANDIDATE_RE.test(url)) return null;
+  if (!isTargetUrl(url)) return null;
 
   const raw = bodyToRaw(body);
-  const { botId, kind } = classifyBot(url);
   const hit: FeishuHit = {
     id: seq++,
-    url,
+    url: String(url),
     method: method || 'GET',
-    botId,
-    kind,
-    text: extractText(raw),
+    botId: extractBotId(String(url)),
+    kind: 'hook',
+    text: extractMessageContent(body),
     raw: raw.slice(0, 2000),
     at: Date.now(),
     via,
     decision: 'pending',
   };
+  // 脚本同款：命中先入记录（interceptedRequests.push），再按模式分支
   hits.unshift(hit);
   if (hits.length > NS_LOG_LIMIT) hits.length = NS_LOG_LIMIT;
 
-  // 记忆规则优先：命中即决，不再打扰
-  const remembered = rules.get(botId);
+  // 记忆规则优先（VaIMod 扩展）：命中即决，不再打扰
+  const remembered = rules.get(hit.botId);
   if (remembered !== undefined) {
     hit.decision = remembered ? 'rule-allowed' : 'rule-denied';
     emit();
@@ -195,12 +233,13 @@ function decide(url: string, method: string, body: unknown, via: FeishuHit['via'
     return Promise.resolve(true);
   }
   if (m === 'blockAll') {
+    // 脚本 blockAll：一律拒绝
     hit.decision = 'auto-denied';
     emit();
     return Promise.resolve(false);
   }
 
-  // manual：挂起等决策
+  // manual：挂起等面板裁决（脚本此处弹页面浮层对话框；本体内嵌面板，零宿主干扰）
   const s = loadSettings();
   pendingIds.add(hit.id);
   emit();
@@ -228,39 +267,43 @@ function decide(url: string, method: string, body: unknown, via: FeishuHit['via'
   });
 }
 
-// ===== 安装 =====
+// ===== 安装（脚本 hook 形态移植） =====
 export function installFeishuGuard(): void {
   if (installed) return;
   installed = true;
   readRules();
 
+  // ---------- 1. Hook fetch（脚本同款：string / Request 双形态，Request body 不读） ----------
   origFetch = window.fetch;
   const nativeFetch = origFetch;
   if (typeof nativeFetch === 'function') {
     const patched = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+      // VaIMod 自身发出的消息直通（否则开着拦截模式会拦到自己）
       const internal = Boolean(init && (init as Record<PropertyKey, unknown>)[FEISHU_BYPASS]);
       if (internal || mode() === 'off') return nativeFetch.call(this as never, input, init);
       let url = '';
       let method = 'GET';
       let body: unknown = null;
-      try {
-        if (typeof input === 'string') url = input;
-        else if (input instanceof URL) url = input.href;
-        else {
-          url = (input as Request).url;
-          method = (input as Request).method || 'GET';
-        }
-        if (init?.method) method = init.method;
-        if (init?.body != null) body = init.body;
-        else if (typeof input === 'object' && !(input instanceof URL)) body = (input as Request).body ?? null;
-      } catch {
-        return nativeFetch.call(this as never, input, init);
+      if (typeof input === 'string') {
+        url = input;
+        method = (init && init.method) || 'GET';
+        body = (init && init.body) || null;
+      } else if (input instanceof URL) {
+        url = input.href;
+        method = (init && init.method) || 'GET';
+        body = (init && init.body) || null;
+      } else if (input && typeof input === 'object') {
+        // Request 对象：body 是 ReadableStream，不能直接读，否则会破坏原请求（脚本同款）
+        url = (input as Request).url || '';
+        method = (input as Request).method || (init && init.method) || 'GET';
+        body = (init && init.body) || null;
       }
       const decision = decide(url, method, body, 'fetch');
       if (!decision) return nativeFetch.call(this as never, input, init);
       return decision.then((allow) => {
         if (allow) return nativeFetch.call(this as never, input, init);
-        return Promise.reject(new TypeError('VaIMod：飞书 Webhook 请求已被拒绝'));
+        // 脚本同款：拒绝以 TypeError 拒绝
+        return Promise.reject(new TypeError('请求被用户脚本拦截'));
       });
     };
     try {
@@ -273,61 +316,68 @@ export function installFeishuGuard(): void {
     window.fetch = patched as typeof fetch;
   }
 
-  const XP = XMLHttpRequest.prototype;
-  origXhrOpen = XP.open;
-  origXhrSend = XP.send;
-  const nativeOpen = origXhrOpen;
-  const nativeSend = origXhrSend;
+  // ---------- 2. Hook XMLHttpRequest（脚本同款：实例级 HookedXHR，原型链保留） ----------
+  // 实例级而不是原型级：axios 之类缓存原型方法的库也能被覆盖到；本体的 csense-guard
+  // 在此之前已占住原型 open/send，实例 hook 经 `new NativeXHR()` 的原型链解析自动
+  // 叠在 csense 钩子之上（feishu open → csense open → native），两层互不遮蔽。
+  const NativeXHR = window.XMLHttpRequest;
+  nativeXhrCtor = NativeXHR;
+  type FsXhr = XMLHttpRequest & { __vaimod_fs_method?: string; __vaimod_fs_url?: string };
 
-  const patchedXhrOpen = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
-    try {
-      (this as unknown as Record<string, unknown>).__vaimod_fs = {
-        method: String(method || 'GET'),
-        url: String(url),
-      };
-    } catch {
-      /* ignore */
-    }
-    return (nativeOpen as (...a: unknown[]) => void).apply(this, [method, url, ...rest]);
-  } as typeof XP.open;
-  markNative(patchedXhrOpen, 'open');
-  XP.open = patchedXhrOpen;
+  const HookedXHR = function (): XMLHttpRequest {
+    const xhr = new NativeXHR() as FsXhr;
+    const originalOpen = xhr.open;
+    const originalSend = xhr.send;
 
-  const patchedXhrSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
-    const info = (this as unknown as { __vaimod_fs?: { method: string; url: string } }).__vaimod_fs;
-    if (!info || mode() === 'off') {
-      return (nativeSend as (...a: unknown[]) => void).apply(this, [body as never]);
-    }
-    const decision = decide(info.url, info.method, body ?? null, 'xhr');
-    if (!decision) return (nativeSend as (...a: unknown[]) => void).apply(this, [body as never]);
-    const self = this;
-    decision.then((allow) => {
-      if (allow) {
-        (nativeSend as (...a: unknown[]) => void).apply(self, [body as never]);
-        return;
+    xhr.open = function (method: string, url: string | URL, ...rest: unknown[]) {
+      xhr.__vaimod_fs_method = String(method || 'GET');
+      xhr.__vaimod_fs_url = String(url);
+      return (originalOpen as (this: FsXhr, m: string, u: string | URL, ...r: unknown[]) => void).apply(
+        xhr,
+        [method, url, ...rest],
+      );
+    } as typeof xhr.open;
+
+    xhr.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+      const url = xhr.__vaimod_fs_url;
+      const method = xhr.__vaimod_fs_method || 'GET';
+      const decision = url ? decide(url, method, body ?? null, 'xhr') : null;
+      if (!decision) {
+        return (originalSend as (...a: unknown[]) => void).apply(xhr, [body as never]);
       }
-      // 拒绝：合成一次失败事件。
-      // 必须走 dispatchEvent —— 只调 onerror / onreadystatechange 这两个 IDL 属性回调时，
-      // 用 `xhr.addEventListener('error'|'load'|'readystatechange', …)` 注册的调用方
-      // （axios 的 XHR adapter、大量手写库）**完全收不到通知**，其 Promise 永不 settle，
-      // 直接违反「无人应答按超时兜底，绝不让请求永久悬挂」的承诺。
-      // （dispatchEvent 会同时触发 IDL 属性回调，故不必再手动调一次。）
-      setTimeout(() => {
-        try {
-          Object.defineProperty(self, 'readyState', { configurable: true, value: 4 });
-          Object.defineProperty(self, 'status', { configurable: true, value: 0 });
-          self.dispatchEvent(new Event('readystatechange'));
-          self.dispatchEvent(new ProgressEvent('error'));
-          self.dispatchEvent(new ProgressEvent('loadend'));
-        } catch {
-          /* ignore */
+      void decision.then((allow) => {
+        if (allow) {
+          try {
+            (originalSend as (...a: unknown[]) => void).call(xhr, body as never);
+          } catch {
+            /* ignore */
+          }
+          return;
         }
-      }, 0);
-    });
-    return undefined;
-  } as typeof XP.send;
-  markNative(patchedXhrSend, 'send');
-  XP.send = patchedXhrSend;
+        // 脚本同款语义：readyState=4 / status=0（defineProperty 绕过只读）+ error 通知。
+        // 投递用 dispatchEvent：IDL 回调同样触发，addEventListener 型调用方不再永久悬挂。
+        setTimeout(() => {
+          try {
+            Object.defineProperty(xhr, 'readyState', { value: 4, configurable: true });
+            Object.defineProperty(xhr, 'status', { value: 0, configurable: true });
+            xhr.dispatchEvent(new Event('readystatechange'));
+            xhr.dispatchEvent(new ProgressEvent('error'));
+            xhr.dispatchEvent(new ProgressEvent('loadend'));
+          } catch {
+            /* ignore */
+          }
+        }, 0);
+      });
+      return undefined as never;
+    } as typeof xhr.send;
+
+    return xhr;
+  } as unknown as typeof XMLHttpRequest;
+
+  // 脚本同款：保留原型链，instanceof 不失效
+  (HookedXHR as unknown as { prototype: unknown }).prototype = NativeXHR.prototype;
+  markNativeCtor(HookedXHR as unknown as object, 'XMLHttpRequest'); // toString 白名单（保留 prototype）
+  window.XMLHttpRequest = HookedXHR;
 }
 
 /** 卸载（仅测试/调试用） */
@@ -335,14 +385,13 @@ export function uninstallFeishuGuard(): void {
   if (!installed) return;
   installed = false;
   if (origFetch) window.fetch = origFetch;
-  if (origXhrOpen) XMLHttpRequest.prototype.open = origXhrOpen;
-  if (origXhrSend) XMLHttpRequest.prototype.send = origXhrSend;
+  if (nativeXhrCtor) window.XMLHttpRequest = nativeXhrCtor;
   for (const [, finish] of resolvers) finish(true, 'allowed');
   resolvers.clear();
   pendingIds.clear();
 }
 
-// ===== 对外只读面（UI 用） =====
+// ===== 对外只读面（UI 用，契约不变） =====
 export function subscribeFeishu(fn: Listener): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);

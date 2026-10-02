@@ -261,6 +261,26 @@ function markNative(fn: object, name: string): void {
 
 export { markNative };
 
+/**
+ * 构造器专用标记：进 toString 白名单 + 改名，但**保留 prototype**。
+ * markNative 会 delete fn.prototype——对方法正确，但原生构造器（XMLHttpRequest 等）
+ * 本身就带 prototype，删掉反而自曝且毁掉 instanceof 链。实例级包装构造器用这个。
+ */
+function markNativeCtor(fn: object, name: string): void {
+  try {
+    Object.defineProperty(fn, 'name', { configurable: true, value: name });
+  } catch {
+    /* ignore */
+  }
+  try {
+    MARKED_FNS.add(fn);
+  } catch {
+    /* ignore */
+  }
+}
+
+export { markNativeCtor };
+
 function installNativeToString(): void {
   const holder = Function.prototype as unknown as Record<symbol, unknown>;
   if (holder[TOSTRING_PATCHED]) return;
