@@ -43,6 +43,7 @@
   } from '../core/alias-config';
   import { secureAction } from '../core/veil-chain';
   import { loadSettingsFor, saveSettings, type Settings, type TabId } from '../core/settings';
+  import { robotList, subscribeRobots } from '../core/feishu';
   import refreshIcon from '../assets/refresh.svg?raw';
   import closeIcon from '../assets/close.svg?raw';
   import downloadIcon from '../assets/download.svg?raw';
@@ -206,6 +207,22 @@
     if (!visibleTabs.some((t) => t.id === activeTab)) {
       activeTab = defaultTabId;
     }
+  });
+
+  // 飞书新捕获：登记表增长即在「飞书」Tab 上打点（面板不在该页时也要能看见），
+  // 切到飞书页即清零。登记表本身由拦截侧写入，这里只做一次差量统计。
+  let feishuNew = $state(0);
+  $effect(() => {
+    let last = robotList().length;
+    const off = subscribeRobots(() => {
+      const n = robotList().length;
+      if (n > last) feishuNew += n - last;
+      last = n;
+    });
+    return off;
+  });
+  $effect(() => {
+    if (activeTab === 'feishu') feishuNew = 0;
   });
   // 云数据子标签记忆：在「变量/云数据」tab 间切换时保留上次打开的作品/用户子标签
   let ccwSelected = $state<CloudType>('project');
@@ -1996,6 +2013,9 @@
               onclick={() => switchTab(t.id)}
             >
               {tabName(t.id)}
+              {#if t.id === 'feishu' && feishuNew > 0}
+                <span class="svp-tab-dot" aria-label={`${feishuNew} 个新捕获`}></span>
+              {/if}
             </button>
           {/each}
         </div>

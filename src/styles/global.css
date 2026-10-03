@@ -977,12 +977,33 @@
   padding: 6px 10px 0;
 }
 .svp-tab {
+  position: relative;
   padding: 7px 2px;
   font-size: 13px;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 飞书 Tab 的「有新捕获」提示点：面板不在该页时也要能看见 */
+.svp-tab-dot {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ff9f0a;
+  animation: svp-tab-dot-pulse 1.5s ease-in-out infinite;
+}
+@keyframes svp-tab-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ===== 工具 / 飞书 / 系统 通用 section ===== */
@@ -1369,10 +1390,19 @@
 
 /* ===== 飞书机器人列表 ===== */
 .svp-robotlist {
-  display: grid;
-  grid-template-columns: 1fr auto auto;
+  display: flex;
+  flex-direction: column;
   gap: 6px;
+}
+.svp-robot-row {
+  display: flex;
   align-items: stretch;
+  gap: 6px;
+}
+.svp-robot-row > .svp-robot,
+.svp-robot-row > .svp-robot-edit {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .svp-robot {
   display: flex;
@@ -1385,13 +1415,21 @@
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   min-width: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 .svp-robot:hover {
   background: rgba(255, 255, 255, 0.09);
 }
 .svp-robot.svp-robot-on {
-  background: rgba(77, 163, 255, 0.2);
-  border-color: rgba(77, 163, 255, 0.6);
+  background: rgba(77, 163, 255, 0.16);
+  border-color: rgba(77, 163, 255, 0.55);
+  box-shadow: inset 3px 0 0 0 var(--svp-primary, #4da3ff);
+}
+.svp-robot-row .svp-robot-edit {
+  align-self: center;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 13px;
 }
 .svp-robot-name {
   font-size: 13.5px;
@@ -1408,33 +1446,48 @@
   /* 完整 token 显示：窄按钮内自动换行，不溢出 */
   word-break: break-all;
 }
-.svp-robot-del {
+/* 行内图标按钮：编辑 / 置顶 / 移除 共用尺寸与交互，只有颜色不同 */
+.svp-robot-icon {
+  flex-shrink: 0;
   width: 30px;
   height: 30px;
   align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   background: transparent;
   border: none;
   border-radius: 7px;
-  color: #8a9099;
-  font-size: 19px;
+  color: #6d737b;
+  font-size: 16px;
   line-height: 1;
+  transition: color 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
+}
+.svp-robot-icon:hover {
+  color: #c3c7cc;
+  background: rgba(255, 255, 255, 0.08);
+}
+.svp-robot-icon:active {
+  transform: scale(0.9);
+}
+.svp-robot-del {
+  font-size: 19px;
 }
 .svp-robot-del:hover {
   color: #ff9c8f;
   background: rgba(255, 89, 60, 0.16);
 }
-/* 常用置顶（星标）：置顶机器人排在最前，便于快速点选 */
+.svp-robot-save {
+  color: #a8e8bc;
+}
+.svp-robot-save:hover {
+  color: #a8e8bc;
+  background: rgba(48, 209, 88, 0.16);
+}
+/* 常用置顶（星标）：置顶的排在最前，便于快速点选 */
 .svp-robot-star {
-  width: 30px;
-  height: 30px;
-  align-self: center;
-  background: transparent;
-  border: none;
-  border-radius: 7px;
-  color: #6d737b;
   font-size: 17px;
-  line-height: 1;
-  transition: color 0.15s ease, background-color 0.15s ease, transform 0.12s ease;
 }
 .svp-robot-star:hover {
   color: #ffd08a;
@@ -1442,9 +1495,6 @@
 }
 .svp-robot-star.svp-robot-star-on {
   color: #ffb84d;
-}
-.svp-robot-star:active {
-  transform: scale(0.88);
 }
 
 .svp-uploaded {

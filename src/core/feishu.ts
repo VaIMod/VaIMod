@@ -49,6 +49,26 @@ export function maskToken(t: string): string {
 }
 
 // ---------- 登记表 ----------
+type RobotListener = () => void;
+/** 登记表变更订阅者（面板列表 / 主面板徽标）。写入只走 saveRobots，通知点唯一。 */
+const robotListeners = new Set<RobotListener>();
+
+/** 订阅登记表变更（新增 / 移除 / 置顶 / 改名 / 导入 / 类型纠正）；返回退订函数 */
+export function subscribeRobots(fn: RobotListener): () => void {
+  robotListeners.add(fn);
+  return () => robotListeners.delete(fn);
+}
+
+function notifyRobots(): void {
+  for (const fn of robotListeners) {
+    try {
+      fn();
+    } catch {
+      /* 单个订阅者出错不影响其他订阅者与写入结果 */
+    }
+  }
+}
+
 function readRobots(): FeishuRobot[] {
   try {
     const raw = localStorage.getItem(NS_ROBOTS);
@@ -65,6 +85,7 @@ function saveRobots(list: FeishuRobot[]): void {
   } catch {
     /* ignore */
   }
+  notifyRobots();
 }
 
 export function robotList(): FeishuRobot[] {
@@ -88,6 +109,19 @@ export function robotPin(token: string, kind: 'hook' | 'flow', pinned: boolean):
   if (!hit) return;
   hit.pin = pinned;
   saveRobots(list);
+}
+
+/**
+ * 改备注名。空串回落为打码 token（`abcd…wxyz`），不留空名字。
+ * 只动 name，不碰 token / kind / src（去重键与来源语义不受影响）。
+ */
+export function robotRename(token: string, kind: 'hook' | 'flow', name: string): boolean {
+  const list = readRobots();
+  const hit = list.find((r) => r.token === token && r.kind === kind);
+  if (!hit) return false;
+  hit.name = String(name ?? '').trim() || maskToken(hit.token);
+  saveRobots(list);
+  return true;
 }
 
 /** 追加（同 token 去重；同 id 刷新时间戳） */

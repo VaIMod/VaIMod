@@ -1,27 +1,25 @@
 <script lang="ts">
   // ===== 飞书：机器人管理 + 消息发送 + 消息请求拦截 =====
-  // 通道为飞书群自定义机器人 webhook 直发（不触碰开放平台凭证）：
-  // - 机器人来源两路：扫描变量与列表内容（含云变量）/ 手动添加；可自定义名称；
-  // - 发送：文本、@全员、@指定成员、图片（已有 image_key）、交互卡片 JSON、捷径/透传 JSON；
-  // - 图片与任意文件：先上传拿直链（ccw OSS → catbox → 0x0.st 降级），再以「卡片链接」发出；
-  // - 消息请求拦截：拦下页面/作品发往飞书 webhook 的请求，在本面板内裁决放行或拒绝。
+  // 通道为飞书群自定义机器人 webhook 直发（不触碰开放平台凭证）。
+  // 机器人来源：拦截捕获 / 变量扫描 / 手动添加；发送：文本、@、图片、卡片、任意 JSON；
+  // 文件先上传取直链（ccw OSS → catbox → 0x0.st）再以卡片发出。
   import type { ScratchVaIMod } from '../core';
   import { cleanDisplay } from '../core';
   import {
     buildLinkCard,
     ingestTokens,
-    maskToken,
-    normalizeRobot,
     robotAdd,
     robotList,
     robotPin,
     robotRemove,
+    robotRename,
     sendAt,
     sendAtAll,
     sendCard,
     sendImage,
     sendRawJson,
     sendText,
+    subscribeRobots,
     uploadToLink,
     type FeishuRobot,
     type SendResult,
@@ -45,9 +43,8 @@
   import { secureAction } from '../core/veil-chain';
 
   // ===== 消息请求拦截（内嵌 UI） =====
-  // 真正的 fetch/XHR hook 在 document-start 就装好了（core/feishu-guard），
-  // 这里只是它的展示层：模式开关、待裁决请求、命中记录、记忆规则。
-  // 之所以做成内嵌而不是页面浮层：浮层会被作品/站点 DOM 操作干扰，也不符合面板一体化体验。
+  // hook 本体在 document-start 装好（core/feishu-guard）；这里是展示层：
+  // 模式、待裁决请求、命中记录、记忆规则。做成内嵌而非页面浮层，避免被宿主 DOM 干扰。
   const FS_MODES: { value: FeishuInterceptMode; label: string }[] = [
     { value: 'off', label: '不拦截' },
     { value: 'manual', label: '询问' },
@@ -55,10 +52,10 @@
     { value: 'blockAll', label: '全拒绝' },
   ];
   const FS_MODE_HINT: Record<FeishuInterceptMode, string> = {
-    off: '不介入任何请求，行为与未安装一致。',
-    manual: '命中飞书 webhook 就挂起，等你在这里点允许 / 拒绝；超时按下方兜底动作处理。',
-    allowAll: '全部放行，只把命中记下来（审计用）。',
-    blockAll: '命中一律拒绝，请求方会收到失败。',
+    off: '不介入请求',
+    manual: '命中后等待裁决，超时按下方动作处理',
+    allowAll: '全部放行，仅记录',
+    blockAll: '全部拒绝，请求方收到失败',
   };
   const FS_STATE_LABEL: Record<FeishuHit['decision'], string> = {
     pending: '待裁决',
@@ -80,28 +77,22 @@
   let fsTimeoutMs = $state<number>(loadSettings().feishuTimeoutMs);
   let fsAutoAdd = $state<boolean>(loadSettings().feishuAutoAdd);
 
-  // 登记表指纹：捕获发生在拦截侧（core/feishu-guard 直接写登记表），面板没有别的途径
-  // 感知它——只 bump fsHits 不会让 `robots` 重算（那是个只依赖 ver 的 $derived），
-  // 结果「捕获到的机器人」要等到下一次手动刷新才出现。
-  let robotFp = '';
+  // 登记表变更（含拦截侧直接写入）由 core 广播：面板无需轮询，捕获即见。
   function syncFeishu(): void {
     fsHits = feishuHits();
     fsPending = feishuPendingCount();
     fsRulesList = feishuRules();
     fsMode = feishuMode();
-    const fp = robotList()
-      .map((r) => `${r.kind}:${r.token}:${r.pin ? 1 : 0}`)
-      .join('|');
-    if (fp !== robotFp) {
-      robotFp = fp;
-      bump();
-    }
   }
 
   $effect(() => {
-    const off = subscribeFeishu(syncFeishu);
+    const offFs = subscribeFeishu(syncFeishu);
+    const offRobots = subscribeRobots(bump);
     syncFeishu();
-    return off;
+    return () => {
+      offFs();
+      offRobots();
+    };
   });
 
   function persistFs(patch: { feishuOnTimeout?: 'allow' | 'block'; feishuTimeoutMs?: number; feishuAutoAdd?: boolean }): void {
@@ -155,7 +146,9 @@
   let newInput = $state('');
   // 选中集合：`kind:token`
   let selected = $state<Set<string>>(new Set());
-  let selectAll = $state(true); // 有新机器人自动加入发送列表
+  // 备注名内联编辑：正在编辑行的 key 与草稿
+  let editingKey = $state('');
+  let editName = $state('');
 
   const srcLabel: Record<FeishuRobot['src'], string> = {
     var: '变量',
@@ -168,16 +161,24 @@
     const name = newName.trim();
     const input = newInput.trim();
     if (!input) {
-      showToast('请输入机器人 webhook 地址 / ID', 'err');
+      showToast('请输入 webhook 地址或 ID', 'err');
       return;
     }
     secureAction('generic', 'fs-add', () => {
-      const r = robotAdd(name || maskToken(input), input, 'manual');
+      // name 原样传空串：robotAdd 新增时回落打码 token，已存在时保留原备注名
+      const r = robotAdd(name, input, 'manual');
       if (!r) {
         showToast('无法识别该机器人地址', 'err');
         return;
       }
-      if (selectAll) selected.add(`hook:${r.token}`);
+      // kind 不能写死 hook：手动粘贴捷径地址时 kind 是 flow，key 写错就永远勾不上
+      if (fsAutoAdd) {
+        const key = `${r.kind}:${r.token}`;
+        seenAutoKeys.add(key);
+        const next = new Set(selected);
+        next.add(key);
+        selected = next;
+      }
       newInput = '';
       newName = '';
       bump();
@@ -187,18 +188,25 @@
 
   function scanVariables() {
     secureAction('generic', 'fs-scan-var', () => {
-      // token → 类型（hook/flow）：类型必须一起传下去，否则捷径 webhook 会被拼错地址
+      // token → 类型必须一起传：否则捷径 webhook 会被拼成 bot/v2/hook 地址
       const tokens = new Map<string, 'hook' | 'flow'>();
-      // 变量与列表一起扫描：云变量同样纳入（名称与值都可能藏 webhook / 捷径 ID）。
-      // 云变量与普通变量只差持久化层，其值同样是用户可读文本，没有理由跳过。
       for (const v of variables) {
         extractTokens(v.name, tokens);
         extractTokens(v.value, tokens);
       }
       const added = ingestTokens(tokens, 'var');
+      // 扫描是显式动作：扫到的机器人直接进发送目标，不等自动加入开关
+      const next = new Set(selected);
+      for (const r of robotList()) {
+        if (r.src !== 'var') continue;
+        const key = `${r.kind}:${r.token}`;
+        seenAutoKeys.add(key);
+        next.add(key);
+      }
+      selected = next;
       bump();
-      if (tokens.size === 0) showToast('变量/列表中未发现飞书机器人', 'err');
-      else showToast(`变量扫描：发现 ${tokens.size} 个，新增 ${added} 个`, 'ok');
+      if (tokens.size === 0) showToast('未发现飞书机器人', 'err');
+      else showToast(`发现 ${tokens.size} 个，新增 ${added} 个`, 'ok');
     });
   }
 
@@ -218,12 +226,32 @@
       const pinned = !r.pin;
       robotPin(r.token, r.kind, pinned);
       bump();
-      showToast(
-        pinned
-          ? `「${cleanDisplay(r.name)}」已置顶`
-          : `已取消「${cleanDisplay(r.name)}」置顶`,
-        'ok',
-      );
+      showToast(pinned ? `已置顶「${cleanDisplay(r.name)}」` : `已取消置顶`, 'ok');
+    });
+  }
+
+  function startEdit(r: FeishuRobot): void {
+    editingKey = `${r.kind}:${r.token}`;
+    editName = r.name;
+  }
+
+  function cancelEdit(): void {
+    editingKey = '';
+    editName = '';
+  }
+
+  function commitEdit(r: FeishuRobot): void {
+    const key = `${r.kind}:${r.token}`;
+    if (editingKey !== key) return;
+    const name = editName.trim();
+    editingKey = '';
+    secureAction('generic', 'fs-rename', () => {
+      if (!robotRename(r.token, r.kind, name)) {
+        showToast('该机器人已不存在', 'err');
+        return;
+      }
+      bump();
+      showToast('备注名已更新', 'ok');
     });
   }
 
@@ -235,22 +263,18 @@
     selected = next;
   }
 
-  // 已「自动加选」过的机器人 key 集：仅把「新出现」的机器人自动加入目标一次；
-  // 之后用户手动取消不会再被加回，也避免旧实现（$effect 无条件 selected = new Set(...)
-  // 触发自激写回）造成的 effect_update_depth 死循环 → 切到飞书页整个面板停摆。
-  // 必须随 UI 草稿一起落盘：面板重新挂载时若清空这份记忆，「用户取消过的」与
-  // 「刚被捕获到的」就分不出来，取消过的会被反复加回。
+  // 已被自动加选过的机器人 key 集：只把「新出现」的自动加入一次，
+  // 用户手动取消后不会被反复加回。必须随 UI 草稿落盘——面板重新挂载若清空这份记忆，
+  // 「取消过的」与「刚捕获到的」就分不出来。
   let seenAutoKeys = new Set<string>();
 
+  // 自动加入发送目标：与「捕获自动登记」共用同一个开关（feishuAutoAdd）。
   $effect(() => {
-    if (!selectAll) return;
-    const list = robots;
+    if (!fsAutoAdd) return;
     let changed = false;
     const next = new Set(selected);
-    for (const r of list) {
-      // 变量扫描(var) / 内置(seed) / 消息拦截捕获(intercept) 三类都算「新捕获」；
-      // 手动添加(manual) 在 addManual 里已按同一开关勾选，此处跳过免得重复判断。
-      if (r.src === 'manual') continue;
+    for (const r of robots) {
+      if (r.src === 'manual') continue; // 手动添加在 addManual 里按同一开关勾选
       const key = `${r.kind}:${r.token}`;
       if (seenAutoKeys.has(key)) continue;
       seenAutoKeys.add(key);
@@ -433,6 +457,14 @@
     }
   }
 
+  // 重命名输入框挂载即聚焦并全选：双击/点✎ 是即时操作，不该再要求点一下输入框
+  function autofocusInput(node: HTMLInputElement) {
+    requestAnimationFrame(() => {
+      node.focus();
+      node.select();
+    });
+  }
+
   function keyboardGuard(node: HTMLInputElement | HTMLTextAreaElement) {
     const host = (node.getRootNode() as ShadowRoot).host;
     const onKeydownCapture = (e: KeyboardEvent) => {
@@ -581,48 +613,65 @@
     <div class="svp-btnrow svp-btnrow-wrap">
       <button class="svp-btn svp-btn-blue svp-btn-sm" onclick={scanVariables}>扫描变量/列表</button>
       <label class="svp-check svp-check-inline">
-        <input type="checkbox" bind:checked={selectAll} />
-        新捕获的自动加入目标
-      </label>
-      <label class="svp-check svp-check-inline">
         <input
           type="checkbox"
           checked={fsAutoAdd}
           onchange={(e) => persistFs({ feishuAutoAdd: (e.currentTarget as HTMLInputElement).checked })}
         />
-        捕获到的机器人自动加入列表
+        捕获到的机器人自动加入发送目标
       </label>
     </div>
 
     {#if robots.length === 0}
-      <p class="svp-empty">还没有机器人。点上方自动扫描，或在下方手动添加 webhook 地址。</p>
+      <p class="svp-empty">暂无机器人</p>
     {:else}
       <div class="svp-robotlist">
         {#each robots as r (r.kind + ':' + r.token)}
-          <button
-            class="svp-robot"
-            class:svp-robot-on={selected.has(`${r.kind}:${r.token}`)}
-            onclick={() => toggle(r)}
-          >
-            <span class="svp-robot-name">{cleanDisplay(r.name)}</span>
-            <span class="svp-robot-meta">{r.token} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
-          </button>
-          <button
-            class="svp-robot-star"
-            class:svp-robot-star-on={r.pin}
-            onclick={() => pinRobot(r)}
-            aria-label="置顶"
-          >
-            {r.pin ? '★' : '☆'}
-          </button>
-          <button class="svp-robot-del" onclick={() => removeRobot(r)} aria-label="移除">×</button>
+          <div class="svp-robot-row">
+            {#if editingKey === `${r.kind}:${r.token}`}
+              <input
+                class="svp-input svp-robot-edit"
+                type="text"
+                bind:value={editName}
+                placeholder="备注名"
+                spellcheck="false"
+                use:keyboardGuard
+                use:autofocusInput
+                onkeydown={(e) => {
+                  if (e.key === 'Enter') commitEdit(r);
+                  else if (e.key === 'Escape') cancelEdit();
+                }}
+                onblur={() => commitEdit(r)}
+              />
+              <button class="svp-robot-icon svp-robot-save" onclick={() => commitEdit(r)} aria-label="保存">✓</button>
+            {:else}
+              <button
+                class="svp-robot"
+                class:svp-robot-on={selected.has(`${r.kind}:${r.token}`)}
+                onclick={() => toggle(r)}
+                ondblclick={() => startEdit(r)}
+                title="双击重命名"
+              >
+                <span class="svp-robot-name">{cleanDisplay(r.name)}</span>
+                <span class="svp-robot-meta">{r.token} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
+              </button>
+              <button class="svp-robot-icon" onclick={() => startEdit(r)} aria-label="重命名">✎</button>
+              <button
+                class="svp-robot-icon svp-robot-star"
+                class:svp-robot-star-on={r.pin}
+                onclick={() => pinRobot(r)}
+                aria-label="置顶"
+              >{r.pin ? '★' : '☆'}</button>
+              <button class="svp-robot-icon svp-robot-del" onclick={() => removeRobot(r)} aria-label="移除">×</button>
+            {/if}
+          </div>
         {/each}
       </div>
     {/if}
 
     <div class="svp-field svp-row2">
       <input class="svp-input" type="text" bind:value={newName} placeholder="备注名" spellcheck="false" use:keyboardGuard />
-      <input class="svp-input" type="text" bind:value={newInput} placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/… 或 ID" spellcheck="false" use:keyboardGuard onkeydown={(e) => e.key === 'Enter' && addManual()} />
+      <input class="svp-input" type="text" bind:value={newInput} placeholder="webhook 地址或 ID" spellcheck="false" use:keyboardGuard onkeydown={(e) => e.key === 'Enter' && addManual()} />
       <button class="svp-btn svp-btn-sm" onclick={addManual} disabled={!newInput.trim()}>添加</button>
     </div>
   </section>
@@ -678,14 +727,13 @@
     {/if}
 
     {#if fsHits.length === 0}
-      <p class="svp-empty">暂无命中。切到「询问」后，页面与作品发往飞书群机器人的请求都会在这里等你裁决。</p>
+      <p class="svp-empty">暂无命中</p>
     {:else}
       <div class="svp-fs-log">
         {#each fsHits as h (h.id)}
           <div class="svp-fs-item" class:svp-fs-item-pending={h.decision === 'pending'}>
             <div class="svp-fs-head">
               <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : h.botId}</span>
-              <span class="svp-meta">{h.via.toUpperCase()} · {h.method}</span>
               <span class="svp-fs-state" class:svp-fs-state-pending={h.decision === 'pending'}>{FS_STATE_LABEL[h.decision]}</span>
             </div>
             <div class="svp-fs-text">{h.text}</div>
@@ -707,7 +755,7 @@
             <div class="svp-fs-rule">
               <span class="svp-fs-bot">{r.botId}</span>
               <span class="svp-meta">{r.allow ? '总是允许' : '总是拒绝'}</span>
-              <button class="svp-robot-del" onclick={() => forgetFsRule(r.botId)} aria-label="忘记该规则">×</button>
+              <button class="svp-robot-icon svp-robot-del" onclick={() => forgetFsRule(r.botId)} aria-label="忘记该规则">×</button>
             </div>
           {/each}
         </div>
@@ -746,11 +794,11 @@
       </div>
     {:else if mode === 'card'}
       <div class="svp-field">
-        <textarea class="svp-input svp-textarea svp-mono" bind:value={cardJson} placeholder="交互卡片 JSON（含 config / header / elements），点上方模板可参照" rows={8} spellcheck="false" use:keyboardGuard use:autoGrowArea></textarea>
+        <textarea class="svp-input svp-textarea svp-mono" bind:value={cardJson} placeholder="交互卡片 JSON" rows={8} spellcheck="false" use:keyboardGuard use:autoGrowArea></textarea>
       </div>
     {:else if mode === 'raw'}
       <div class="svp-field">
-        <textarea class="svp-input svp-textarea svp-mono" bind:value={rawJson} placeholder="任意 JSON 消息体（捷径/透传），如文本消息示例" rows={6} spellcheck="false" use:keyboardGuard use:autoGrowArea></textarea>
+        <textarea class="svp-input svp-textarea svp-mono" bind:value={rawJson} placeholder="任意 JSON 消息体" rows={6} spellcheck="false" use:keyboardGuard use:autoGrowArea></textarea>
       </div>
     {:else}
       <input bind:this={fileInputEl} class="svp-file-input" type="file" onchange={onFileSelected} />
@@ -768,7 +816,7 @@
           </div>
         </div>
       {/if}
-      <p class="svp-note">群机器人 webhook 不支持直接推送文件/图片二进制：文件会先上传拿直链（ccw OSS 优先，catbox / 0x0.st 降级），再以卡片链接消息发送给选中机器人。</p>
+      <p class="svp-note">文件先上传为直链（ccw OSS → catbox → 0x0.st），再以卡片消息发送。</p>
     {/if}
 
     <div class="svp-sendbar">
