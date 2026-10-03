@@ -13,7 +13,7 @@ export interface FeishuRobot {
   name: string;
   token: string; // webhook 尾部 / 捷径 id
   kind: 'hook' | 'flow';
-  src: 'var' | 'manual' | 'seed';
+  src: 'var' | 'manual' | 'seed' | 'intercept'; // intercept = 消息拦截捕获
   at: number;
   pin?: boolean; // 手动置顶（常用机器人）
 }

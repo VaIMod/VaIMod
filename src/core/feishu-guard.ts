@@ -29,6 +29,10 @@
 
 import { loadSettings, saveSettings, type FeishuInterceptMode } from './settings';
 import { markNative, markNativeCtor } from '../dom-utils';
+// 循环依赖说明：feishu.ts 只在 postJson 函数体内读 FEISHU_BYPASS（发送时），
+// 本模块只在 decide 函数体内调 robotAddParsed（拦截时）——双方都是函数级访问，
+// ESM 活绑定下无 TDZ 风险。
+import { robotAddParsed } from './feishu';
 
 /** 飞书 webhook 地址特征（对齐脚本：包含 hook 路径即命中） */
 const HOOK_PATH_RE = /open\.feishu\.cn\/open-apis\/bot\/v2\/hook\//;
@@ -117,6 +121,33 @@ function mode(): FeishuInterceptMode {
   return loadSettings().feishuIntercept;
 }
 
+/**
+ * 命中日志裁剪：超过上限时从最旧的一端淘汰**已决策**的条目。
+ * 挂起（pending）中的条目绝不能被挤出——它一旦不在日志里，面板就渲染不出
+ * 允许/拒绝按钮，而它的 resolver 还挂在 resolvers 里，请求只能干等超时。
+ */
+function trimHits(): void {
+  if (hits.length <= NS_LOG_LIMIT) return;
+  for (let i = hits.length - 1; i >= 0 && hits.length > NS_LOG_LIMIT; i--) {
+    if (hits[i].decision !== 'pending') hits.splice(i, 1);
+  }
+  // 全是挂起条目的极端情况下才硬截（此时旧条目已无 UI 可裁决，靠超时兜底收尾）
+  if (hits.length > NS_LOG_LIMIT) {
+    const overflow = hits.splice(NS_LOG_LIMIT);
+    for (const h of overflow) {
+      const finish = resolvers.get(h.id);
+      if (finish) {
+        resolvers.delete(h.id);
+        pendingIds.delete(h.id);
+        const s = loadSettings();
+        const allow = s.feishuOnTimeout !== 'block';
+        h.decision = allow ? 'timeout-allowed' : 'timeout-denied';
+        finish(allow, h.decision);
+      }
+    }
+  }
+}
+
 // ---------- 脚本算法移植：URL 判定 / botId / 消息内容 ----------
 
 /** 宽松匹配（脚本同款）：包含 hook 路径即命中，其余一律直通 */
@@ -198,7 +229,8 @@ function extractMessageContent(body: unknown): string {
  * manual 模式下唤醒面板 UI 并等待；无人应答按超时兜底。
  */
 function decide(url: string, method: string, body: unknown, via: FeishuHit['via']): Promise<boolean> | null {
-  const m = mode();
+  const s = loadSettings();
+  const m = s.feishuIntercept;
   if (m === 'off') return null;
   if (!isTargetUrl(url)) return null;
 
@@ -217,7 +249,17 @@ function decide(url: string, method: string, body: unknown, via: FeishuHit['via'
   };
   // 脚本同款：命中先入记录（interceptedRequests.push），再按模式分支
   hits.unshift(hit);
-  if (hits.length > NS_LOG_LIMIT) hits.length = NS_LOG_LIMIT;
+  trimHits();
+
+  // 用户设置开启时，捕获到的机器人按需自动登记进机器人列表
+  //（robotAddParsed 内部按 token+kind 去重；botId 未知的不登记）
+  if (hit.botId !== '未知' && s.feishuAutoAdd) {
+    try {
+      robotAddParsed({ id: hit.botId, name: hit.botId, token: hit.botId, kind: 'hook', src: 'intercept' });
+    } catch {
+      /* ignore */
+    }
+  }
 
   // 记忆规则优先（VaIMod 扩展）：命中即决，不再打扰
   const remembered = rules.get(hit.botId);
@@ -240,7 +282,6 @@ function decide(url: string, method: string, body: unknown, via: FeishuHit['via'
   }
 
   // manual：挂起等面板裁决（脚本此处弹页面浮层对话框；本体内嵌面板，零宿主干扰）
-  const s = loadSettings();
   pendingIds.add(hit.id);
   emit();
   return new Promise<boolean>((resolve) => {

@@ -79,6 +79,8 @@ export interface Settings {
   feishuOnTimeout: 'allow' | 'block';
   /** manual 模式下等待应答的毫秒数（0 = 不等待，直接用兜底动作） */
   feishuTimeoutMs: number;
+  /** 拦截/捕获到的机器人自动加入机器人列表（按需开启；关闭时仅记录不登记） */
+  feishuAutoAdd: boolean;
   /** 内置 Tab 显隐方案的版本号：用于一次性迁移（见 TABS_SCHEMA_VER） */
   tabsVer?: number;
 }
@@ -109,6 +111,7 @@ export function defaultSettings(): Settings {
     feishuIntercept: 'off', // 默认不拦截：不改变任何既有行为
     feishuOnTimeout: 'allow',
     feishuTimeoutMs: 30000,
+    feishuAutoAdd: false, // 默认不自动登记：捕获到的机器人只进拦截记录
     tabsVer: TABS_SCHEMA_VER,
   };
 }
@@ -197,6 +200,7 @@ export function normalizeSettings(
       typeof parsed.feishuTimeoutMs === 'number' && Number.isFinite(parsed.feishuTimeoutMs)
         ? Math.max(0, Math.min(300000, Math.floor(parsed.feishuTimeoutMs)))
         : d.feishuTimeoutMs,
+    feishuAutoAdd: parsed.feishuAutoAdd === true,
     tabsVer: TABS_SCHEMA_VER,
   };
 }

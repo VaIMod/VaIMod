@@ -78,6 +78,7 @@
   let fsRulesList = $state<Array<{ botId: string; allow: boolean }>>([]);
   let fsOnTimeout = $state<'allow' | 'block'>(loadSettings().feishuOnTimeout);
   let fsTimeoutMs = $state<number>(loadSettings().feishuTimeoutMs);
+  let fsAutoAdd = $state<boolean>(loadSettings().feishuAutoAdd);
 
   function syncFeishu(): void {
     fsHits = feishuHits();
@@ -92,12 +93,13 @@
     return off;
   });
 
-  function persistFs(patch: { feishuOnTimeout?: 'allow' | 'block'; feishuTimeoutMs?: number }): void {
+  function persistFs(patch: { feishuOnTimeout?: 'allow' | 'block'; feishuTimeoutMs?: number; feishuAutoAdd?: boolean }): void {
     const s = loadSettings();
     Object.assign(s, patch);
     saveSettings(s);
     fsOnTimeout = s.feishuOnTimeout;
     fsTimeoutMs = s.feishuTimeoutMs;
+    fsAutoAdd = s.feishuAutoAdd;
   }
 
   function decideFs(id: number, allow: boolean, remember = false): void {
@@ -148,6 +150,7 @@
     var: '变量',
     manual: '手动',
     seed: '内置',
+    intercept: '拦截',
   };
 
   function addManual() {
@@ -572,7 +575,7 @@
             onclick={() => toggle(r)}
           >
             <span class="svp-robot-name">{cleanDisplay(r.name)}</span>
-            <span class="svp-robot-meta">{maskToken(r.token)} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
+            <span class="svp-robot-meta">{r.token} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
           </button>
           <button
             class="svp-robot-star"
@@ -613,6 +616,15 @@
     </div>
     <p class="svp-note">{FS_MODE_HINT[fsMode]}</p>
 
+    <label class="svp-check svp-check-inline">
+      <input
+        type="checkbox"
+        checked={fsAutoAdd}
+        onchange={(e) => persistFs({ feishuAutoAdd: (e.currentTarget as HTMLInputElement).checked })}
+      />
+      捕获到的机器人自动加入列表
+    </label>
+
     {#if fsMode === 'manual'}
       <div class="svp-row2">
         <label class="svp-check">
@@ -651,7 +663,7 @@
         {#each fsHits as h (h.id)}
           <div class="svp-fs-item" class:svp-fs-item-pending={h.decision === 'pending'}>
             <div class="svp-fs-head">
-              <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : maskToken(h.botId)}</span>
+              <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : h.botId}</span>
               <span class="svp-meta">{h.via.toUpperCase()} · {h.method}</span>
               <span class="svp-fs-state" class:svp-fs-state-pending={h.decision === 'pending'}>{FS_STATE_LABEL[h.decision]}</span>
             </div>
@@ -672,7 +684,7 @@
         <div class="svp-fs-rules">
           {#each fsRulesList as r (r.botId)}
             <div class="svp-fs-rule">
-              <span class="svp-fs-bot">{maskToken(r.botId)}</span>
+              <span class="svp-fs-bot">{r.botId}</span>
               <span class="svp-meta">{r.allow ? '总是允许' : '总是拒绝'}</span>
               <button class="svp-robot-del" onclick={() => forgetFsRule(r.botId)} aria-label="忘记该规则">×</button>
             </div>

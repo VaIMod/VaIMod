@@ -1405,6 +1405,8 @@
 .svp-robot-meta {
   font-size: 11.5px;
   color: #8a9099;
+  /* 完整 token 显示：窄按钮内自动换行，不溢出 */
+  word-break: break-all;
 }
 .svp-robot-del {
   width: 30px;
@@ -1510,7 +1512,10 @@
   font-weight: 600;
   color: #d8dbe0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  flex-shrink: 0;
+  /* 完整 botId（最长约 80 字符）：允许收缩换行，不撑爆行布局 */
+  flex-shrink: 1;
+  min-width: 0;
+  word-break: break-all;
 }
 .svp-fs-state {
   margin-left: auto;
