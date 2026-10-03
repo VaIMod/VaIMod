@@ -80,11 +80,22 @@
   let fsTimeoutMs = $state<number>(loadSettings().feishuTimeoutMs);
   let fsAutoAdd = $state<boolean>(loadSettings().feishuAutoAdd);
 
+  // 登记表指纹：捕获发生在拦截侧（core/feishu-guard 直接写登记表），面板没有别的途径
+  // 感知它——只 bump fsHits 不会让 `robots` 重算（那是个只依赖 ver 的 $derived），
+  // 结果「捕获到的机器人」要等到下一次手动刷新才出现。
+  let robotFp = '';
   function syncFeishu(): void {
     fsHits = feishuHits();
     fsPending = feishuPendingCount();
     fsRulesList = feishuRules();
     fsMode = feishuMode();
+    const fp = robotList()
+      .map((r) => `${r.kind}:${r.token}:${r.pin ? 1 : 0}`)
+      .join('|');
+    if (fp !== robotFp) {
+      robotFp = fp;
+      bump();
+    }
   }
 
   $effect(() => {
@@ -195,6 +206,8 @@
     secureAction('generic', 'fs-rm', () => {
       robotRemove(r.token, r.kind);
       selected.delete(`${r.kind}:${r.token}`);
+      // 移除即忘：将来同一个机器人再被捕获到，仍按「新目标」处理
+      seenAutoKeys.delete(`${r.kind}:${r.token}`);
       bump();
       showToast('已移除机器人', 'ok');
     });
@@ -222,10 +235,11 @@
     selected = next;
   }
 
-  // 已「自动加选」过的机器人 key 集（组件级普通变量，不参与响应式）：
-  // 仅把「新捕获」的机器人自动加入目标一次；之后用户手动取消不会再被加回，
-  // 也避免旧实现（$effect 无条件 selected = new Set(...) 触发自激写回）造成的
-  // effect_update_depth 死循环 → 切到飞书页整个面板停摆。
+  // 已「自动加选」过的机器人 key 集：仅把「新出现」的机器人自动加入目标一次；
+  // 之后用户手动取消不会再被加回，也避免旧实现（$effect 无条件 selected = new Set(...)
+  // 触发自激写回）造成的 effect_update_depth 死循环 → 切到飞书页整个面板停摆。
+  // 必须随 UI 草稿一起落盘：面板重新挂载时若清空这份记忆，「用户取消过的」与
+  // 「刚被捕获到的」就分不出来，取消过的会被反复加回。
   let seenAutoKeys = new Set<string>();
 
   $effect(() => {
@@ -234,14 +248,14 @@
     let changed = false;
     const next = new Set(selected);
     for (const r of list) {
-      if (r.src === 'var' || r.src === 'seed') {
-        const key = `${r.kind}:${r.token}`;
-        if (!seenAutoKeys.has(key)) {
-          seenAutoKeys.add(key);
-          next.add(key);
-          changed = true;
-        }
-      }
+      // 变量扫描(var) / 内置(seed) / 消息拦截捕获(intercept) 三类都算「新捕获」；
+      // 手动添加(manual) 在 addManual 里已按同一开关勾选，此处跳过免得重复判断。
+      if (r.src === 'manual') continue;
+      const key = `${r.kind}:${r.token}`;
+      if (seenAutoKeys.has(key)) continue;
+      seenAutoKeys.add(key);
+      next.add(key);
+      changed = true;
     }
     if (changed) selected = next;
   });
@@ -498,6 +512,7 @@
           rawJson,
           uploadDesc,
           selectedKeys: [...selected],
+          autoKeys: [...seenAutoKeys],
         }),
       );
     } catch {
@@ -531,6 +546,13 @@
         }
         if (next.size !== selected.size) selected = next;
       }
+      if (Array.isArray(s.autoKeys)) {
+        const auto = new Set<string>();
+        for (const k of s.autoKeys) {
+          if (typeof k === 'string' && k.includes(':')) auto.add(k);
+        }
+        seenAutoKeys = auto;
+      }
     } catch {
       /* ignore */
     }
@@ -561,6 +583,14 @@
       <label class="svp-check svp-check-inline">
         <input type="checkbox" bind:checked={selectAll} />
         新捕获的自动加入目标
+      </label>
+      <label class="svp-check svp-check-inline">
+        <input
+          type="checkbox"
+          checked={fsAutoAdd}
+          onchange={(e) => persistFs({ feishuAutoAdd: (e.currentTarget as HTMLInputElement).checked })}
+        />
+        捕获到的机器人自动加入列表
       </label>
     </div>
 
@@ -615,15 +645,6 @@
       {/each}
     </div>
     <p class="svp-note">{FS_MODE_HINT[fsMode]}</p>
-
-    <label class="svp-check svp-check-inline">
-      <input
-        type="checkbox"
-        checked={fsAutoAdd}
-        onchange={(e) => persistFs({ feishuAutoAdd: (e.currentTarget as HTMLInputElement).checked })}
-      />
-      捕获到的机器人自动加入列表
-    </label>
 
     {#if fsMode === 'manual'}
       <div class="svp-row2">
