@@ -1,3 +1,5 @@
+import { trueHidden, trueVisible } from './core/page-visibility';
+
 const NODE_TYPE_ELEMENT = 1;
 
 
@@ -491,7 +493,9 @@ let healVisBound = false;
  */
 function scheduleHeal(): void {
   try {
-    if (document.visibilityState === 'hidden') return;
+    // 必须读真值：document.visibilityState 已被 vm-antidetect 伪装为恒 visible，
+    // 直接读会让后台自愈门控失效（后台标签照常跑 rIC 修复）
+    if (trueHidden()) return;
   } catch {
     /* ignore */
   }
@@ -938,7 +942,7 @@ export function installStealth(): void {
     try {
       // 回到前台立刻补一次（后台期间若被覆盖了 patch，回来第一帧就该是修好的状态）
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') scheduleHeal();
+        if (trueVisible()) scheduleHeal();
       });
     } catch {
       /* ignore */
@@ -1036,23 +1040,41 @@ export function createStealthHost(styles: string, options: StealthHostOptions = 
   // 宿主永远无法插入文档 → UI 挂载在 detached 树上不可见
   let inserted = false;
   let retryTimer: number | null = null;
-  const tryInsert = () => {
+  let domReadyBound = false;
+  const clearRetry = (): void => {
+    if (retryTimer !== null) {
+      clearInterval(retryTimer);
+      retryTimer = null;
+    }
+  };
+  const tryInsert = (): void => {
     if (inserted) return;
     const parent = document.body ?? document.documentElement;
     if (parent && parent.isConnected) {
       inserted = true;
-      if (retryTimer !== null) {
-        clearInterval(retryTimer);
-        retryTimer = null;
-      }
+      clearRetry();
       const kids = parent.children;
       const idx = (Math.random() * (kids.length + 1)) | 0;
       if (idx >= kids.length) parent.appendChild(host);
       else parent.insertBefore(host, kids[idx]);
       return;
     }
-    // 双保险：rAF 在后台标签页不触发、单次 setTimeout 可能仍早于 DOM 就绪 →
-    // 定时重试直至成功插入（成功后自清理）
+    // 多通道兜底：① 定时重试（400ms，覆盖全部未知时序）
+    // ② DOMContentLoaded / readystatechange 事件通道——DOM 就绪瞬间即插，
+    //    比下一个 400ms 轮询更早更准；inserted 守卫保证多通道只赢一次
+    if (!domReadyBound) {
+      domReadyBound = true;
+      try {
+        document.addEventListener('DOMContentLoaded', () => tryInsert(), { once: true });
+        document.addEventListener('readystatechange', () => {
+          // interactive = DOM 树就绪（body 可用）；complete 更晚，一并监听防漏
+          const rs = document.readyState;
+          if (rs === 'interactive' || rs === 'complete') tryInsert();
+        }, { once: true });
+      } catch {
+        /* 事件通道不可用时 400ms 轮询仍兜底 */
+      }
+    }
     if (retryTimer === null) {
       retryTimer = window.setInterval(() => {
         tryInsert();

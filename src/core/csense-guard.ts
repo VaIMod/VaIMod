@@ -49,6 +49,7 @@
 // 全部为增量，原三板斧（fetch/XHR/beacon 拦截、跳转咽喉、遮罩清除）逻辑不变。
 
 import { markNative } from '../dom-utils';
+import { trueHidden, trueVisible } from './page-visibility';
 
 const REPORT_RE = /https?:\/\/dcynsppfvlkdtbaleefw\.supabase\.co\/rest\/v1\/csense_detections/i;
 const REDIRECT_RE = /https?:\/\/d\.chen-jin\.dpdns\.org\/csdetected/i;
@@ -181,7 +182,8 @@ function scan(): void {
 
 /** 可见性门控的低频扫描（对齐 dom-utils heal 节奏；hidden 时跳过，回前台补扫） */
 function tick(): void {
-  if (document.visibilityState === 'hidden') return;
+  // 读真值：visibilityState 已被 vm-antidetect 伪装恒 visible，直读会使后台门控失效
+  if (trueHidden()) return;
   scan();
   watchInterceptors();
 }
@@ -361,7 +363,7 @@ export function installCsenseGuard(): void {
   // ⑥ 特征扫描：立即一次 + onIdle 补扫 + 可见性门控低频巡检
   scan();
   window.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') scan();
+    if (trueVisible()) scan();
   });
 
   // ⑦ V2 增量：VA 加固（Void Apex 手法移植）—— 防检测补漏 + 拦截自愈守护

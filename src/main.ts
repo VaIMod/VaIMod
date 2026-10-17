@@ -94,7 +94,7 @@ function installDebug(bridge: ScratchVM): void {
         ],
         hardening: vmHardeningReport(),
       }),
-      vmAnti: () => vmAntiStatus(),
+      vmAnti: () => ({ ...vmAntiStatus(), trueHidden: trueHidden() }),
       vpn: () => vpnReport(),
       ztna: () => ({ isolated: ztna.isolatedState, stats: ztna.accessStats() }),
       secure: () => ({
@@ -325,12 +325,13 @@ function boot(): void {
     // 整个循环空转（洗白从未真正生效）；连接前 rawVM 为 null，循环内已做空值容忍
     startSanitizeLoop(() => bridge.rawVM);
 
+    // 先起 VM 发现循环再挂面板：connect 内部是异步发现（不阻塞 mount），
+    // 放前面让发现循环与 Svelte 初始化并行，面板可用时连接往往已就绪
+    bridge.connect().catch(() => {});
+
     mount(VaIModPanel, {
       target: mountEl,
       props: { bridge },
-    });
-
-    bridge.connect().catch(() => {
     });
   });
 }

@@ -1,4 +1,5 @@
 import { signToken, xorEncode } from './cipher';
+import { trueHidden } from './page-visibility';
 import { trackVpn, untrackVpn } from './vpn-registry';
 
 // 透明可穿透隔离遮罩样式（与面板共用同一宿主 → 层级可控；z 固定低于面板/FAB）
@@ -20,8 +21,9 @@ const GUARD_MS = 5000;
 
 /** 页面是否在后台（标签页不可见）；非 DOM 环境按可见处理 */
 function pageHidden(): boolean {
+  // 真值口：visibilityState 被伪装恒 visible，直读会让后台守卫节拍失效
   try {
-    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    return trueHidden();
   } catch {
     return false;
   }

@@ -17,6 +17,7 @@ import {
   isProtected,
   trueElementsFromPoint,
 } from '../dom-utils';
+import { trueHidden, trueVisible } from './page-visibility';
 
 /** 视口最大层级（宿主恒在此层） */
 const TOP_Z = 2147483647;
@@ -182,7 +183,8 @@ export function assertUiTop(): void {
 
 function schedulePatrol(): void {
   try {
-    if (document.visibilityState === 'hidden') return;
+    // 读真值：visibilityState 已被 vm-antidetect 伪装恒 visible，直读门控失效
+    if (trueHidden()) return;
   } catch {
     /* ignore */
   }
@@ -433,6 +435,9 @@ export function installUiGuard(): void {
 
   // 宿主可能晚于本函数创建（createStealthHost 在 boot 里）→ 巡检时补挂观察器
   const tick = (): void => {
+    // 后台门控走真值：1s 巡检在后台标签零开销（visibilityState 被伪装恒 visible，
+    // 直读会让 1s patrol 在后台照常跑 elementsFromPoint + 结构巡检）
+    if (trueHidden()) return;
     for (const host of allHosts()) watchHostStyle(host);
     schedulePatrol();
   };
@@ -470,7 +475,7 @@ export function installUiGuard(): void {
     if (!visBound) {
       visBound = true;
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') tick();
+        if (trueVisible()) tick();
       });
     }
   } catch {

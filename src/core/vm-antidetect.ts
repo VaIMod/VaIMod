@@ -61,21 +61,9 @@ export function vmAntiStatus(): VmAntiStats {
 }
 
 // ---- 原始状态读取口（VaIMod 内部生命周期用；页面侧只能读到伪装值）----
-let ORIG_HIDDEN: (() => boolean) | null = null;
-
-/** 真实页面可见性（绕过本模块伪装）——VaIMod 内部后台暂停逻辑专用 */
-export function trueHidden(): boolean {
-  try {
-    if (ORIG_HIDDEN) return ORIG_HIDDEN.call(document);
-  } catch {
-    /* ignore */
-  }
-  try {
-    return document.hidden;
-  } catch {
-    return false;
-  }
-}
+// 实现迁移至零依赖的 page-visibility.ts：原始 getter 在模块求值时抓取
+// （早于本模块任何伪装安装），此处仅 re-export 保持既有 import 路径不变。
+export { trueHidden, trueVisible } from './page-visibility';
 
 type NativeFn = (...args: unknown[]) => unknown;
 
@@ -356,15 +344,8 @@ function hookBehavior(): void {
     /* ignore */
   }
   try {
-    // 保存原始 getter 供 trueHidden()（VaIMod 内部后台暂停逻辑读真实状态）
-    const d = Object.getOwnPropertyDescriptor(document, 'hidden') ??
-      Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
-    if (d?.get) {
-      ORIG_HIDDEN = d.get.bind(document) as () => boolean;
-    } else {
-      const cur = (document as unknown as Record<string, unknown>).hidden;
-      ORIG_HIDDEN = () => Boolean(cur);
-    }
+    // 伪装前无需再保存原始 getter：page-visibility.ts 已在模块求值时抓走
+    // （早于本模块），trueHidden/trueVisible 从那里读真值。
     Object.defineProperty(document, 'hidden', {
       configurable: true,
       get: () => false,

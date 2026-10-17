@@ -1,3 +1,5 @@
+import { trueHidden } from './page-visibility';
+
 // ===== 扩展注册咽喉 + vm 常驻扫描（两套反制共用的补漏层） =====
 //
 // `window.Scratch.extensions.register` 只覆盖「官方注册通道」；ccw / TurboWarp 系宿主
@@ -33,8 +35,10 @@ let visBound = false;
 
 /** 页面是否在后台（标签页不可见）。非 DOM 环境（极少数宿主）按可见处理。 */
 function pageHidden(): boolean {
+  // 必须走真值口：visibilityState 已被 vm-antidetect 伪装恒 visible，
+  // 直读会让后台扫描门控失效（后台 2s tick 照常消耗主线程）
   try {
-    return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    return trueHidden();
   } catch {
     return false;
   }
