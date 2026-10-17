@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>安装 — VaIMod</title>
+<meta name="description" content="30 秒安装 VaIMod：Tampermonkey → 一键安装 → 打开 ccw.site。自动更新内置。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="./">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="./">主页</a>
+    <a href="./flow.html">运行流程</a>
+    <a href="./features.html">特性</a>
+    <a href="./vm.html">VM 钩子</a>
+    <a href="./security.html">安全体系</a>
+    <a href="./install.html" class="on">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<div class="page-hero">
+  <div class="kicker rv">PAGE 05 · SETUP</div>
+  <h1 class="rv rv-d1">三十秒，完成隐身。</h1>
+  <p class="sub rv rv-d2">
+    Tampermonkey 里点一下，刷新 ccw.site 即可。之后的<strong>所有防御、更新与配置同步全自动</strong>。
+  </p>
+  <div class="codeblock rv rv-d3" style="max-width:640px;margin-top:34px">https://vaimod.github.io/VaIMod/VaIMod.user.js</div>
+  <div class="cta rv rv-d3">
+    <a class="btn btn-primary" href="./VaIMod.user.js">一键安装 VaIMod <span class="arr">↓</span></a>
+    <a class="btn btn-ghost" href="https://github.com/VaIMod/VaIMod/releases">GitHub Releases <span class="arr">↗</span></a>
+  </div>
+</div>
+
+<!-- ============ 三步 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">01</span><h2>三步装好</h2><span class="hint">SETUP</span></div>
+  <div class="cards rv">
+    <div class="card">
+      <span class="cno">STEP 1</span><h3>装 Tampermonkey</h3>
+      <p>Chrome / Edge / Firefox 均可，去应用商店搜索 Tampermonkey 安装扩展。</p>
+      <span class="go">浏览器扩展</span>
+    </div>
+    <div class="card">
+      <span class="cno">STEP 2</span><h3>点「一键安装」</h3>
+      <p>上方按钮或复制 URL 粘进 Tampermonkey 新建脚本页，确认 @version 后安装。</p>
+      <span class="go">.user.js</span>
+    </div>
+    <div class="card">
+      <span class="cno">STEP 3</span><h3>打开 ccw.site</h3>
+      <p>进入任意作品页，面板自动挂载——变量、云数据、还原点全部就绪。</p>
+      <span class="go">document-start</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 两种安装方式 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">02</span><h2>两种安装方式</h2><span class="hint">AUTO UPDATE / MANUAL</span></div>
+  <div class="layers">
+    <div class="layer rv">
+      <h4>Way 01 · Pages 直装（推荐）</h4>
+      <p>安装后随版本<b>自动更新</b>（updateURL 内置）。每次构建产物头部逐字校验，版本号与 Release 对齐。</p>
+      <div class="codeblock" style="margin-top:16px">https://vaimod.github.io/VaIMod/VaIMod.user.js</div>
+    </div>
+    <div class="layer rv">
+      <h4>Way 02 · GitHub Releases</h4>
+      <p>每个版本附带构建产物，可<b>回滚、可校验、可审计</b>。</p>
+      <div class="codeblock" style="margin-top:16px">github.com/VaIMod/VaIMod/releases</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">03</span><h2>常见问题</h2><span class="hint">FAQ</span></div>
+  <div class="layers">
+    <div class="layer rv">
+      <h4>会被站点检测到吗？</h4>
+      <p>DOM、函数包装、网络流量三个检测面分别被 closed Shadow DOM、markNative toString 白名单、单次出网编码覆盖。详见<a href="./security.html" style="color:var(--amber)">安全体系</a>。</p>
+    </div>
+    <div class="layer rv">
+      <h4>遇到「CSense 拦截器」检测怎么办？</h4>
+      <p>内置 csense-guard：检测上报本地合成假 200 不出网、跳转三层拦截、div.csense-window 遮罩一插入立即移除——作品照常可玩。开 <b>vaimod_debug=1</b> 后 <b>__vaimod_debug.csense()</b> 可查拦截计数。</p>
+    </div>
+    <div class="layer rv">
+      <h4>为什么装完面板没出现？</h4>
+      <p>脚本在 document-start 注入，面板等待 VM 就绪后挂载。确认 Tampermonkey 已启用、脚本版本 ≥0.1.33，刷新作品页即可。若站点在脚本注入前就完成全部初始化（极少见），属于 userscript 注入时机的物理极限。</p>
+    </div>
+    <div class="layer rv">
+      <h4>如何更新 / 卸载？</h4>
+      <p>更新全自动（updateURL 内置）；卸载在 Tampermonkey 管理面板删除脚本即可，本地数据可在面板「系统」页清除。</p>
+    </div>
+    <div class="layer rv">
+      <h4>开源吗？代码在哪？</h4>
+      <p>完全开源：github.com/VaIMod/VaIMod。每一段防御代码都可审计——防护针对运行时探测与篡改，开源保护的是你的信任。</p>
+    </div>
+    <div class="layer rv">
+      <h4>支持哪些站点？</h4>
+      <p>生产构建仅注入 <b>www.ccw.site</b> 全站。调试构建另含本地探针宿主（127.0.0.1:8765），但不会发布。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 继续阅读 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">→</span><h2>继续阅读</h2></div>
+  <div class="cards rv">
+    <a class="card" href="./"><span class="cno">START</span><h3>主页</h3><p>先看看这套系统能做什么。</p><span class="go">→</span></a>
+    <a class="card" href="./flow.html"><span class="cno">NEXT</span><h3>运行流程</h3><p>装完之后它是怎么跑起来的。</p><span class="go">→</span></a>
+    <a class="card" href="./security.html"><span class="cno">ALSO</span><h3>安全体系</h3><p>11 层纵深防御清单。</p><span class="go">→</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="./">主页</a>
+      <a href="./flow.html">运行流程</a>
+      <a href="./features.html">特性</a>
+      <a href="./vm.html">VM 钩子</a>
+      <a href="./security.html">安全体系</a>
+      <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+    </div>
+    <div>NOT AFFILIATED WITH CCW.SITE · USE RESPONSIBLY</div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('in'); }); return; }
+  var io = new IntersectionObserver(function(es){
+    for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+  },{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+  els.forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>

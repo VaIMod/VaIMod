@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>安全体系 — VaIMod</title>
+<meta name="description" content="VaIMod 安全体系全解：11 层纵深防御启动链、完整性/反指纹/网络标记/自巡逻四大底座，以及六条设计铁律。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="./">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="./">主页</a>
+    <a href="./flow.html">运行流程</a>
+    <a href="./features.html">特性</a>
+    <a href="./vm.html">VM 钩子</a>
+    <a href="./security.html" class="on">安全体系</a>
+    <a href="./install.html">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<div class="page-hero">
+  <div class="kicker rv">PAGE 04 · SECURITY</div>
+  <h1 class="rv rv-d1">安全体系</h1>
+  <p class="sub rv rv-d2">
+    11 层纵深防御。<strong>每层只做一件事，上层失效下层兜底</strong>——
+    防御不是事后补丁，而是一条在页面第一行代码之前就排好队的链。
+  </p>
+</div>
+
+<!-- ============ 纵深全景 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">01</span><h2>纵深全景</h2><span class="hint">DEFENSE IN DEPTH</span></div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 300" role="img" aria-label="纵深防御分层">
+      <g font-size="12">
+        <!-- 攻击面箭头自下而上 -->
+        <text class="bd-danger" x="30" y="284" font-size="11">页面脚本 / 恶意扩展的探测与篡改 ↑</text>
+
+        <g>
+          <rect class="bd-box" x="30" y="220" width="980" height="40" rx="2"/>
+          <text class="bd-dim" x="50" y="245">L1 · 双前哨</text>
+          <text class="bd-faint" x="990" y="245" text-anchor="end" font-size="11">SecureGuard 净化 · SigGuard 注册设卡</text>
+
+          <rect class="bd-box" x="30" y="176" width="980" height="40" rx="2"/>
+          <text class="bd-dim" x="50" y="201">L2 · 反检测</text>
+          <text class="bd-faint" x="990" y="201" text-anchor="end" font-size="11">七组环境钩子 · 取证自检 · toString 白名单</text>
+
+          <rect class="bd-box-amber" x="30" y="132" width="980" height="40" rx="2"/>
+          <text class="bd-amber" x="50" y="157">L3 · 隐身宿主</text>
+          <text class="bd-faint" x="990" y="157" text-anchor="end" font-size="11">closed Shadow DOM · 蜜罐诱饵 · Veil 动态面纱</text>
+
+          <rect class="bd-box" x="30" y="88" width="980" height="40" rx="2"/>
+          <text class="bd-dim" x="50" y="113">L4 · 劫持加固</text>
+          <text class="bd-faint" x="990" y="113" text-anchor="end" font-size="11">看门狗 3s · 不可枚举 Symbol 登记表 · 访问器锁</text>
+
+          <rect class="bd-box-ok" x="30" y="44" width="980" height="40" rx="2"/>
+          <text class="bd-ok" x="50" y="69">L5 · 数据正确性</text>
+          <text class="bd-faint" x="990" y="69" text-anchor="end" font-size="11">双通道写 · 失败回滚 · 快照校验 · bodySig 指纹</text>
+        </g>
+      </g>
+      <text class="bd-faint" x="30" y="26" font-size="11">越往上越核心：即使下面四层全部被穿透，数据正确性这一层仍然保证不写出坏数据。</text>
+    </svg>
+    <figcaption>FIG.01 — 五层纵深 · 攻击自下而上，核心资产在最上层</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 启动链全清单 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">02</span><h2>启动链全清单</h2><span class="hint">BOOT CHAIN · ALL LAYERS</span></div>
+  <div class="chain">
+    <div class="chain-item rv">
+      <div class="step">⓪</div>
+      <div>
+        <h4>SecureGuard 前哨<code>secure-guardFront</code></h4>
+        <div class="cd">DOCUMENT-START · 第一优先级</div>
+      </div>
+      <div class="ct">抢先净化易被利用的全局实例，<b>变量名保护</b>同步上膛——在游戏代码有机会动手之前。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">⓪′</div>
+      <div>
+        <h4>SigGuard 双注册咽喉<code>sig-guardFront</code></h4>
+        <div class="cd">EXTENSIONS.REGISTER + EXTENSIONMANAGER</div>
+      </div>
+      <div class="ct">官方扩展注册与项目扩展管理器<b>双路设卡</b>，新注册的类原型逐个过检；作品加载完成的 burst 信号触发全量重扫，2 秒 tick 兜底漏网。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">①</div>
+      <div>
+        <h4>Stealth 隐身宿主<code>stealth.ts</code></h4>
+        <div class="cd">CLOSED SHADOW DOM</div>
+      </div>
+      <div class="ct">面板的全部 UI 住进 <b>closed 模式 Shadow DOM</b>：页面脚本 querySelectorAll 永远查不进去，创建时登记的宿主清单是唯一入口。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">②</div>
+      <div>
+        <h4>XSS 防线<code>xssGuard</code></h4>
+        <div class="cd">SANITIZE AT BOUNDARY</div>
+      </div>
+      <div class="ct">一切进入 UI 的动态内容在边界消毒：脚本、iframe、内联事件、伪协议一律剥除。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">③</div>
+      <div>
+        <h4>云 API 旁路<code>hookOfficialCloudApi</code></h4>
+        <div class="cd">PASSTHROUGH TAP · NO IMPOSTOR</div>
+      </div>
+      <div class="ct">对官方云接口挂<b>纯旁路透传</b>的捕获钩子——绝不伪装 vm 实例、不改写访问器，游戏加载照常、数据照常，我们只是看着。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">④</div>
+      <div>
+        <h4>蜜罐哨兵<code>honeypotGuard</code></h4>
+        <div class="cd">DECOY · 8S PATROL</div>
+      </div>
+      <div class="ct">布下探测者才看得见的诱饵面：谁伸手碰诱饵，等于自报家门。8 秒一轮的巡逻持续确认诱饵完好。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">④+</div>
+      <div>
+        <h4>飞书 & UI 卫兵<code>feishuGuard · uiGuard</code></h4>
+        <div class="cd">ATTRIBUTE OBSERVER · 1S PATROL</div>
+      </div>
+      <div class="ct">uiGuard 给宿主挂<b>属性观察器</b>：敌扩展写入的隐藏样式被即时回滚，不等巡检；zIndex 与挂载点被挪动也会自动归位。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">⑤</div>
+      <div>
+        <h4>Veil 动态面纱<code>veilGuard</code></h4>
+        <div class="cd">DYNAMIC VEIL CHAIN · ONIDLE</div>
+      </div>
+      <div class="ct">boot 完成后叠加动态面纱链：对外呈现的接口面随时间变化，探测者拿到的是<b>永远对不上号的快照</b>。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">VM</div>
+      <div>
+        <h4>ScratchVM 多通道获取<code>capture-early</code></h4>
+        <div class="cd">8 CHANNELS · SCORE-AUTO-SELECT</div>
+      </div>
+      <div class="ct">八路钩子并行待命，按<b>评分制实时排名</b>自动选优；bind 劫持与赋值陷阱两条事件驱动通道全程旁路。详见 <a href="./vm.html" style="color:var(--amber);border-bottom:1px solid var(--amber)">VM 钩子</a>。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">VM+</div>
+      <div>
+        <h4>VM 劫持加固<code>vm-hardening</code></h4>
+        <div class="cd">WATCHDOG 3S · SELF-HEAL · IDEMPOTENT PATROL</div>
+      </div>
+      <div class="ct">引用健康<b>看门狗</b>每 3 秒验证，站点重建 vm 自动重连且锁定跨重建存活；巡检登记表寄存<b>不可枚举随机 Symbol</b>；访问器锁被绕 100ms 内重新钉死；沙盒封死 <b>__proto__ 原型逃逸</b>。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">CS</div>
+      <div>
+        <h4>CSense 反制<code>csense-guard</code></h4>
+        <div class="cd">COUNTER-MEASURE · FORENSIC SELF-TEST</div>
+      </div>
+      <div class="ct">检测上报本地合成假 200 不出网、跳转三层拦截（Navigation API + location 方法 + window.open 桩）、遮罩一插入立即移除；<b>取证自检</b>持续确认自家包装在检测器眼里无懈可击。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 四大底座 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">03</span><h2>四大底座</h2><span class="hint">CROSS-CUTTING BASES</span></div>
+  <div class="layers">
+    <div class="layer rv">
+      <h4>Integrity · 完整性</h4>
+      <p>插件源码落盘即算 <b>bodySig 指纹</b>，每次启动复验；localStorage 条目被外部改写 → 隔离扣留并亮出告警，<b>宁可不加载，不带毒启动</b>。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Anti-Fingerprint · 反指纹</h4>
+      <p>包装过的原生方法登记进 <b>Function.prototype.toString 白名单</b>并同步 name——反作弊最常查的一处，查出来永远"是原生的"。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Net Marking · 网络标记</h4>
+      <p>本体请求用 <b>WeakSet 打标</b>：页面探测不到也伪造不了。网络类插件据此放行内部流量，用户拉黑域名不会误伤云数据。</p>
+    </div>
+    <div class="layer rv">
+      <h4>Self-Patrol · 自巡逻</h4>
+      <p>全部常驻轮询经<b>可见性真值口</b>门控：页面隐藏即休眠，回前台立刻补跑。守护自己，不浪费你的电池。</p>
+    </div>
+  </div>
+  <div class="principles rv">
+    <ul>
+      <li><b>只旁路，不伪装</b>——捕获永远透传，绝不冒充 vm 实例</li>
+      <li><b>读接口必明文</b>——不做非幂等编码，UI 四条读路径全部一致</li>
+      <li><b>失败必回滚</b>——双通道任一失败，镜像与云端绝不分叉</li>
+      <li><b>锁值不进面板</b>——锁定元数据与业务数据物理隔离</li>
+      <li><b>动静分层</b>——位移走合成层，绝不让动画逼出整页布局</li>
+      <li><b>插件同级信任</b>——插件代码是页面级脚本，享受保护而非沙箱隔离</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 继续阅读 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">→</span><h2>继续阅读</h2></div>
+  <div class="cards rv">
+    <a class="card" href="./vm.html"><span class="cno">DEEP DIVE</span><h3>VM 钩子</h3><p>纵深链里最硬的一层，单独展开讲。</p><span class="go">→</span></a>
+    <a class="card" href="./flow.html"><span class="cno">ALSO</span><h3>运行流程</h3><p>这些层在时间轴上怎么排布。</p><span class="go">→</span></a>
+    <a class="card" href="./install.html"><span class="cno">ACTION</span><h3>安装</h3><p>30 秒完成隐身。</p><span class="go">→</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="./">主页</a>
+      <a href="./flow.html">运行流程</a>
+      <a href="./features.html">特性</a>
+      <a href="./vm.html">VM 钩子</a>
+      <a href="./install.html">安装</a>
+      <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+    </div>
+    <div id="yr"></div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+document.getElementById('yr').textContent = '© ' + new Date().getFullYear() + ' · MAXKORE@GITHUB';
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('in'); }); return; }
+  var io = new IntersectionObserver(function(es){
+    for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+  },{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+  els.forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>

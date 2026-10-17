@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>404 · 页面不存在 — VaIMod</title>
+<meta name="robots" content="noindex">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/VaIMod/assets/site.css">
+<style>
+/* 404 专属：路径显示与扫描线动效 */
+.notfound{padding:clamp(72px,14vh,160px) 0 clamp(56px,10vh,120px);text-align:center}
+.nf-code{
+  font-family:var(--disp);font-weight:800;
+  font-size:clamp(96px,20vw,240px);line-height:1;letter-spacing:-.02em;
+  color:var(--ink);position:relative;display:inline-block;
+}
+.nf-code .zero{color:var(--amber)}
+.nf-code::after{
+  content:"";position:absolute;left:-4%;right:-4%;top:50%;height:2px;
+  background:var(--amber);opacity:.35;transform:translateY(-50%);
+  animation:sweep 3.2s var(--ease) infinite;
+}
+@keyframes sweep{
+  0%{transform:translateY(-50%) scaleX(0);transform-origin:left;opacity:0}
+  30%{transform:translateY(-50%) scaleX(1);transform-origin:left;opacity:.35}
+  70%{transform:translateY(-50%) scaleX(1);transform-origin:right;opacity:.35}
+  100%{transform:translateY(-50%) scaleX(0);transform-origin:right;opacity:0}
+}
+.nf-title{font-family:var(--disp);font-weight:700;font-size:clamp(20px,3vw,30px);margin-top:26px}
+.nf-desc{color:var(--ink-dim);margin-top:14px}
+.nf-path{
+  font-family:var(--mono);font-size:12.5px;color:var(--danger);
+  background:var(--bg-deep);border:1px solid rgba(217,107,90,.35);
+  display:inline-block;padding:10px 18px;margin-top:24px;max-width:92%;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;
+}
+.nf-cta{margin-top:40px;display:flex;gap:14px;justify-content:center;flex-wrap:wrap}
+@media(prefers-reduced-motion:reduce){.nf-code::after{animation:none;opacity:.2}}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="/VaIMod/">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="/VaIMod/">主页</a>
+    <a href="/VaIMod/flow.html">运行流程</a>
+    <a href="/VaIMod/features.html">特性</a>
+    <a href="/VaIMod/vm.html">VM 钩子</a>
+    <a href="/VaIMod/security.html">安全体系</a>
+    <a href="/VaIMod/install.html">安装</a>
+  </nav>
+  <div>404</div>
+</header>
+
+<main class="notfound">
+  <div class="rv in">
+    <div class="nf-code">4<span class="zero">0</span>4</div>
+    <div class="nf-title">页面不存在</div>
+    <p class="nf-desc">你访问的地址不在这台手术台上——它可能从未存在，也可能已被移动。</p>
+    <div class="nf-path" id="nf-path">unknown</div>
+    <div class="nf-cta">
+      <a class="btn btn-primary" href="/VaIMod/">返回主页 <span class="arr">→</span></a>
+      <a class="btn btn-ghost" href="/VaIMod/install.html">去安装页 <span class="arr">→</span></a>
+      <a class="btn btn-ghost" href="https://github.com/VaIMod/VaIMod">GitHub <span class="arr">↗</span></a>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="/VaIMod/">主页</a>
+      <a href="/VaIMod/flow.html">运行流程</a>
+      <a href="/VaIMod/features.html">特性</a>
+      <a href="/VaIMod/vm.html">VM 钩子</a>
+      <a href="/VaIMod/security.html">安全体系</a>
+      <a href="/VaIMod/install.html">安装</a>
+    </div>
+    <div id="yr"></div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+/* 显示实际访问的不存在路径；链接基于当前目录解析，兼容项目页 /VaIMod/ 前缀 */
+try {
+  var p = decodeURIComponent(location.pathname);
+  document.getElementById('nf-path').textContent = p;
+  document.getElementById('nf-path').title = p;
+} catch (e) {
+  document.getElementById('nf-path').textContent = location.pathname;
+}
+document.getElementById('yr').textContent = '© ' + new Date().getFullYear() + ' · MAXKORE@GITHUB · HTTP 404';
+</script>
+</body>
+</html>

@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VM 钩子 — VaIMod</title>
+<meta name="description" content="VaIMod VM 钩子体系全解：八路获取通道、评分制自动选优（成功率×速度×新鲜度）、3 秒看门狗自愈、反检测七组钩子与取证自检。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="./">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="./">主页</a>
+    <a href="./flow.html">运行流程</a>
+    <a href="./features.html">特性</a>
+    <a href="./vm.html" class="on">VM 钩子</a>
+    <a href="./security.html">安全体系</a>
+    <a href="./install.html">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<div class="page-hero">
+  <div class="kicker rv">PAGE 03 · VM HOOKS</div>
+  <h1 class="rv rv-d1">VM 钩子体系</h1>
+  <p class="sub rv rv-d2">
+    八路获取通道 + <strong>评分制自动选优</strong> + 3 秒看门狗自愈 + 反检测七组钩子。
+    VM 根据当前环境自动选择最优方案——不靠写死优先级，靠实时战果。
+  </p>
+</div>
+
+<!-- ============ 八路通道 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">01</span><h2>八路获取通道</h2><span class="hint">6 POLLED + 2 EVENT-DRIVEN</span></div>
+  <div class="tablewrap rv">
+    <table>
+      <thead><tr><th>#</th><th>通道</th><th>类型</th><th>原理</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td><b>redux store</b></td><td>轮询</td><td>三路子扫描：window 五键名 / fiber Provider <code>props.store</code> / DevTools 根，从 <code>state.scratchGui.vm</code> 取引用</td></tr>
+        <tr><td>2</td><td><b>react fiber</b></td><td>轮询</td><td>五策略遍历 + DevTools 子路；多 fiber key 全部收集逐个尝试，防站点重建残留 key 遮蔽</td></tr>
+        <tr><td>3</td><td><b>三全局键</b></td><td>轮询</td><td><code>window.vm</code> / <code>_vm</code> / <code>Scratch.vm</code> 直查</td></tr>
+        <tr><td>4</td><td><b>Eureka</b></td><td>轮询</td><td>站点专属挂载点探测</td></tr>
+        <tr><td>5</td><td><b>iframe</b></td><td>轮询</td><td>同源子框架内扫描</td></tr>
+        <tr><td>6</td><td><b>全局扫描</b></td><td>轮询</td><td>枚举 window 可枚举键，isVMLike 判定（空值 / 异常安全化，半残假 vm 不炸桥）</td></tr>
+        <tr><td>7</td><td><b>bind 劫持</b></td><td><span style="color:var(--ok)">事件驱动</span></td><td>Hook <code>Function.prototype.bind</code>，vm 方法被 bind 时顺藤摸瓜；命中即还原，零残留</td></tr>
+        <tr><td>8</td><td><b>setter 赋值陷阱</b></td><td><span style="color:var(--ok)">事件驱动</span></td><td>在 <code>window.vm / _vm</code> 上布访问器，赋值一发生立即捕获——比任何轮询早一个节拍</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figure class="board rv" style="margin-top:clamp(32px,5vh,52px)">
+    <svg viewBox="0 0 1040 260" role="img" aria-label="通道汇入 bridge">
+      <g font-size="12">
+        <!-- 左侧通道组 -->
+        <text class="bd-faint" x="30" y="36" font-size="11">轮询通道（评分制排名 · 逐个尝试）</text>
+        <rect class="bd-box" x="30" y="50" width="270" height="130" rx="2"/>
+        <g font-size="11">
+          <text class="bd-dim" x="50" y="76">1 redux store</text>
+          <text class="bd-dim" x="50" y="98">2 react fiber</text>
+          <text class="bd-dim" x="50" y="120">3 三全局键 · 4 Eureka</text>
+          <text class="bd-dim" x="50" y="142">5 iframe · 6 全局扫描</text>
+          <text class="bd-faint" x="50" y="166" font-size="10">1500ms 发现预算护栏</text>
+        </g>
+
+        <text class="bd-faint" x="30" y="216" font-size="11">事件驱动通道（全程旁路）</text>
+        <rect class="bd-box-ok" x="30" y="228" width="270" height="26" rx="2"/>
+        <text class="bd-ok" x="50" y="246" font-size="11">7 bind 劫持 · 8 setter 赋值陷阱</text>
+
+        <!-- 中间桥 -->
+        <rect class="bd-box-amber" x="450" y="90" width="180" height="80" rx="2"/>
+        <text class="bd-amber" x="540" y="124" text-anchor="middle" font-size="14">bridge</text>
+        <text class="bd-faint" x="540" y="148" text-anchor="middle" font-size="11">channelStats 实时记账</text>
+
+        <!-- 右侧产物 -->
+        <rect class="bd-box" x="780" y="30" width="230" height="60" rx="2"/>
+        <text class="bd-ink" x="895" y="55" text-anchor="middle">activeChannel</text>
+        <text class="bd-faint" x="895" y="75" text-anchor="middle" font-size="11">当前最优通道</text>
+
+        <rect class="bd-box" x="780" y="170" width="230" height="60" rx="2"/>
+        <text class="bd-ink" x="895" y="195" text-anchor="middle">hookReport</text>
+        <text class="bd-faint" x="895" y="215" text-anchor="middle" font-size="11">channelScores / wins / tries</text>
+
+        <g class="bd-flow" stroke-width="1.4">
+          <line x1="300" y1="115" x2="444" y2="125"/>
+          <line x1="300" y1="241" x2="444" y2="150"/>
+          <line x1="630" y1="115" x2="774" y2="70"/>
+          <line x1="630" y1="145" x2="774" y2="195"/>
+        </g>
+        <text class="bd-faint" x="30" y="30" font-size="11"> </text>
+      </g>
+    </svg>
+    <figcaption>FIG.01 — 通道汇入 · 每次命中记 wins / tries / latency</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 评分制 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">02</span><h2>评分制自动选优</h2><span class="hint">SCORE-AUTO-SELECT</span></div>
+  <p class="lede rv">
+    不是「上次谁成功下次就谁先」——是<b>每轮发现前实时重算排名</b>。三个因子相乘，谁的综合分高谁先上：
+  </p>
+  <div class="codeblock rv"><span class="cm">// scoreOf(channel)</span>
+score = (wins + 1) / (tries + 2)        <span class="cm">// Laplace 平滑成功率：没打过的通道也有出场机会</span>
+      × 1 / (1 + avgLatency / 50ms)     <span class="cm">// 速度因子：越快越高</span>
+      × 1 / (1 + age / 10min)           <span class="cm">// 新鲜度因子：战果放久会过期</span>
+
+<span class="cm">// rankChannels 每轮重算：</span>
+<span class="kw">有战果通道</span> → 按分数降序
+<span class="kw">未尝试通道</span> → 按基线顺序
+<span class="kw">试过没命中</span> → 垫底</div>
+  <p class="lede rv" style="margin-top:clamp(24px,4vh,40px)">
+    实测收敛：fiber 主导环境里 fiber 得分 0.742 严格压过 redux 0.483——<b>环境变了，排名跟着变，无需人工干预</b>。
+  </p>
+</section>
+
+<!-- ============ 加固 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">03</span><h2>VM 劫持加固</h2><span class="hint">vm-hardening · SELF-HEAL</span></div>
+  <div class="chain">
+    <div class="chain-item rv">
+      <div class="step">W</div>
+      <div><h4>引用看门狗<code>3s</code></h4><div class="cd">HEALTH CHECK · REBUILD</div></div>
+      <div class="ct">每 3 秒验证 vm 引用健康；站点重建 vm 自动重连且<b>锁定跨重建存活</b>。失效即走评分制重建通道。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">S</div>
+      <div><h4>巡检登记表<code>Symbol</code></h4><div class="cd">NON-ENUMERABLE · RANDOM KEY</div></div>
+      <div class="ct">登记表寄存在 globalThis 的<b>不可枚举随机 Symbol</b> 上——页面枚举不出来、拿不到、更删不掉。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">L</div>
+      <div><h4>访问器锁<code>≤100ms</code></h4><div class="cd">DESCRIPTOR CHECK PER TICK</div></div>
+      <div class="ct">锁留存自家 setter 引用，每拍校验 descriptor；锁被绕掉 <b>100ms 内重新钉死</b>。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">P</div>
+      <div><h4>原型逃逸封死<code>__proto__</code></h4><div class="cd">SANDBOX HARDENING</div></div>
+      <div class="ct">沙盒封死 <code>__proto__</code> 原型逃逸路径；三项幂等巡检（vm-ref / vm-locks / lp-tap）静默自愈。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 反检测 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">04</span><h2>反检测七组钩子</h2><span class="hint">vm-antidetect · CONDITIONAL SPOOF</span></div>
+  <p class="lede rv">
+    核心原则：<b>条件式伪装</b>——正常环境零改动，一个字节都不碰；只在指纹被读取时给出确定性一致的答案。
+  </p>
+  <div class="layers">
+    <div class="layer rv"><h4>GPU · per-context 确定性</h4><p>同一 WebGL context 两次查询返回<b>同一渲染器</b>——随机化反而露馅，确定性才是伪装。</p></div>
+    <div class="layer rv"><h4>Canvas · 零残留</h4><p>导出后<b>还原原像素</b>，读回来的画布与写入的完全一致，不留噪声痕迹。</p></div>
+    <div class="layer rv"><h4>音频 · 指纹扰动</h4><p>AudioContext 指纹输出确定性微扰，跨会话稳定。</p></div>
+    <div class="layer rv"><h4>navigator / screen</h4><p>硬件并发、内存、分辨率等高危指纹项条件式覆写。</p></div>
+    <div class="layer rv"><h4>时区 · 双口径一致</h4><p><code>Intl</code> 与 <code>Date</code> 两套时区口径<b>严格对齐</b>，交叉比对不出破绽。</p></div>
+    <div class="layer rv"><h4>行为 · 可见性真值口</h4><p>伪装 visible 的同时，自家巡逻读 <code>trueHidden()</code> 原生真值——伪装绝不门控自己的防线。</p></div>
+  </div>
+  <div class="principles rv">
+    <ul>
+      <li><b>取证自检</b>——forensicSelfTest 复刻检测器 v3.3.4 的取证面：toString 无 \ 与 call、arity=3、name 非空、无 prototype、globalThis.toString 无 ?、querySelector 无 select，5s 缓存全只读</li>
+      <li><b>toString 白名单</b>——包装过的原生方法登记进 Function.prototype.toString 白名单并同步 name，查出来永远"是原生的"</li>
+      <li><b>零残留</b>——伪装动作不留下可回溯的痕迹（像素还原、bind 捕获即还原、markNative 赋 undefined 非 delete）</li>
+      <li><b>条件式</b>——环境正常时不装、不包、不改，检测面本身就最小化</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ============ 继续阅读 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">→</span><h2>继续阅读</h2></div>
+  <div class="cards rv">
+    <a class="card" href="./security.html"><span class="cno">NEXT</span><h3>安全体系</h3><p>VM 钩子只是其中一层——看完整纵深。</p><span class="go">→</span></a>
+    <a class="card" href="./flow.html"><span class="cno">ALSO</span><h3>运行流程</h3><p>通道发现发生在启动链哪一站。</p><span class="go">→</span></a>
+    <a class="card" href="./install.html"><span class="cno">ACTION</span><h3>安装</h3><p>30 秒完成隐身。</p><span class="go">→</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="./">主页</a>
+      <a href="./flow.html">运行流程</a>
+      <a href="./features.html">特性</a>
+      <a href="./security.html">安全体系</a>
+      <a href="./install.html">安装</a>
+      <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+    </div>
+    <div id="yr"></div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+document.getElementById('yr').textContent = '© ' + new Date().getFullYear() + ' · MAXKORE@GITHUB';
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('in'); }); return; }
+  var io = new IntersectionObserver(function(es){
+    for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+  },{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+  els.forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>

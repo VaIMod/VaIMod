@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>特性详解 — VaIMod</title>
+<meta name="description" content="VaIMod 六大特性详解（配图）：变量面板、云数据双库直改、还原点、插件体系、配置包、多面板。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="./">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="./">主页</a>
+    <a href="./flow.html">运行流程</a>
+    <a href="./features.html" class="on">特性</a>
+    <a href="./vm.html">VM 钩子</a>
+    <a href="./security.html">安全体系</a>
+    <a href="./install.html">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<div class="page-hero">
+  <div class="kicker rv">PAGE 02 · FEATURES</div>
+  <h1 class="rv rv-d1">特性详解</h1>
+  <p class="sub rv rv-d2">
+    六面一板：<strong>变量、云数据、还原点、插件、配置包、多面板</strong>。
+    所有能力共用同一套隐身宿主与安全底座。
+  </p>
+</div>
+
+<!-- ============ 01 变量面板 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">01</span><h2>变量面板</h2><span class="hint">VARS · READ / WRITE / LOCK</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>所见即明文<em>。</em></h3>
+      <div class="tagline">PLAIN-TEXT BY CONTRACT</div>
+      <div class="specs">
+        <span class="spec">明文快照 · 整表读取比逐条快 ~4x</span>
+        <span class="spec ok">本地重命名 · 强制开启</span>
+        <span class="spec ok">value:"*" 自带检测</span>
+        <span class="spec">监视器开关</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>读接口永远返回<b>明文真值</b>——不编码、不混淆，改了什么就是什么。
+      每个变量可以单独<b>锁定</b>：锁住的值对游戏逻辑只读，防手滑也防覆盖。
+      系统临时槽位会被自动识别并标锁，避免误改跨过程暂存。</p>
+    </div>
+  </div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 250" role="img" aria-label="变量面板读写链路">
+      <g font-size="12">
+        <rect class="bd-box-amber" x="40" y="80" width="220" height="80" rx="2"/>
+        <text class="bd-amber" x="150" y="112" text-anchor="middle">变量面板 UI</text>
+        <text class="bd-faint" x="150" y="134" text-anchor="middle" font-size="11">closed shadow 内</text>
+
+        <rect class="bd-box" x="420" y="30" width="260" height="52" rx="2"/>
+        <text class="bd-ink" x="550" y="52" text-anchor="middle">读路径 · 明文快照</text>
+        <text class="bd-faint" x="550" y="72" text-anchor="middle" font-size="11">整表读取 · 4x 提速</text>
+
+        <rect class="bd-box" x="420" y="158" width="260" height="52" rx="2"/>
+        <text class="bd-ink" x="550" y="180" text-anchor="middle">写路径 · 锁值检查</text>
+        <text class="bd-faint" x="550" y="200" text-anchor="middle" font-size="11">锁住的值 → 拒写</text>
+
+        <rect class="bd-box-ok" x="820" y="80" width="180" height="80" rx="2"/>
+        <text class="bd-ok" x="910" y="112" text-anchor="middle">scratch-vm</text>
+        <text class="bd-faint" x="910" y="134" text-anchor="middle" font-size="11">runtime 变量真身</text>
+
+        <g class="bd-flow" stroke-width="1.4">
+          <line x1="260" y1="106" x2="414" y2="60"/>
+          <line x1="260" y1="134" x2="414" y2="180"/>
+          <line x1="680" y1="56" x2="814" y2="100"/>
+          <line x1="680" y1="184" x2="814" y2="140"/>
+        </g>
+        <g class="bd-flow" fill="var(--amber)" stroke="none">
+          <path d="M414 56 l-10 -1 5 9z"/>
+          <path d="M414 184 l-10 1 5 -9z"/>
+          <path d="M814 100 l-10 -1 5 9z" transform="translate(10 0)"/>
+          <path d="M814 140 l-10 1 5 -9z" transform="translate(10 0)"/>
+        </g>
+
+        <text class="bd-faint" x="40" y="220" font-size="11">锁定元数据与业务数据物理隔离 —— 锁值永不进快照，导出分享不泄露锁定表。</text>
+      </g>
+    </svg>
+    <figcaption>FIG.01 — 变量面板 · 读 / 写双路径</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 02 云数据 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">02</span><h2>云数据</h2><span class="hint">CLOUD · PROJECT / USER</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>双库直改<em>。</em></h3>
+      <div class="tagline">TWO SCOPES · ONE MIRROR</div>
+      <div class="specs">
+        <span class="spec">project / user 双作用域</span>
+        <span class="spec ok">失败必回滚镜像</span>
+        <span class="spec">支持整键增删</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>作品库与用户库两个作用域<b>直接读写</b>，本地镜像实时同步。
+      保存走双通道，任何一路失败都会<b>回滚镜像并明确报错</b>——
+      绝不出现「提示已保存，实际云端没写进去」的静默分叉。</p>
+    </div>
+  </div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 240" role="img" aria-label="云数据双通道写入">
+      <g font-size="12">
+        <rect class="bd-box-amber" x="40" y="85" width="200" height="70" rx="2"/>
+        <text class="bd-amber" x="140" y="115" text-anchor="middle">面板编辑</text>
+        <text class="bd-faint" x="140" y="137" text-anchor="middle" font-size="11">本地镜像先写</text>
+
+        <rect class="bd-box" x="330" y="30" width="220" height="52" rx="2"/>
+        <text class="bd-ink" x="440" y="52" text-anchor="middle">通道 A · 官方云 API</text>
+        <text class="bd-faint" x="440" y="72" text-anchor="middle" font-size="11">旁路透传 · 不伪装</text>
+
+        <rect class="bd-box" x="330" y="158" width="220" height="52" rx="2"/>
+        <text class="bd-ink" x="440" y="180" text-anchor="middle">通道 B · 备援写入</text>
+        <text class="bd-faint" x="440" y="200" text-anchor="middle" font-size="11">A 失败时自动接管</text>
+
+        <rect class="bd-box-ok" x="700" y="85" width="300" height="70" rx="2"/>
+        <text class="bd-ok" x="850" y="115" text-anchor="middle">云端</text>
+        <text class="bd-faint" x="850" y="137" text-anchor="middle" font-size="11">双通道全败 → 回滚镜像 + 明确报错</text>
+
+        <g class="bd-flow" stroke-width="1.4">
+          <line x1="240" y1="106" x2="324" y2="60"/>
+          <line x1="240" y1="134" x2="324" y2="180"/>
+          <line x1="550" y1="56" x2="694" y2="100"/>
+          <line x1="550" y1="184" x2="694" y2="140"/>
+        </g>
+        <text class="bd-danger" x="612" y="130" font-size="11" text-anchor="middle">任一路失败 ≠ 静默</text>
+        <text class="bd-faint" x="40" y="220" font-size="11">镜像与云端永不分叉：写成功才更新镜像，写失败镜像回滚到写前状态。</text>
+      </g>
+    </svg>
+    <figcaption>FIG.02 — 云数据 · 双通道写入与回滚</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 03 还原点 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">03</span><h2>还原点</h2><span class="hint">RESTORE POINTS · SNAPSHOT / APPLY</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>任意时刻可回退<em>。</em></h3>
+      <div class="tagline">NAMED SNAPSHOTS</div>
+      <div class="specs">
+        <span class="spec ok">导入前结构校验</span>
+        <span class="spec ok">应用失败回滚</span>
+        <span class="spec">JSON 导入 / 导出</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>变量、列表、云数据打包成命名快照。应用时逐项写回，
+      云数据写入失败<b>自动回滚本地镜像</b>，不会留下半应用状态。
+      快照可以导出成 JSON 分享，导入时<b>结构校验</b>，坏数据直接拒绝。</p>
+    </div>
+  </div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 200" role="img" aria-label="还原点时间线">
+      <g font-size="12">
+        <line class="bd-line" x1="60" y1="100" x2="980" y2="100" stroke-width="1.5"/>
+        <g>
+          <circle class="bd-amber" cx="140" cy="100" r="7"/>
+          <text class="bd-dim" x="140" y="70" text-anchor="middle" font-size="11">快照 α</text>
+          <text class="bd-faint" x="140" y="135" text-anchor="middle" font-size="10">变量 + 列表</text>
+          <circle class="bd-faint" cx="380" cy="100" r="5"/>
+          <text class="bd-faint" x="380" y="70" text-anchor="middle" font-size="11">未存档</text>
+          <circle class="bd-amber" cx="620" cy="100" r="7"/>
+          <text class="bd-dim" x="620" y="70" text-anchor="middle" font-size="11">快照 β</text>
+          <text class="bd-faint" x="620" y="135" text-anchor="middle" font-size="10">+ 云数据</text>
+          <circle class="bd-faint" cx="860" cy="100" r="5"/>
+          <text class="bd-faint" x="860" y="70" text-anchor="middle" font-size="11">当前</text>
+        </g>
+        <path class="bd-flow" d="M860 160 H 620" stroke-dasharray="5 5" stroke-width="1.4" marker-end="url(#arrh)"/>
+        <defs><marker id="arrh" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8z" fill="var(--amber)"/></marker></defs>
+        <text class="bd-amber" x="740" y="185" text-anchor="middle" font-size="11">apply β：逐项写回 · 失败回滚 · 不留半应用状态</text>
+        <text class="bd-faint" x="60" y="42" font-size="11">导出 JSON → 结构校验通过才允许导入 —— 坏数据在入口就被拒绝。</text>
+      </g>
+    </svg>
+    <figcaption>FIG.03 — 还原点 · 时间线与回退路径</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 04 插件体系 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">04</span><h2>插件体系</h2><span class="hint">PLUGINS · IMPORT / INTEGRITY</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>能力无上限<em>。</em></h3>
+      <div class="tagline">ONE FILE, FULL CONTEXT</div>
+      <div class="specs">
+        <span class="spec ok">bodySig 启动校验 · 改写即隔离</span>
+        <span class="spec ok">sanitizePluginHtml</span>
+        <span class="spec">ctx.net / ctx.vm / ctx.ui</span>
+        <span class="spec">防火墙 = 独立插件</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>一个 .js 文件就是一个插件。导入后自动获得全套环境红利：
+      UI 住进 closed shadow、源码落盘即<b>指纹校验（bodySig）</b>、
+      HTML 部分强制消毒、包装原生方法有 <b>toString 白名单</b>接口。
+      异步装载支持 waitVm → load → code 三段式，防火墙等网络能力全部以插件形式分发。</p>
+    </div>
+  </div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 230" role="img" aria-label="插件装载管线">
+      <g font-size="12">
+        <rect class="bd-box" x="30" y="85" width="150" height="60" rx="2"/>
+        <text class="bd-ink" x="105" y="112" text-anchor="middle">plugin.js 导入</text>
+        <text class="bd-faint" x="105" y="132" text-anchor="middle" font-size="11">用户拖入 / 清单</text>
+
+        <rect class="bd-box-amber" x="240" y="85" width="160" height="60" rx="2"/>
+        <text class="bd-amber" x="320" y="105" text-anchor="middle">bodySig 指纹</text>
+        <text class="bd-faint" x="320" y="125" text-anchor="middle" font-size="11">落盘即算 · 启动复验</text>
+
+        <rect class="bd-box-amber" x="460" y="85" width="160" height="60" rx="2"/>
+        <text class="bd-amber" x="540" y="105" text-anchor="middle">HTML 消毒</text>
+        <text class="bd-faint" x="540" y="125" text-anchor="middle" font-size="11">脚本 / iframe / 内联事件剥除</text>
+
+        <rect class="bd-box" x="680" y="85" width="150" height="60" rx="2"/>
+        <text class="bd-ink" x="755" y="105" text-anchor="middle">三段式装载</text>
+        <text class="bd-faint" x="755" y="125" text-anchor="middle" font-size="11">waitVm → load → code</text>
+
+        <rect class="bd-box-ok" x="890" y="85" width="120" height="60" rx="2"/>
+        <text class="bd-ok" x="950" y="112" text-anchor="middle">ctx 环境</text>
+        <text class="bd-faint" x="950" y="132" text-anchor="middle" font-size="11">net / vm / ui</text>
+
+        <g class="bd-flow" stroke-width="1.4">
+          <line x1="180" y1="115" x2="234" y2="115"/>
+          <line x1="400" y1="115" x2="454" y2="115"/>
+          <line x1="620" y1="115" x2="674" y2="115"/>
+          <line x1="830" y1="115" x2="884" y2="115"/>
+        </g>
+        <g class="bd-flow" fill="var(--amber)" stroke="none">
+          <path d="M234 111 l8 4 -8 4z"/><path d="M454 111 l8 4 -8 4z"/>
+          <path d="M674 111 l8 4 -8 4z"/><path d="M884 111 l8 4 -8 4z"/>
+        </g>
+
+        <text class="bd-danger" x="320" y="190" text-anchor="middle" font-size="11">指纹不符 → 隔离扣留 · 宁可不加载，不带毒启动</text>
+        <text class="bd-faint" x="30" y="40" font-size="11">插件的 UI 自动住进 closed shadow —— 插件享受保护而非沙箱隔离（页面级脚本同级信任）。</text>
+      </g>
+    </svg>
+    <figcaption>FIG.04 — 插件装载管线 · 完整性与消毒前置</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 05 配置包 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">05</span><h2>配置包</h2><span class="hint">BUNDLE · ONE FILE, EVERYTHING</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>一次携带全部<em>。</em></h3>
+      <div class="tagline">MERGE, NOT OVERWRITE</div>
+      <div class="specs">
+        <span class="spec">rename / lock / markers / plugins</span>
+        <span class="spec ok">条目级合并 · 不清空用户数据</span>
+        <span class="spec">pluginsOnly 导入</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>变量重命名规则、锁定表、还原点、插件清单全部走一份 JSON 主配置。
+      导入按条目<b>合并</b>而非粗暴覆盖，插件包可声明
+      <b>pluginsOnly</b> 只装插件不动本地数据。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 06 多面板 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">06</span><h2>多面板</h2><span class="hint">TOOLS · FEISHU · SYSTEM · FIREWALL</span></div>
+  <div class="feat rv">
+    <div>
+      <h3>按需生长<em>。</em></h3>
+      <div class="tagline">SHARED MOTION ENGINE</div>
+      <div class="specs">
+        <span class="spec">rAF 合帧拖拽</span>
+        <span class="spec">宽度自适应 · 永不振荡</span>
+        <span class="spec">默认面板：变量 + 云数据</span>
+      </div>
+    </div>
+    <div class="desc">
+      <p>工具页内置 SB3 工具箱；飞书页直连文档与图床；系统页集中
+      还原点、回收站与运行诊断。所有页面共用同一套拖拽、
+      自适应与动画引擎——合成层位移、零布局抖动。</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 继续阅读 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">→</span><h2>继续阅读</h2></div>
+  <div class="cards rv">
+    <a class="card" href="./vm.html"><span class="cno">NEXT</span><h3>VM 钩子</h3><p>这些能力背后的 VM 获取与加固体系。</p><span class="go">→</span></a>
+    <a class="card" href="./security.html"><span class="cno">ALSO</span><h3>安全体系</h3><p>保护这些能力的 11 层防线。</p><span class="go">→</span></a>
+    <a class="card" href="./install.html"><span class="cno">ACTION</span><h3>安装</h3><p>30 秒完成隐身。</p><span class="go">→</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="./">主页</a>
+      <a href="./flow.html">运行流程</a>
+      <a href="./vm.html">VM 钩子</a>
+      <a href="./security.html">安全体系</a>
+      <a href="./install.html">安装</a>
+      <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+    </div>
+    <div id="yr"></div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+document.getElementById('yr').textContent = '© ' + new Date().getFullYear() + ' · MAXKORE@GITHUB';
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('in'); }); return; }
+  var io = new IntersectionObserver(function(es){
+    for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+  },{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+  els.forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>

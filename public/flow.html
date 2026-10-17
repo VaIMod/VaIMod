@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>运行流程 — VaIMod</title>
+<meta name="description" content="VaIMod 运行流程全解：document-start 启动链、VM 捕获时序、面板挂载与常驻巡逻，每一站做什么、失败谁来兜底。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./assets/site.css">
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="brand"><a href="./">Va<b>I</b>Mod</a></div>
+  <nav>
+    <a href="./">主页</a>
+    <a href="./flow.html" class="on">运行流程</a>
+    <a href="./features.html">特性</a>
+    <a href="./vm.html">VM 钩子</a>
+    <a href="./security.html">安全体系</a>
+    <a href="./install.html">安装</a>
+  </nav>
+  <div>document-start / tampermonkey</div>
+</header>
+
+<div class="page-hero">
+  <div class="kicker rv">PAGE 01 · RUNTIME FLOW</div>
+  <h1 class="rv rv-d1">运行流程</h1>
+  <p class="sub rv rv-d2">
+    从 <strong>document-start</strong> 注入到常驻巡逻的完整时序。<strong>每一站只做一件事，上层失效下层兜底</strong>——
+    单点失效不破防，站点重建 vm 自动重连。
+  </p>
+</div>
+
+<!-- ============ 启动链全景 ============ -->
+<section>
+  <div class="sec-head rv">
+    <span class="no">01</span>
+    <h2>启动链全景</h2>
+    <span class="hint">BOOT CHAIN · SEQUENCE</span>
+  </div>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 560" role="img" aria-label="启动链时序图">
+      <g font-size="12">
+        <!-- 时间轴 -->
+        <line class="bd-line" x1="60" y1="30" x2="60" y2="530" stroke-dasharray="3 5"/>
+        <text class="bd-faint" x="30" y="36" font-size="10" transform="rotate(-90 30 36)">TIME →</text>
+
+        <!-- S1 document-start -->
+        <rect class="bd-box" x="90" y="20" width="930" height="56" rx="2"/>
+        <text class="bd-amber" x="110" y="44" font-size="13">① document-start 注入</text>
+        <text class="bd-faint" x="110" y="64" font-size="11">userscript 抢在页面任何脚本之前执行 · Tampermonkey run-at</text>
+        <circle class="bd-amber" cx="60" cy="48" r="4"/>
+
+        <!-- S2 前哨 -->
+        <rect class="bd-box-amber" x="90" y="92" width="450" height="56" rx="2"/>
+        <text class="bd-amber" x="110" y="116" font-size="13">② SecureGuard 前哨</text>
+        <text class="bd-faint" x="110" y="136" font-size="11">净化全局实例 · 变量名保护上膛</text>
+        <circle class="bd-amber" cx="60" cy="120" r="4"/>
+
+        <rect class="bd-box-amber" x="570" y="92" width="450" height="56" rx="2"/>
+        <text class="bd-amber" x="590" y="116" font-size="13">③ SigGuard 双注册咽喉</text>
+        <text class="bd-faint" x="590" y="136" font-size="11">extensions.register + extensionManager 双路设卡</text>
+        <circle class="bd-amber" cx="60" cy="120" r="4" opacity="0"/>
+
+        <!-- S3 反检测 -->
+        <rect class="bd-box" x="90" y="164" width="930" height="56" rx="2"/>
+        <text class="bd-ink" x="110" y="188" font-size="13">④ 反检测钩子就位（vm-antidetect · 七组）</text>
+        <text class="bd-faint" x="110" y="208" font-size="11">GPU / Canvas / 音频 / navigator / screen / 时区 / 行为 —— 条件式伪装：正常环境零改动</text>
+        <circle class="bd-amber" cx="60" cy="192" r="4"/>
+
+        <!-- S4 VM 捕获 -->
+        <rect class="bd-box-amber" x="90" y="236" width="930" height="72" rx="2"/>
+        <text class="bd-amber" x="110" y="260" font-size="13">⑤ VM 八路捕获开始（1500ms 发现预算）</text>
+        <text class="bd-faint" x="110" y="280" font-size="11">redux store → react fiber → 三全局键 → Eureka → iframe → 全局扫描，按评分制逐个尝试</text>
+        <text class="bd-faint" x="110" y="298" font-size="11">事件驱动两路全程旁路：bind 劫持 + setter 赋值陷阱 —— 比任何轮询早一个节拍</text>
+        <circle class="bd-amber" cx="60" cy="272" r="4"/>
+
+        <!-- S5 面板挂载 -->
+        <rect class="bd-box" x="90" y="324" width="930" height="56" rx="2"/>
+        <text class="bd-ink" x="110" y="348" font-size="13">⑥ 面板挂载（bridge.connect 提前于 Svelte mount）</text>
+        <text class="bd-faint" x="110" y="368" font-size="11">closed Shadow DOM 宿主 · 四通道注入（rAF / setTimeout / 事件 / 轮询）只赢一次</text>
+        <circle class="bd-amber" cx="60" cy="352" r="4"/>
+
+        <!-- S6 常驻 -->
+        <rect class="bd-box-ok" x="90" y="396" width="930" height="56" rx="2"/>
+        <text class="bd-ok" x="110" y="420" font-size="13">⑦ 常驻纵深上线</text>
+        <text class="bd-faint" x="110" y="440" font-size="11">看门狗 3s 验活 · 蜜罐 8s 巡逻 · uiGuard 属性观察器 · Veil 动态面纱 · 洗白循环</text>
+        <circle class="bd-ok" cx="60" cy="424" r="4"/>
+
+        <!-- S7 页面 -->
+        <rect class="bd-box" x="90" y="468" width="930" height="56" rx="2"/>
+        <text class="bd-dim" x="110" y="492" font-size="13">⑧ 页面脚本照常执行</text>
+        <text class="bd-faint" x="110" y="512" font-size="11">游戏加载、云数据、官方 API —— 零感知。我们只是看着，不动它。</text>
+        <circle class="bd-faint" cx="60" cy="496" r="4"/>
+      </g>
+    </svg>
+    <figcaption>FIG.01 — 启动链时序 · 每一站的职责与时机</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 运行态循环 ============ -->
+<section>
+  <div class="sec-head rv">
+    <span class="no">02</span>
+    <h2>运行态循环</h2>
+    <span class="hint">STEADY STATE · PATROLS</span>
+  </div>
+  <p class="lede rv">
+    启动链走完后进入<b>持续巡逻</b>。所有轮询都有可见性门控：页面隐藏即休眠，回前台立刻补跑——守护自己，不浪费电池。
+  </p>
+  <figure class="board rv">
+    <svg viewBox="0 0 1040 380" role="img" aria-label="运行态巡逻循环">
+      <g font-size="12">
+        <!-- 中央 VM -->
+        <rect class="bd-box-amber" x="420" y="150" width="200" height="70" rx="2"/>
+        <text class="bd-amber" x="520" y="180" text-anchor="middle" font-size="14">bridge.rawVM</text>
+        <text class="bd-faint" x="520" y="202" text-anchor="middle" font-size="11">评分制通道 · 随时可换</text>
+
+        <!-- 巡逻节点 -->
+        <rect class="bd-box" x="60" y="40" width="240" height="60" rx="2"/>
+        <text class="bd-ink" x="180" y="65" text-anchor="middle">看门狗 · 每 3s</text>
+        <text class="bd-faint" x="180" y="85" text-anchor="middle" font-size="11">验证 vm 引用健康 · 失效重建</text>
+
+        <rect class="bd-box" x="740" y="40" width="240" height="60" rx="2"/>
+        <text class="bd-ink" x="860" y="65" text-anchor="middle">蜜罐哨兵 · 每 8s</text>
+        <text class="bd-faint" x="860" y="85" text-anchor="middle" font-size="11">确认诱饵完好 · 碰诱饵即暴露</text>
+
+        <rect class="bd-box" x="60" y="270" width="240" height="60" rx="2"/>
+        <text class="bd-ink" x="180" y="295" text-anchor="middle">洗白循环 · 热身后 500ms</text>
+        <text class="bd-faint" x="180" y="315" text-anchor="middle" font-size="11">剥离被标记痕迹 · 幂等</text>
+
+        <rect class="bd-box" x="740" y="270" width="240" height="60" rx="2"/>
+        <text class="bd-ink" x="860" y="295" text-anchor="middle">访问器锁校验 · 每拍</text>
+        <text class="bd-faint" x="860" y="315" text-anchor="middle" font-size="11">被绕 100ms 内重新钉死</text>
+
+        <!-- 连线 -->
+        <g class="bd-flow" stroke-width="1.3" stroke-dasharray="4 4">
+          <line x1="300" y1="70" x2="450" y2="150"/>
+          <line x1="740" y1="70" x2="590" y2="150"/>
+          <line x1="300" y1="300" x2="450" y2="220"/>
+          <line x1="740" y1="300" x2="590" y2="220"/>
+        </g>
+        <g class="bd-flow" fill="var(--amber)" stroke="none">
+          <path d="M450 150 l-8 -6 2 10z"/>
+          <path d="M590 150 l8 -6 -2 10z"/>
+          <path d="M450 220 l-8 6 2 -10z"/>
+          <path d="M590 220 l8 6 -2 -10z"/>
+        </g>
+
+        <!-- 可见性门控 -->
+        <rect class="bd-box-ok" x="380" y="40" width="280" height="52" rx="2"/>
+        <text class="bd-ok" x="520" y="62" text-anchor="middle">可见性门控（真值口）</text>
+        <text class="bd-faint" x="520" y="82" text-anchor="middle" font-size="11">页面隐藏 → 全部巡逻休眠 · 回前台 → 补跑</text>
+        <g class="bd-flow" stroke-width="1.2">
+          <line x1="420" y1="66" x2="300" y2="66" stroke-dasharray="2 4"/>
+          <line x1="620" y1="66" x2="740" y2="66" stroke-dasharray="2 4"/>
+        </g>
+      </g>
+      <text class="bd-faint" x="10" y="368" font-size="11">所有巡逻围绕同一份 VM 引用工作；引用被站点重建时看门狗先发现，重建通道后其余巡逻自动重新挂接。</text>
+    </svg>
+    <figcaption>FIG.02 — 运行态 · 四路巡逻 + 可见性门控</figcaption>
+  </figure>
+</section>
+
+<!-- ============ 关键时序细节 ============ -->
+<section>
+  <div class="sec-head rv">
+    <span class="no">03</span>
+    <h2>关键时序细节</h2>
+    <span class="hint">EDGE CASES · GUARANTEES</span>
+  </div>
+  <div class="tablewrap rv">
+    <table>
+      <thead>
+        <tr><th>场景</th><th>行为</th><th>保证</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>站点重建 vm</b>（切换作品 / 热重载）</td><td>看门狗 3s 内验活失败 → 走评分制重建通道 → 锁定跨重建存活</td><td>自动重连，用户无感</td></tr>
+        <tr><td><b>轮询全部未命中</b></td><td>bind 劫持与 setter 陷阱全程旁路，Function.prototype.bind 或 vm 赋值一发生立即捕获</td><td>比任何轮询早一个节拍</td></tr>
+        <tr><td><b>页面进入后台</b></td><td>所有轮询经 <code>trueHidden()</code> 真值口判断（伪装前的原生 getter）</td><td>伪装不门控自己的巡逻</td></tr>
+        <tr><td><b>UI 注入竞争</b></td><td>四通道（rAF / setTimeout(64) / DOMContentLoaded 事件 / 400ms 轮询）赛跑</td><td>inserted 守卫只赢一次，成功全清理</td></tr>
+        <tr><td><b>loadProject 重复包装</b></td><td>挂幂等旁路 tap，先查标记再包</td><td>绝不双重包装</td></tr>
+        <tr><td><b>云数据双通道一路失败</b></td><td>回滚本地镜像并明确报错</td><td>镜像与云端绝不分叉</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============ 底部导航 ============ -->
+<section>
+  <div class="sec-head rv"><span class="no">→</span><h2>继续阅读</h2></div>
+  <div class="cards rv">
+    <a class="card" href="./vm.html"><span class="cno">NEXT</span><h3>VM 钩子</h3><p>八路通道与评分制的技术细节。</p><span class="go">→</span></a>
+    <a class="card" href="./security.html"><span class="cno">ALSO</span><h3>安全体系</h3><p>11 层纵深防御完整清单。</p><span class="go">→</span></a>
+    <a class="card" href="./install.html"><span class="cno">ACTION</span><h3>安装</h3><p>30 秒完成隐身。</p><span class="go">→</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="fin">
+    <div class="brand">Va<b>I</b>Mod</div>
+    <div class="flinks">
+      <a href="./">主页</a>
+      <a href="./features.html">特性</a>
+      <a href="./vm.html">VM 钩子</a>
+      <a href="./security.html">安全体系</a>
+      <a href="./install.html">安装</a>
+      <a href="https://github.com/VaIMod/VaIMod">GitHub</a>
+    </div>
+    <div id="yr"></div>
+  </div>
+</footer>
+
+</div>
+
+<script>
+document.getElementById('yr').textContent = '© ' + new Date().getFullYear() + ' · MAXKORE@GITHUB';
+(function(){
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var els = document.querySelectorAll('.rv');
+  if (reduced || !('IntersectionObserver' in window)) { els.forEach(function(el){ el.classList.add('in'); }); return; }
+  var io = new IntersectionObserver(function(es){
+    for(const e of es){ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target); } }
+  },{threshold:.12,rootMargin:'0px 0px -6% 0px'});
+  els.forEach(el=>io.observe(el));
+})();
+</script>
+</body>
+</html>
