@@ -169,7 +169,7 @@ section{padding:clamp(64px,10vh,120px) 0;border-top:1px solid var(--hair)}
 @media(max-width:780px){.layers{grid-template-columns:1fr}}
 .layer{padding:30px 0;border-top:1px solid var(--hair)}
 .layer:nth-child(1),.layer:nth-child(2){border-top:none}
-@media(max-width:780px){.layer:nth-child(2){border-top:1px solid var(--hair}}
+@media(max-width:780px){.layer:nth-child(2){border-top:1px solid var(--hair)}}
 .layer h4{
   font-family:var(--mono);font-size:12px;font-weight:500;letter-spacing:.16em;
   color:var(--amber);margin-bottom:12px;text-transform:uppercase;
@@ -249,10 +249,10 @@ footer .brand b{color:var(--amber)}
     面板在 closed shadow 里，别人看不见，也碰不到。
   </p>
   <div class="meta rv rv-d3">
-    <span>版本 <b id="ver">v0.1.31</b></span>
+    <span>版本 <b id="ver">v0.1.34</b></span>
     <span>注入时机 <b>document-start</b></span>
     <span>面板 <b>closed Shadow DOM</b></span>
-    <span>回归基线 <b>339 项全绿</b></span>
+    <span>回归基线 <b>探针 54 项断言全绿</b></span>
   </div>
   <div class="cta rv rv-d3">
     <a class="btn btn-primary" href="https://vaimod.github.io/VaIMod/VaIMod.user.js">安装最新版 <span class="arr">→</span></a>
@@ -455,10 +455,18 @@ footer .brand b{color:var(--amber)}
     <div class="chain-item rv">
       <div class="step">VM</div>
       <div>
-        <h4>ScratchVM 桥接 + 早期捕获<code>capture-early</code></h4>
-        <div class="cd">25MS POLL · LOADPROJECT TAP</div>
+        <h4>ScratchVM 多通道获取<code>capture-early</code></h4>
+        <div class="cd">8 CHANNELS · SCORE-AUTO-SELECT</div>
       </div>
-      <div class="ct">document-start 起 25ms 轮询盯住 window.vm；loadProject 挂<b>幂等旁路 tap</b>，VM 加载多快都逃不过捕获，绝不双重包装。</div>
+      <div class="ct">八路钩子并行待命：redux store / React fiber / 三全局 / Eureka / iframe / 全局扫描按<b>评分制实时排名</b>（成功率 × 速度 × 新鲜度），当前环境最优方案自动上位；bind 劫持与赋值陷阱两条事件驱动通道全程旁路，比任何轮询早一个节拍。loadProject 挂<b>幂等旁路 tap</b>，绝不双重包装。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">VM+</div>
+      <div>
+        <h4>VM 劫持加固<code>vm-hardening</code></h4>
+        <div class="cd">WATCHDOG 3S · SELF-HEAL · IDempotent PATROL</div>
+      </div>
+      <div class="ct">引用健康<b>看门狗</b>每 3 秒验证，站点重建 vm 自动重连且锁定跨重建存活；巡检登记表寄存<b>不可枚举随机 Symbol</b>，页面枚举不出来；变量访问器锁被绕 100ms 内重新钉死；沙盒封死 <b>__proto__ 原型逃逸</b>；三项幂等巡检静默自愈，防检查、防删除、防修改。</div>
     </div>
   </div>
 
