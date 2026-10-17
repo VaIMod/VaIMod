@@ -311,9 +311,10 @@ function boot(): void {
       3, // 每 15s 查一次（捕获 tap 被剥离的影响是渐进的，无需高频）
     );
 
-    // CCW 运行时方法持续洗白（CSRT AntiCSense 移植）：bridge 即 VM 引用，
-    // 循环内 100ms 重刷对抗页面侧重新包装，上限 180s 自动停止
-    startSanitizeLoop(() => bridge);
+    // CCW 运行时方法持续洗白（CSRT AntiCSense 移植）：传入 **rawVM**（真 Scratch VM
+    // 引用）——曾误传 bridge 本体，sanitizeVM(bridge) 永远找不到 loadProject/runtime，
+    // 整个循环空转（洗白从未真正生效）；连接前 rawVM 为 null，循环内已做空值容忍
+    startSanitizeLoop(() => bridge.rawVM);
 
     mount(VaIModPanel, {
       target: mountEl,

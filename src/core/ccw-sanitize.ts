@@ -113,6 +113,15 @@ export function sanitizeInPlace(fn: unknown, template?: unknown): unknown {
   } catch {
     /* ignore */
   }
+  // native 方法没有 prototype（CSense 检测器 a4 组明确检查 setCCWAPI.prototype 须为空）。
+  // 普通 function 的 prototype 是 configurable:false，delete 静默无效；但 writable:true，
+  // 置 undefined 即通过真值判定（class 的 prototype 不可写，赋值抛错被 catch，天然安全）。
+  try {
+    const f = fn as { prototype?: unknown };
+    if (f.prototype !== undefined) f.prototype = undefined;
+  } catch {
+    /* ignore */
+  }
   markFakeSource(fn, source);
   return fn;
 }
@@ -193,11 +202,16 @@ export function sanitizeVM(vm: unknown): void {
 
 /**
  * 持续洗白循环（CSRT startSanitizeLoop 同款）：VM 就绪前后页面都可能重新包装
- * 这些方法（补丁热更新/缓存加载），100ms 轮询持续重刷，上限 180s 自动停止。
+ * 这些方法（补丁热更新/缓存加载），持续重刷，总预算 ~180s 后自动停止。
+ * 性能口径：热身 10 拍 × 100ms（页面装载期重包装最密集），此后降为 500ms 低频扫——
+ * 稳态下 100ms 全量遍历是纯开销；500ms 的捕获窗口（0.5s）仍远小于检测器的
+ * 4s 轮询周期，防漏窗口不缩水。
  */
 export function startSanitizeLoop(getVMRef: () => unknown): void {
   let count = 0;
-  const timer = setInterval(() => {
+  const WARMUP = 10;
+  const MAX_TICKS = WARMUP + 340; // 10×100ms + 340×500ms ≈ 180s，与原预算一致
+  const tick = (): void => {
     count++;
     let vm: unknown = null;
     try {
@@ -206,8 +220,10 @@ export function startSanitizeLoop(getVMRef: () => unknown): void {
       /* ignore */
     }
     if (vm) sanitizeVM(vm);
-    if (count > 1800) clearInterval(timer);
-  }, 100);
+    if (count >= MAX_TICKS) return;
+    setTimeout(tick, count < WARMUP ? 100 : 500);
+  };
+  tick();
 }
 
 // ---------------- DOM 注入拦截（网络层覆盖不到的面） ----------------

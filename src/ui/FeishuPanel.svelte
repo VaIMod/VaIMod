@@ -696,7 +696,9 @@
     <p class="svp-note">{FS_MODE_HINT[fsMode]}</p>
 
     {#if fsMode === 'manual'}
-      <div class="svp-row2">
+      <!-- svp-row2 是 svp-field 的方向修饰类，必须成对使用才有 flex 排版；
+           单独用会退化成 block 流，label 里的下拉框与数字框基线错位、互相挤压 -->
+      <div class="svp-field svp-row2">
         <label class="svp-check">
           超时
           <select class="svp-select" value={fsOnTimeout} onchange={(e) => persistFs({ feishuOnTimeout: (e.currentTarget as HTMLSelectElement).value === 'block' ? 'block' : 'allow' })}>

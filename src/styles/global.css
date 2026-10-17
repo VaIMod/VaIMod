@@ -1059,6 +1059,19 @@
   flex: 1;
   min-width: 0;
 }
+/* 行内下拉框与同排输入框等高对齐：svp-select 基础态 padding 8px/字号 13.5，
+   与 svp-input 的 9px/16px 同排出现时高度不齐（飞书「超时+放行/拒绝」行实测错位）。
+   箭头预留右内边距，避免文字压到自绘箭头上。 */
+.svp-row2 .svp-select {
+  flex: 0 0 auto;
+  padding: 9px 30px 9px 12px;
+  font-size: 13.5px;
+  line-height: 1.2;
+}
+.svp-row2 .svp-check {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 .svp-hint {
   font-size: 12.5px;
   color: #9aa0a6;
@@ -2366,6 +2379,89 @@
   .svp-tab-row {
     transition-duration: 0.01ms;
   }
+  /* 动效层在减少动态偏好下一并归零 */
+  .svp-btn,
+  .svp-seg-btn,
+  .svp-tab,
+  .svp-robot,
+  .svp-robot-icon,
+  .svp-lock-btn,
+  .svp-search-clear,
+  .svp-select,
+  .svp-input,
+  .svp-search {
+    transition-duration: 0.01ms !important;
+  }
+  .svp-btn:not(:disabled):hover,
+  .svp-btn:not(:disabled):active {
+    transform: none;
+  }
+}
+
+/* ===================== 动效层（统一交互反馈） =====================
+   只过渡 color/background/border/box-shadow/transform/opacity——
+   全部合成器或纯重绘属性，不触发布局（无 width/height/margin 过渡），
+   时长 0.12~0.16s：跟手不拖沓。悬停轻浮起 + 按下轻压扁，克制的物理感。 */
+.svp-btn,
+.svp-seg-btn,
+.svp-tab,
+.svp-robot,
+.svp-robot-icon,
+.svp-lock-btn,
+.svp-search-clear,
+.svp-select,
+.svp-input,
+.svp-search {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.svp-btn:not(:disabled) {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.12s ease;
+}
+.svp-btn:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+.svp-btn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+  transition-duration: 0.06s;
+}
+.svp-seg-btn:active {
+  transform: scale(0.96);
+}
+.svp-robot:active,
+.svp-robot-icon:active,
+.svp-lock-btn:active,
+.svp-search-clear:active {
+  transform: scale(0.95);
+}
+/* 输入聚焦光环：主色弱扩散（box-shadow，无布局参与） */
+.svp-input:focus,
+.svp-search:focus,
+.svp-select:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--svp-primary, #4da3ff) 20%, transparent);
+}
+/* Tab 悬停轻微上移，激活态回落（方向感：当前页贴底） */
+.svp-tab {
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease,
+    transform 0.15s ease;
+}
+.svp-tab:not(.svp-tab-active):hover {
+  transform: translateY(-1px);
+}
+/* 机器人行悬停微亮，选中态已有高亮边框不叠加位移 */
+.svp-robot:hover {
+  border-color: rgba(255, 255, 255, 0.22);
 }
 
 /* ===================== 插件 UI 样式接口（.vpu-*） ===================== */

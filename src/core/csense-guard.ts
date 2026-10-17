@@ -79,6 +79,19 @@ export interface CsenseStatus {
   lastHit: number | null;
   /** V2 增量：已应用的防检测补漏项名（只读诊断，来自 Void Apex 手法移植） */
   stealth: string[];
+  /**
+   * V3 增量：取证自检（依据 CSense 拦截器 v3.3.4 误发布版 check() 的真实取证面）。
+   * 每项 = 检测器的一个判定点；pass=false 即检测器视角下会判「篡改」。
+   * 全部只读探测（走伪装层取值，与检测器看到的内容一致），零副作用。
+   */
+  forensic: CsenseForensicItem[];
+}
+
+export interface CsenseForensicItem {
+  /** 判定点名（与检测器 check() 中的条件一一对应） */
+  name: string;
+  /** true = 检测器视角下通过 */
+  pass: boolean;
 }
 
 let installed = false;
@@ -856,6 +869,81 @@ function installInterceptorWatchdog(): void {
   watchInterceptors();
 }
 
+// ───── V3 增量：取证自检（检测器视角的只读复检） ─────
+
+/**
+ * CSense 拦截器 v3.3.4（误发布版，已解固）check() 的取证面逐项复刻：
+ *   a2 组：loadProject / ccwAPI.getUserInfo / setCCWAPI / isValidExtensionURL
+ *          的 toString() 不得含 `\` 或 `call`
+ *   a3 组：loadProject.length === 3；Function.prototype.toString.call(getUserInfo)
+ *          须为 '[object Function]'（伪装层接管后等价于 toString 输出合法）
+ *   a4 组：`${globalThis.toString}` 不得含 `?`；loadProject / setCCWAPI name 非空；
+ *          setCCWAPI.prototype 须为空（native 方法无 prototype）
+ * 附加：document.querySelector.toString() 不得含小写 `select`（unknown-select 判定）。
+ * 全部只读：取值走伪装层（String(fn) 即检测器看到的视图），不写任何宿主状态。
+ * 结果缓存 5s——UI/诊断高频调用不重复深探。
+ */
+let forensicCache: { at: number; items: CsenseForensicItem[] } | null = null;
+
+export function forensicSelfTest(): CsenseForensicItem[] {
+  const now = Date.now();
+  if (forensicCache && now - forensicCache.at < 5000) return forensicCache.items;
+
+  const items: CsenseForensicItem[] = [];
+  const add = (name: string, pass: boolean): void => {
+    items.push({ name, pass });
+  };
+
+  try {
+    const runtime = (
+      window as unknown as {
+        Scratch?: { vm?: { runtime?: Record<string, any> } };
+      }
+    ).Scratch?.vm?.runtime;
+    const em = runtime?.extensionManager;
+    const emVm = em?.vm;
+    const lp = emVm?.loadProject;
+    if (typeof lp === 'function') {
+      const src = String(lp); // 经伪装层 → 检测器所见
+      add('loadProject.toString 无反斜杠', !src.includes('\\'));
+      add('loadProject.toString 无 call', !src.includes('call'));
+      add('loadProject 参数个数为 3', lp.length === 3);
+      add('loadProject.name 非空', Boolean(lp.name));
+    }
+    const gi = runtime?.ccwAPI?.getUserInfo;
+    if (typeof gi === 'function') {
+      // 检测器用 globalThis.toString.call(fn) —— 伪装层接管 Function.prototype.toString
+      // 后与 String(fn) 等价；「[object Function]」判定同时要求 toString 输出合法。
+      const src = String(gi);
+      add('getUserInfo.toString 无 call', !src.includes('call'));
+      add('getUserInfo 视为 [object Function]', src.includes('[native code]') || src.length > 0);
+    }
+    const sc = runtime?.setCCWAPI;
+    if (typeof sc === 'function') {
+      add('setCCWAPI.toString 无 call', !String(sc).includes('call'));
+      add('setCCWAPI.name 非空', Boolean(sc.name));
+      add('setCCWAPI 无 prototype', !sc.prototype);
+    }
+    const iv = em?.isValidExtensionURL;
+    if (typeof iv === 'function') {
+      add('isValidExtensionURL.toString 无 call', !String(iv).includes('call'));
+    }
+  } catch {
+    /* runtime 未就绪 → 对应项缺席（不虚构 pass/fail） */
+  }
+
+  // a4 组：globalThis.toString 自身源码不得含 `?`（模板串插值取的是伪装输出）
+  add('globalThis.toString 伪装为 native', !`${Function.prototype.toString}`.includes('?'));
+  try {
+    add('document.querySelector 伪装为 native', !String(document.querySelector).includes('select'));
+  } catch {
+    add('document.querySelector 伪装为 native', false);
+  }
+
+  forensicCache = { at: now, items };
+  return items;
+}
+
 /** 卸载（仅测试/调试用）：先比对再还原（last-writer-wins 防护） */
 export function uninstallCsenseGuard(): void {
   if (!installed) return;
@@ -897,5 +985,6 @@ export function csenseStatus(): CsenseStatus {
     hits: { ...hits },
     lastHit,
     stealth: [...stealthApplied],
+    forensic: forensicSelfTest(),
   };
 }

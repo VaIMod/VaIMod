@@ -257,7 +257,11 @@ function markNative(fn: object, name: string): void {
     /* ignore */
   }
   try {
-    delete (fn as { prototype?: unknown }).prototype;
+    // 普通 function 的 prototype 是 configurable:false —— delete 对它静默无效
+    // （非严格模式返回 false 不抛错），必须走赋值路径：prototype writable:true，
+    // 置 undefined 后检测器的真值判定（fn.prototype 须为空）即通过。
+    const f = fn as { prototype?: unknown };
+    if (f.prototype !== undefined) f.prototype = undefined;
   } catch {
     /* ignore */
   }
