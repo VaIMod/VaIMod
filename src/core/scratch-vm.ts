@@ -41,6 +41,18 @@ interface LockEntry {
   lastWrite: number;
 }
 
+/**
+ * 访问器级变量锁状态（butterAny f41 同款）：对 variable.value 上 defineProperty
+ * 访问器，冻结期外部写入直接被拒（无竞态窗口），解锁恢复原 descriptor（可逆）。
+ * 与轮询写回叠加：写回负责面板显示语义，访问器负责真正的值钉死。
+ */
+interface FrozenVarState {
+  variable: Record<string, unknown>;
+  variableId: string;
+  entry: LockEntry;
+  origDesc: PropertyDescriptor | null;
+}
+
 export type BridgeEvent =
   | { type: 'status'; payload: { status: BridgeStatus; info?: string } }
   | { type: 'variables'; payload: ScratchVariable[] }
@@ -61,6 +73,10 @@ export class ScratchVM {
   private listeners = new Set<BridgeListener>();
 
   private locks = new Map<string, LockEntry>();
+  // 访问器级锁登记表（键 = variable 对象）：解锁按对象恢复 descriptor，不依赖 vm 引用
+  private frozenVars = new WeakMap<object, FrozenVarState>();
+  // 反向索引（variableId → variable 对象）：WeakMap 不可枚举，按 id 解锁/全清要靠它
+  private frozenIndex = new Map<string, object>();
   // 上一轮下发的变量对象（键 = targetId:id），用于引用复用，见 getVariables()
   private varRefCache = new Map<string, ScratchVariable>();
   // 项目原始值基线（键 = targetId:id）：连接后首次读取时快照一次
@@ -375,6 +391,7 @@ export class ScratchVM {
     };
     this.locks.set(variableId, entry);
     this.installVariableChangeHook();
+    this.freezeVariableAccessor(variableId, entry);
     this.writeLockValue(variableId, entry);
     this.startLockTicker();
     this.scheduleEmit();
@@ -383,12 +400,14 @@ export class ScratchVM {
 
   unlockVariable(variableId: string): void {
     if (!this.locks.delete(variableId)) return;
+    this.thawVariable(variableId);
     this.scheduleEmit();
   }
 
   clearAllLocks(): void {
     if (this.locks.size === 0) return;
     this.locks.clear();
+    this.thawAllVariables();
     this.scheduleEmit();
   }
 
@@ -528,6 +547,96 @@ export class ScratchVM {
 
   private writeLockValue(variableId: string, entry: LockEntry): boolean {
     return this.writeVariable(variableId, this.snapshotValue(entry.value), entry.targetId);
+  }
+
+  /** 解析 vm 内的 variable 对象（Map / Record 双形态） */
+  private getVariableObject(variableId: string, targetId: string): Record<string, unknown> | null {
+    try {
+      const vm = this.channel.getVm() as {
+        runtime?: {
+          getTargetById?: (tid: string) =>
+            | { variables?: Map<string, unknown> | Record<string, unknown> }
+            | undefined;
+        };
+      } | null;
+      if (!vm) return null;
+      const target = vm.runtime?.getTargetById?.(targetId);
+      const variables = target?.variables;
+      if (!variables) return null;
+      const v = variables instanceof Map ? variables.get(variableId) : variables[variableId];
+      return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 上访问器锁（butterAny f41 同款，可逆）：冻结期 setter 只放行「与锁定值相等」
+   * 的写入（自家写回 / 编辑锁定值后的写回恰好命中），其余写入静默拒绝——
+   * 相比纯轮询写回，彻底消除两次写回之间的竞态窗口。
+   */
+  private freezeVariableAccessor(variableId: string, entry: LockEntry): void {
+    const variable = this.getVariableObject(variableId, entry.targetId);
+    if (!variable) return;
+    const existing = this.frozenVars.get(variable);
+    if (existing) {
+      existing.entry = entry;
+      this.frozenIndex.set(variableId, variable);
+      return;
+    }
+    let cur = variable.value;
+    const self = this;
+    const state: FrozenVarState = {
+      variable,
+      variableId,
+      entry,
+      origDesc: Object.getOwnPropertyDescriptor(variable, 'value') ?? null,
+    };
+    try {
+      Object.defineProperty(variable, 'value', {
+        configurable: true,
+        enumerable: state.origDesc ? state.origDesc.enumerable !== false : true,
+        get: () => cur,
+        set: (nv: unknown) => {
+          const st = self.frozenVars.get(variable);
+          if (!st) {
+            cur = nv; // 状态已清理（防御：descriptor 残留），放行恢复原语义
+            return;
+          }
+          if (self.valuesEqual(nv, st.entry.value)) {
+            cur = nv; // 自家写回 / 同值写入放行
+          }
+          // 其余写入：冻结，拒绝（值保持锁定值）
+        },
+      });
+      this.frozenVars.set(variable, state);
+      this.frozenIndex.set(variableId, variable);
+    } catch {
+      /* 个别宿主对象不可重定义 → 退化为纯轮询写回 */
+    }
+  }
+
+  /** 解除访问器锁：恢复原 descriptor（butterAny 同款可逆还原） */
+  private thawVariable(variableId: string): void {
+    // WeakMap 不可枚举 → 登记时同步维护一份反向索引
+    const obj = this.frozenIndex.get(variableId);
+    if (!obj) return;
+    this.frozenIndex.delete(variableId);
+    const state = this.frozenVars.get(obj);
+    if (!state) return;
+    this.frozenVars.delete(obj);
+    try {
+      if (state.origDesc) Object.defineProperty(obj, 'value', state.origDesc);
+      else delete (obj as Record<string, unknown>).value;
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private thawAllVariables(): void {
+    for (const variableId of [...this.frozenIndex.keys()]) {
+      this.thawVariable(variableId);
+    }
   }
 
   private peekVariable(variableId: string, targetId: string): unknown {
@@ -680,8 +789,15 @@ export class ScratchVM {
   }
 
   private discoverVM(): unknown {
-    const windowVM = (window as unknown as { vm?: unknown }).vm;
-    if (isVMLike(windowVM)) return windowVM;
+    // 三全局通道（butterAny 同款）：window.vm / window._vm / window.Scratch?.vm
+    const w = window as unknown as { vm?: unknown; _vm?: unknown; Scratch?: { vm?: unknown } };
+    if (isVMLike(w.vm)) return w.vm;
+    if (isVMLike(w._vm)) return w._vm;
+    try {
+      if (isVMLike(w.Scratch?.vm)) return w.Scratch?.vm;
+    } catch {
+      /* Scratch.vm 可能是 getter，异常按无处理 */
+    }
     const fiberVM = findVmViaFiber();
     if (isVMLike(fiberVM)) return fiberVM;
     // Eureka 引擎：eureka 对象 / loader 及其内部可能持有 vm（Eureka 也会写 globalThis.vm）
@@ -782,14 +898,8 @@ export class ScratchVM {
     const self = this;
     const hooked = function (this: Function, self2: unknown, ...args: unknown[]): unknown {
       const bound = self.bindOrig?.call(this, self2, ...args);
-      if (
-        !self.channel.getVm() &&
-        self2 &&
-        typeof self2 === 'object' &&
-        (self2 as { runtime?: { targets?: unknown } }).runtime?.targets
-      ) {
-        self.channel.bind(self2);
-        self.restoreBindHook();
+      if (!self.channel.getVm() && self2 && typeof self2 === 'object' && self.isVmShaped(self2)) {
+        self.adoptVmCandidate(self2);
       }
       return bound;
     };
@@ -797,6 +907,50 @@ export class ScratchVM {
     (Function.prototype as unknown as { bind: typeof Function.prototype.bind }).bind = hooked;
     this.bindHookInstalled = true;
   }
+
+  /**
+   * VM 形状判定（butterAny f96 同款四路，宽松口径只用于「要不要盯一下」）：
+   * ① 完整 isVMLike ② start+loadProject 双函数 ③ own editingTarget+runtime 双属性
+   * ④ constructor.name 含 'VM'。前三路有 runtime/方法对兜底，误报率可控。
+   */
+  private isVmShaped(o: object): boolean {
+    if (isVMLike(o)) return true;
+    const v = o as Record<string, unknown> & { constructor?: { name?: string } };
+    if (typeof v.start === 'function' && typeof v.loadProject === 'function') return true;
+    const hasOwn = (k: string): boolean => Object.prototype.hasOwnProperty.call(v, k);
+    if (hasOwn('editingTarget') && hasOwn('runtime')) return true;
+    return typeof v.constructor?.name === 'string' && v.constructor.name.includes('VM');
+  }
+
+  /**
+   * 候选采纳：形状齐全直接入通道；只命中宽松形状（CCW 在构造期间 bind，runtime
+   * 还没挂 targets）时短暂盯梢（40ms × 最多 5s），形状齐了再入通道。
+   */
+  private adoptVmCandidate(o: object): void {
+    if (isVMLike(o)) {
+      this.channel.bind(o);
+      this.restoreBindHook();
+      return;
+    }
+    if (this.adoptPolling) return;
+    this.adoptPolling = true;
+    const started = Date.now();
+    const timer = setInterval(() => {
+      if (this.channel.getVm() || Date.now() - started > 5000) {
+        clearInterval(timer);
+        this.adoptPolling = false;
+        return;
+      }
+      if (isVMLike(o)) {
+        clearInterval(timer);
+        this.adoptPolling = false;
+        this.channel.bind(o);
+        this.restoreBindHook();
+      }
+    }, 40);
+  }
+
+  private adoptPolling = false;
 
   private restoreBindHook(): void {
     if (!this.bindHookInstalled || !this.bindOrig) return;

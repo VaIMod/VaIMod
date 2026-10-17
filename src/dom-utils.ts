@@ -216,6 +216,10 @@ export function trueElementsFromPoint(x: number, y: number): Element[] {
 
 const ORIG_FN_TO_STRING = Function.prototype.toString;
 const MARKED_FNS = new WeakSet<object>();
+// CSRT AntiCSense 同款：函数级「伪源码」登记表 —— 登记过的函数 toString 返回指定
+// 伪源码（而非默认 native 形态），用于运行时方法伪装（loadProject 等 CCW 方法
+// 原本非 native，伪装成 native 会与站点自身补丁检测冲突时用精确源码更稳）。
+const FAKE_SOURCES = new WeakMap<object, string>();
 const TOSTRING_PATCHED = Symbol(rndHex(8));
 
 export function isProtected(node: Node): boolean {
@@ -286,6 +290,9 @@ function installNativeToString(): void {
   if (holder[TOSTRING_PATCHED]) return;
   markFlag(holder, TOSTRING_PATCHED);
   const patched = function (this: Function): string {
+    if (FAKE_SOURCES.has(this)) {
+      return FAKE_SOURCES.get(this) as string;
+    }
     if (MARKED_FNS.has(this)) {
       return FN_PRE + (this.name || 'anonymous') + FN_MID + NATIVE + FN_END;
     }
@@ -294,6 +301,32 @@ function installNativeToString(): void {
   markNative(patched, 'toString');
   Function.prototype.toString = patched as typeof Function.prototype.toString;
 }
+
+/**
+ * 登记伪源码（CSRT FAKE_SOURCE 同款）：该函数的 toString 返回指定字符串。
+ * 与 markNative 的区别：markNative 生成 `function X() { [native code] }`，
+ * 伪源码可精确控制返回内容（如带原签名的伪装源码）。
+ */
+function markFakeSource(fn: object, source: string): void {
+  try {
+    FAKE_SOURCES.set(fn, source);
+  } catch {
+    /* ignore */
+  }
+}
+
+export { markFakeSource };
+
+/** 取函数的**真实**源码（绕过伪装层）——伪装前的快照用 */
+function nativeToStringOf(fn: Function): string {
+  try {
+    return ORIG_FN_TO_STRING.call(fn);
+  } catch {
+    return 'function () { [native code] }';
+  }
+}
+
+export { nativeToStringOf };
 
 function healNativeToString(): void {
   const cur = Function.prototype.toString;

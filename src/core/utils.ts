@@ -35,11 +35,41 @@ function scanFiberFromNode(node: object): unknown {
     if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
     seen.add(cur);
 
+    // 提取策略（对齐 CSRT _findVMInFiber 的五路，覆盖 CCW 不同页面结构的挂载差异）：
+    // ① memoizedProps.vm（最常见：VM 直接作为组件 prop 传入）
+    // ② memoizedProps.scratchGui.vm（gui 状态整体作为 prop）
+    // ③ stateNode 本身是 VM（类组件直接持有）
+    // ④ stateNode.state.scratchGui.vm（类组件 state 持 gui）
+    // ⑤ memoizedState 链表逐节点找 state.scratchGui.vm（hooks 组件，链深上限 30）
     const memoizedProps = (cur as { memoizedProps?: unknown }).memoizedProps as
       | Record<string, unknown>
       | undefined;
-    if (memoizedProps && isVMLike(memoizedProps.vm)) {
-      return memoizedProps.vm;
+    if (memoizedProps) {
+      if (isVMLike(memoizedProps.vm)) return memoizedProps.vm;
+      const gui = memoizedProps.scratchGui as { vm?: unknown } | undefined;
+      if (gui && isVMLike(gui.vm)) return gui.vm;
+    }
+
+    const stateNode = (cur as { stateNode?: unknown }).stateNode as
+      | (Record<string, unknown> & { state?: { scratchGui?: { vm?: unknown } } })
+      | undefined;
+    if (stateNode && typeof stateNode === 'object') {
+      if (isVMLike(stateNode)) return stateNode;
+      const gui = stateNode.state?.scratchGui;
+      if (gui && isVMLike(gui.vm)) return gui.vm;
+    }
+
+    const memoizedState = (cur as { memoizedState?: unknown }).memoizedState;
+    if (memoizedState && typeof memoizedState === 'object') {
+      let node2 = memoizedState as Record<string, unknown> & {
+        next?: unknown;
+        state?: { scratchGui?: { vm?: unknown } };
+      };
+      for (let depth = 0; node2 && depth < 30; depth++) {
+        const gui = node2.state?.scratchGui;
+        if (gui && isVMLike(gui.vm)) return gui.vm;
+        node2 = (node2.next ?? null) as typeof node2;
+      }
     }
 
     const fiber = cur as {
@@ -56,6 +86,9 @@ function scanFiberFromNode(node: object): unknown {
 
 export function findVmViaFiber(): unknown {
   const candidates: Element[] = [];
+  // CSRT 同款：window.root（CCW 挂 React 根到 window.root 的场景）优先于 DOM 查找
+  const winRoot = (window as unknown as { root?: unknown }).root;
+  if (winRoot instanceof Element) candidates.push(winRoot);
   const app = document.getElementById('app');
   if (app) candidates.push(app);
   const root = document.getElementById('root');
@@ -87,14 +120,38 @@ export function findVmViaFiber(): unknown {
   }
 
   for (const el of candidates) {
+    // fiber key 兼容 __reactContainer$（React 18 createRoot 挂在容器上的容器键，CSRT 同款）
     const fiberKey = Object.keys(el).find(
-      (k) => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'),
+      (k) =>
+        k.startsWith('__reactFiber$') ||
+        k.startsWith('__reactInternalInstance$') ||
+        k.startsWith('__reactContainer$'),
     );
     if (!fiberKey) continue;
     const start = (el as unknown as Record<string, unknown>)[fiberKey];
     if (!start || typeof start !== 'object') continue;
     const vm = scanFiberFromNode(start as object);
     if (vm) return vm;
+  }
+
+  // React DevTools hook 通道（CSRT 同款）：React 根不在常见容器时从 DevTools 全局钩子取
+  try {
+    const hook = (window as unknown as {
+      __REACT_DEVTOOLS_GLOBAL_HOOK__?: {
+        getFiberRoots?: (rendererId: number) => Set<{ current?: object }>;
+      };
+    }).__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    const roots = hook?.getFiberRoots?.(1);
+    if (roots && typeof roots.forEach === 'function') {
+      let found: unknown = null;
+      roots.forEach((rootEntry) => {
+        if (found || !rootEntry?.current) return;
+        found = scanFiberFromNode(rootEntry.current);
+      });
+      if (found) return found;
+    }
+  } catch {
+    /* ignore */
   }
   return null;
 }

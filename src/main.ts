@@ -13,6 +13,7 @@ import { decoyRegistry } from './core/decoy';
 import { installHoneypotGuard, honeypotReport } from './core/honeypot-guard';
 import { installEarlyCaptureWatch } from './core/capture-early';
 import { installFeishuGuard, feishuMode, feishuHits, feishuPendingCount, feishuRules } from './core/feishu-guard';
+import { installCcwSanitize, startSanitizeLoop } from './core/ccw-sanitize';
 import { installUiGuard, uiGuardReport } from './core/ui-guard';
 import {
   getAliasConfig,
@@ -48,6 +49,7 @@ installXssGuard(); // ② XSS 速执行拦截（document.write / 字符串定时
 installCsenseGuard(); // ②′ CSense 拦截器反制（吞掉其 supabase/csdetected 上报，检测数据不出网）
 hookOfficialCloudApi(); // ③ 官方云 API 通道（fetch 观察，随时捕获 endpoint）
 installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住 fetch/XHR，默认 off 零影响）
+installCcwSanitize(); // ③″ DOM 注入反制（script src 陷阱 / innerHTML 反制 / 隐藏反制，CSRT 移植）
 installHoneypotGuard(); // ④ 蜜罐陷阱防检测（假修改器 UI 诱饵 + window 假 vm 陷阱，攻击即轮换）
 installEarlyCaptureWatch(); // ④′ 早期作品捕获（25ms 盯 window.vm，抢在站点初始 loadProject 前包装）
 installUiGuard(); // ⑤′ UI 防篡改（宿主不可移除/搬走/隐藏 + 层级恒定最顶层）
@@ -254,6 +256,10 @@ function boot(): void {
     document.addEventListener('visibilitychange', syncVpnPatrol);
 
     installDebug(bridge);
+
+    // CCW 运行时方法持续洗白（CSRT AntiCSense 移植）：bridge 即 VM 引用，
+    // 循环内 100ms 重刷对抗页面侧重新包装，上限 180s 自动停止
+    startSanitizeLoop(() => bridge);
 
     mount(VaIModPanel, {
       target: mountEl,
