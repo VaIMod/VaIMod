@@ -73,9 +73,11 @@ function installDebug(bridge: ScratchVM): void {
       sandbox: () => bridge.sandboxedVM,
       snapshot: () => bridge.getSecureSnapshot(),
       sandboxCalls: () => bridge.getSandboxCalls(),
-      // VM 劫持系统状态：通道优先级 + 看门狗 + 安全加固巡检
-      // 轮询链优先级：redux → fiber → window.vm → Eureka → iframe → 全局扫描；
-      // bind 劫持为事件驱动兜底（延迟安装），setter 陷阱为事件驱动捕获
+      // VM 劫持系统状态：通道优先级 + 评分制自动选择 + 看门狗 + 安全加固巡检
+      // 轮询链基线：redux → fiber → window.vm → Eureka → iframe → 全局扫描；
+      // 实际尝试顺序由评分制动态排名（成功率×速度×新鲜度），vmHooks 输出
+      // bestChannel / channelScores 可查；bind 劫持为事件驱动兜底（延迟安装），
+      // setter 陷阱为事件驱动捕获
       vmHooks: () => ({
         ...bridge.hookReport(),
         channels: [

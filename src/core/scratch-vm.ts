@@ -66,6 +66,18 @@ export type BridgeListener = (event: BridgeEvent) => void;
 /** 轮询发现通道 id（bind 为事件驱动兜底通道，不在此列） */
 type VmChannelId = 'redux' | 'fiber' | 'globals' | 'eureka' | 'iframe' | 'globalscan';
 
+/** 通道评分统计（自动选择的数据源） */
+interface ChannelStat {
+  /** 命中次数 */
+  wins: number;
+  /** 被调用次数（含未命中轮） */
+  tries: number;
+  /** 命中耗时累计（ms，用于速度因子） */
+  latencySum: number;
+  /** 最近一次命中时间戳 */
+  lastWin: number;
+}
+
 export class ScratchVM {
   readonly options: Required<Pick<BridgeOptions, 'pollInterval' | 'connectTimeout'>> &
     Omit<BridgeOptions, 'pollInterval' | 'connectTimeout'>;
@@ -105,10 +117,10 @@ export class ScratchVM {
   private lastRebuild = 0;
   // 发现循环计数（诊断：waitForVM 每轮 +1，验证重连循环是否存活）
   private discoverTries = 0;
-  // ---- 通道自动选择：上一轮成功的通道前置（当前环境最优方案自适应） ----
-  private lastGoodChannel: VmChannelId | null = null;
-  // 各通道累计命中次数（诊断：反映当前环境哪个挂载路径最优）
-  private channelWins = new Map<VmChannelId, number>();
+  // ---- 通道自动选择（评分制）：每轮发现前按得分动态排名 ----
+  private channelStats = new Map<VmChannelId, ChannelStat>();
+  // 最近一次命中的通道（诊断展示；真正决定尝试顺序的是 rankChannels()）
+  private lastWinner: VmChannelId | null = null;
 
   // ---- 作品捕获（loadProject 包装，环形缓冲，纯内存、无持久化） ----
   private captureEnabled = true;
@@ -823,29 +835,81 @@ export class ScratchVM {
   }
 
   private discoverVM(): unknown {
-    // 通道优先级（轮询发现链）：redux store → React fiber → window.vm（三全局）
+    // 通道优先级基线：redux store → React fiber → window.vm（三全局）
     // → Eureka → iframe → 全局扫描。bind 为事件驱动兜底（延迟 3s 安装
     // Function.prototype.bind 劫持，见 waitForVM / installBindHook），不在轮询链内。
-    // 自动选择：上一轮成功的通道优先尝试（当前环境的最优方案自适应前置），
-    // 环境变化（如站点重建后走不同挂载路径）时首轮未命中自动回落固定优先级。
-    const order: VmChannelId[] = ['redux', 'fiber', 'globals', 'eureka', 'iframe', 'globalscan'];
-    const best = this.lastGoodChannel;
-    if (best) {
-      const idx = order.indexOf(best);
-      if (idx > 0) {
-        order.splice(idx, 1);
-        order.unshift(best);
-      }
-    }
+    // 自动选择（评分制）：每轮发现前按「成功率 × 速度 × 新鲜度」实时重排名，
+    // 当前环境表现最好的通道自动排到最前；环境变化（站点重建走别的挂载路径）
+    // 时旧通道连续扑空 → 分数衰减 → 新优胜通道自动上位，无需任何手动指定。
+    const cycleStart = Date.now();
+    const order = this.rankChannels();
     for (const id of order) {
+      const t0 = Date.now();
       const vm = this.runChannel(id);
+      this.markChannelTried(id);
       if (isVMLike(vm)) {
-        this.lastGoodChannel = id;
-        this.channelWins.set(id, (this.channelWins.get(id) ?? 0) + 1);
+        this.markChannelWin(id, Date.now() - t0);
         return vm;
       }
+      if (Date.now() - cycleStart > 1500) break; // 单轮发现预算：超时保底下轮再来
     }
     return null;
+  }
+
+  // ---- 通道自动选择：评分制排名（成功率 × 速度 × 新鲜度） ----
+
+  private channelStat(id: VmChannelId): ChannelStat {
+    let st = this.channelStats.get(id);
+    if (!st) {
+      st = { wins: 0, tries: 0, latencySum: 0, lastWin: 0 };
+      this.channelStats.set(id, st);
+    }
+    return st;
+  }
+
+  private markChannelTried(id: VmChannelId): void {
+    this.channelStat(id).tries++;
+  }
+
+  private markChannelWin(id: VmChannelId, latency: number): void {
+    const st = this.channelStat(id);
+    st.wins++;
+    st.latencySum += latency;
+    st.lastWin = Date.now();
+    this.lastWinner = id;
+  }
+
+  /** 通道得分：Laplace 平滑成功率 × 速度因子 × 新鲜度因子 */
+  private scoreOf(st: ChannelStat): number {
+    const rate = (st.wins + 1) / (st.tries + 2);
+    const avg = st.wins > 0 ? st.latencySum / st.wins : Number.POSITIVE_INFINITY;
+    // 速度：50ms 为参考量级（本地属性读取远快于 iframe 递归），越快分越高
+    const speed = Number.isFinite(avg) ? 1 / (1 + avg / 50) : 1;
+    // 新鲜度：10 分钟没赢过开始衰减（长会话中环境切换后旧冠军自然让位）
+    const age = Date.now() - st.lastWin;
+    const recency = st.lastWin > 0 ? 1 / (1 + age / 600_000) : 1;
+    return rate * speed * recency;
+  }
+
+  /**
+   * 通道排名：有战果的通道按得分降序在前；从没赢过的按固定基线居中；
+   * 试过但从未命中的垫底（仍是兜底，只是排最后）。每轮发现前重算。
+   */
+  private rankChannels(): VmChannelId[] {
+    const base: VmChannelId[] = ['redux', 'fiber', 'globals', 'eureka', 'iframe', 'globalscan'];
+    const proven = base
+      .filter((id) => (this.channelStats.get(id)?.wins ?? 0) > 0)
+      .sort(
+        (a, b) =>
+          this.scoreOf(this.channelStat(b)) - this.scoreOf(this.channelStat(a)) ||
+          base.indexOf(a) - base.indexOf(b),
+      );
+    const dead = base.filter((id) => {
+      const st = this.channelStats.get(id);
+      return !!st && st.wins === 0 && st.tries > 0;
+    });
+    const rest = base.filter((id) => !proven.includes(id) && !dead.includes(id));
+    return [...proven, ...rest, ...dead];
   }
 
   /** 单通道执行（统一异常隔离：任一通道抛错只损失该通道，不断发现链） */
@@ -969,10 +1033,14 @@ export class ScratchVM {
     status: string;
     statusInfo: string;
     discoverTries: number;
-    /** 自动选择：当前环境最优通道（上一轮成功者） */
+    /** 自动选择：最近一次命中的通道 */
     activeChannel: VmChannelId | null;
-    /** 各轮询通道累计命中次数 */
+    /** 自动选择：当前得分最高的通道（下一轮发现将最先尝试它） */
+    bestChannel: VmChannelId | null;
+    /** 各通道累计命中次数（channelScores 的便捷视图） */
     channelWins: Record<string, number>;
+    /** 通道评分明细：wins / tries / score / avgLatency */
+    channelScores: Record<string, { wins: number; tries: number; score: number; avgLatency: number }>;
   } {
     return {
       setterTrapsInstalled: this.vmTrapsInstalled,
@@ -984,8 +1052,22 @@ export class ScratchVM {
       status: String(this.status),
       statusInfo: this.statusInfo,
       discoverTries: this.discoverTries,
-      activeChannel: this.lastGoodChannel,
-      channelWins: Object.fromEntries(this.channelWins),
+      activeChannel: this.lastWinner,
+      bestChannel: this.rankChannels()[0] ?? null,
+      channelWins: Object.fromEntries(
+        [...this.channelStats].filter(([, s]) => s.wins > 0).map(([id, s]) => [id, s.wins]),
+      ),
+      channelScores: Object.fromEntries(
+        [...this.channelStats].map(([id, s]) => [
+          id,
+          {
+            wins: s.wins,
+            tries: s.tries,
+            score: Math.round(this.scoreOf(s) * 1000) / 1000,
+            avgLatency: s.wins > 0 ? Math.round(s.latencySum / s.wins) : -1,
+          },
+        ]),
+      ),
     };
   }
 

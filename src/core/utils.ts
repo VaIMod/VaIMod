@@ -129,15 +129,15 @@ function collectReactRoots(): Element[] {
   return candidates;
 }
 
-/** 在根容器元素上定位 fiber 起点 key（React 16/17/18 三代键名兼容） */
-function fiberKeyOf(el: Element): string | null {
-  return (
-    Object.keys(el).find(
-      (k) =>
-        k.startsWith('__reactFiber$') ||
-        k.startsWith('__reactInternalInstance$') ||
-        k.startsWith('__reactContainer$'),
-    ) ?? null
+/** 在根容器元素上定位全部 fiber 起点 key（React 16/17/18 三代键名兼容）。
+ * 站点重建/热更新可能在同一元素残留多个 fiber key（旧的指向死树），
+ * 只取第一个会被旧 key 遮蔽 → 必须返回全部、逐个尝试。 */
+function fiberKeysOf(el: Element): string[] {
+  return Object.keys(el).filter(
+    (k) =>
+      k.startsWith('__reactFiber$') ||
+      k.startsWith('__reactInternalInstance$') ||
+      k.startsWith('__reactContainer$'),
   );
 }
 
@@ -145,12 +145,12 @@ export function findVmViaFiber(): unknown {
   const candidates = collectReactRoots();
 
   for (const el of candidates) {
-    const fiberKey = fiberKeyOf(el);
-    if (!fiberKey) continue;
-    const start = (el as unknown as Record<string, unknown>)[fiberKey];
-    if (!start || typeof start !== 'object') continue;
-    const vm = scanFiberFromNode(start as object);
-    if (vm) return vm;
+    for (const fiberKey of fiberKeysOf(el)) {
+      const start = (el as unknown as Record<string, unknown>)[fiberKey];
+      if (!start || typeof start !== 'object') continue;
+      const vm = scanFiberFromNode(start as object);
+      if (vm) return vm;
+    }
   }
 
   // React DevTools hook 通道（CSRT 同款）：React 根不在常见容器时从 DevTools 全局钩子取
@@ -264,12 +264,12 @@ export function findVmViaRedux(): unknown {
   }
   // ② fiber Provider store
   for (const el of collectReactRoots()) {
-    const fiberKey = fiberKeyOf(el);
-    if (!fiberKey) continue;
-    const start = (el as unknown as Record<string, unknown>)[fiberKey];
-    if (!start || typeof start !== 'object') continue;
-    const vm = scanFiberForStore(start as object);
-    if (vm) return vm;
+    for (const fiberKey of fiberKeysOf(el)) {
+      const start = (el as unknown as Record<string, unknown>)[fiberKey];
+      if (!start || typeof start !== 'object') continue;
+      const vm = scanFiberForStore(start as object);
+      if (vm) return vm;
+    }
   }
   // ③ DevTools hook 根
   try {
