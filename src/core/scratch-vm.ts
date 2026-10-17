@@ -7,7 +7,7 @@ import {
   type VariableLockInfo,
   type VariableValue,
 } from './types';
-import { findVmViaFiber, isVMLike, normalizeValue, sleep, stringToListValue } from './utils';
+import { findVmViaFiber, findVmViaRedux, isVMLike, normalizeValue, sleep, stringToListValue } from './utils';
 import { markNative } from '../dom-utils';
 import { ccwDataStore } from './ccwdata';
 import { installLoadProjectTap } from './lp-guard';
@@ -63,6 +63,9 @@ export type BridgeEvent =
 
 export type BridgeListener = (event: BridgeEvent) => void;
 
+/** 轮询发现通道 id（bind 为事件驱动兜底通道，不在此列） */
+type VmChannelId = 'redux' | 'fiber' | 'globals' | 'eureka' | 'iframe' | 'globalscan';
+
 export class ScratchVM {
   readonly options: Required<Pick<BridgeOptions, 'pollInterval' | 'connectTimeout'>> &
     Omit<BridgeOptions, 'pollInterval' | 'connectTimeout'>;
@@ -102,6 +105,10 @@ export class ScratchVM {
   private lastRebuild = 0;
   // 发现循环计数（诊断：waitForVM 每轮 +1，验证重连循环是否存活）
   private discoverTries = 0;
+  // ---- 通道自动选择：上一轮成功的通道前置（当前环境最优方案自适应） ----
+  private lastGoodChannel: VmChannelId | null = null;
+  // 各通道累计命中次数（诊断：反映当前环境哪个挂载路径最优）
+  private channelWins = new Map<VmChannelId, number>();
 
   // ---- 作品捕获（loadProject 包装，环形缓冲，纯内存、无持久化） ----
   private captureEnabled = true;
@@ -794,8 +801,9 @@ export class ScratchVM {
     // 站点赋值瞬间即捕获（快于任何轮询周期一个节拍以上）
     this.installVmSetterTraps();
     // 不设超时：持续等待直到真正发现 vm（用户要求「直到获取到 vm 才隐藏」）。
-    // 前 2 秒快速轮询（100ms），配合多通道并行发现（window/fiber/eureka/iframe/globals），
-    // 之后降为 300ms——网络/环境差时也能尽快拿到 vm。
+    // 前 2 秒快速轮询（100ms），配合多通道优先级发现（redux/fiber/window/
+    // eureka/iframe/globals + bind 事件兜底），之后降为 300ms——
+    // 网络/环境差时也能尽快拿到 vm。
     const startedAt = Date.now();
     const hookAt = startedAt + ScratchVM.BIND_HOOK_DELAY_MS;
     const fastUntil = startedAt + 2000;
@@ -815,26 +823,56 @@ export class ScratchVM {
   }
 
   private discoverVM(): unknown {
-    // 三全局通道（butterAny 同款）：window.vm / window._vm / window.Scratch?.vm
-    const w = window as unknown as { vm?: unknown; _vm?: unknown; Scratch?: { vm?: unknown } };
-    if (isVMLike(w.vm)) return w.vm;
-    if (isVMLike(w._vm)) return w._vm;
-    try {
-      if (isVMLike(w.Scratch?.vm)) return w.Scratch?.vm;
-    } catch {
-      /* Scratch.vm 可能是 getter，异常按无处理 */
+    // 通道优先级（轮询发现链）：redux store → React fiber → window.vm（三全局）
+    // → Eureka → iframe → 全局扫描。bind 为事件驱动兜底（延迟 3s 安装
+    // Function.prototype.bind 劫持，见 waitForVM / installBindHook），不在轮询链内。
+    // 自动选择：上一轮成功的通道优先尝试（当前环境的最优方案自适应前置），
+    // 环境变化（如站点重建后走不同挂载路径）时首轮未命中自动回落固定优先级。
+    const order: VmChannelId[] = ['redux', 'fiber', 'globals', 'eureka', 'iframe', 'globalscan'];
+    const best = this.lastGoodChannel;
+    if (best) {
+      const idx = order.indexOf(best);
+      if (idx > 0) {
+        order.splice(idx, 1);
+        order.unshift(best);
+      }
     }
-    const fiberVM = findVmViaFiber();
-    if (isVMLike(fiberVM)) return fiberVM;
-    // Eureka 引擎：eureka 对象 / loader 及其内部可能持有 vm（Eureka 也会写 globalThis.vm）
-    const eurekaVM = this.findVMEureka();
-    if (isVMLike(eurekaVM)) return eurekaVM;
-    // iframe 内查找（分享播放页常见：播放器嵌入 iframe，vm 不在主 window）
-    const iframeVM = this.findVMInIframes();
-    if (isVMLike(iframeVM)) return iframeVM;
-    // 全局对象扫描（ccw 可能把 vm 挂在其它全局名而非 window.vm）
-    const globalVM = this.findVMInGlobals();
-    if (isVMLike(globalVM)) return globalVM;
+    for (const id of order) {
+      const vm = this.runChannel(id);
+      if (isVMLike(vm)) {
+        this.lastGoodChannel = id;
+        this.channelWins.set(id, (this.channelWins.get(id) ?? 0) + 1);
+        return vm;
+      }
+    }
+    return null;
+  }
+
+  /** 单通道执行（统一异常隔离：任一通道抛错只损失该通道，不断发现链） */
+  private runChannel(id: VmChannelId): unknown {
+    try {
+      switch (id) {
+        case 'redux':
+          return findVmViaRedux();
+        case 'fiber':
+          return findVmViaFiber();
+        case 'globals': {
+          // window.vm / window._vm / window.Scratch?.vm（butterAny 三全局同款）
+          const w = window as unknown as { vm?: unknown; _vm?: unknown; Scratch?: { vm?: unknown } };
+          if (isVMLike(w.vm)) return w.vm;
+          if (isVMLike(w._vm)) return w._vm;
+          return w.Scratch?.vm;
+        }
+        case 'eureka':
+          return this.findVMEureka();
+        case 'iframe':
+          return this.findVMInIframes();
+        case 'globalscan':
+          return this.findVMInGlobals();
+      }
+    } catch {
+      /* 单通道异常按无处理 */
+    }
     return null;
   }
 
@@ -931,6 +969,10 @@ export class ScratchVM {
     status: string;
     statusInfo: string;
     discoverTries: number;
+    /** 自动选择：当前环境最优通道（上一轮成功者） */
+    activeChannel: VmChannelId | null;
+    /** 各轮询通道累计命中次数 */
+    channelWins: Record<string, number>;
   } {
     return {
       setterTrapsInstalled: this.vmTrapsInstalled,
@@ -942,6 +984,8 @@ export class ScratchVM {
       status: String(this.status),
       statusInfo: this.statusInfo,
       discoverTries: this.discoverTries,
+      activeChannel: this.lastGoodChannel,
+      channelWins: Object.fromEntries(this.channelWins),
     };
   }
 

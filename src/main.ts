@@ -73,17 +73,19 @@ function installDebug(bridge: ScratchVM): void {
       sandbox: () => bridge.sandboxedVM,
       snapshot: () => bridge.getSecureSnapshot(),
       sandboxCalls: () => bridge.getSandboxCalls(),
-      // VM 劫持系统状态：8 路钩子通道 + 看门狗 + 安全加固巡检
+      // VM 劫持系统状态：通道优先级 + 看门狗 + 安全加固巡检
+      // 轮询链优先级：redux → fiber → window.vm → Eureka → iframe → 全局扫描；
+      // bind 劫持为事件驱动兜底（延迟安装），setter 陷阱为事件驱动捕获
       vmHooks: () => ({
         ...bridge.hookReport(),
         channels: [
-          'window.vm/_vm/Scratch.vm', // ① 三全局
+          'redux-store', // ① redux store（window 全局 / fiber Provider / DevTools 根）
           'fiber-5-strategies', // ② React fiber 五策略扫描
-          'react-devtools-hook', // ③ DevTools hook
+          'window.vm/_vm/Scratch.vm', // ③ 三全局
           'eureka', // ④ Eureka 引擎
           'iframes', // ⑤ 同域 iframe 递归
           'global-scan', // ⑥ 全局对象扫描
-          'bind-hijack', // ⑦ Function.prototype.bind 劫持（四形状 + 盯梢）
+          'bind-hijack', // ⑦ Function.prototype.bind 劫持（事件兜底，四形状 + 盯梢）
           'setter-traps', // ⑧ 赋值陷阱（事件驱动，defineProperty）
         ],
         hardening: vmHardeningReport(),

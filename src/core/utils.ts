@@ -91,7 +91,8 @@ function scanFiberFromNode(node: object): unknown {
   return null;
 }
 
-export function findVmViaFiber(): unknown {
+/** 收集 React 根容器元素（fiber 通道 / redux 通道共用） */
+function collectReactRoots(): Element[] {
   const candidates: Element[] = [];
   // CSRT 同款：window.root（CCW 挂 React 根到 window.root 的场景）优先于 DOM 查找
   const winRoot = (window as unknown as { root?: unknown }).root;
@@ -125,15 +126,26 @@ export function findVmViaFiber(): unknown {
       if (found) break;
     }
   }
+  return candidates;
+}
 
-  for (const el of candidates) {
-    // fiber key 兼容 __reactContainer$（React 18 createRoot 挂在容器上的容器键，CSRT 同款）
-    const fiberKey = Object.keys(el).find(
+/** 在根容器元素上定位 fiber 起点 key（React 16/17/18 三代键名兼容） */
+function fiberKeyOf(el: Element): string | null {
+  return (
+    Object.keys(el).find(
       (k) =>
         k.startsWith('__reactFiber$') ||
         k.startsWith('__reactInternalInstance$') ||
         k.startsWith('__reactContainer$'),
-    );
+    ) ?? null
+  );
+}
+
+export function findVmViaFiber(): unknown {
+  const candidates = collectReactRoots();
+
+  for (const el of candidates) {
+    const fiberKey = fiberKeyOf(el);
     if (!fiberKey) continue;
     const start = (el as unknown as Record<string, unknown>)[fiberKey];
     if (!start || typeof start !== 'object') continue;
@@ -154,6 +166,124 @@ export function findVmViaFiber(): unknown {
       roots.forEach((rootEntry) => {
         if (found || !rootEntry?.current) return;
         found = scanFiberFromNode(rootEntry.current);
+      });
+      if (found) return found;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+// ---- Redux store 通道（VM 发现优先级第 1 位） ----
+
+/**
+ * 从 redux store 提取 vm：getState 后定向取 state.scratchGui.vm
+ * （scratch-gui 标准挂载点），未命中再浅扫 state 顶层值（非标准宿主
+ * 可能挂在其它键下；只扫一层，控成本）。
+ */
+function vmFromStore(store: unknown): unknown {
+  try {
+    const s = store as { getState?: () => unknown } | null;
+    if (!s || typeof s.getState !== 'function') return null;
+    const state = s.getState();
+    if (!state || typeof state !== 'object') return null;
+    const direct = (state as { scratchGui?: { vm?: unknown } }).scratchGui;
+    if (direct && isVMLike(direct.vm)) return direct.vm;
+    for (const v of Object.values(state as Record<string, unknown>)) {
+      if (isVMLike(v)) return v;
+      if (v && typeof v === 'object') {
+        const gui = (v as { scratchGui?: { vm?: unknown } }).scratchGui;
+        if (gui && isVMLike(gui.vm)) return gui.vm;
+      }
+    }
+  } catch {
+    /* getState 可能是 getter / store 是 Proxy，异常按无处理 */
+  }
+  return null;
+}
+
+/** 站点可能把 redux store 暴露为全局的常见键名 */
+const WINDOW_STORE_KEYS = ['store', '__store', 'reduxStore', '__reduxStore__', '__REDUX_STORE__'] as const;
+
+function isStoreShaped(v: unknown): boolean {
+  return (
+    !!v &&
+    typeof v === 'object' &&
+    typeof (v as { getState?: unknown }).getState === 'function'
+  );
+}
+
+/**
+ * fiber 树内找 Provider store：react-redux <Provider store={store}> 把 store
+ * 作为 prop 注入根组件，BFS 遍历 fiber 树检查 memoizedProps.store / reduxStore。
+ * 预算独立且小于 vm 扫描（store 必在树的上层，命中通常在前几十个节点）。
+ */
+function scanFiberForStore(start: object): unknown {
+  const seen = new Set<object>();
+  const queue: object[] = [start];
+  let budget = 50_000;
+  while (queue.length && budget-- > 0) {
+    const cur = queue.shift();
+    if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
+    seen.add(cur);
+    const props = (cur as { memoizedProps?: unknown }).memoizedProps as
+      | Record<string, unknown>
+      | undefined;
+    if (props) {
+      const store = props.store ?? props.reduxStore;
+      if (isStoreShaped(store)) {
+        const vm = vmFromStore(store);
+        if (vm) return vm;
+      }
+    }
+    const fiber = cur as { return?: unknown; child?: unknown; sibling?: unknown };
+    if (fiber.return) queue.push(fiber.return as object);
+    if (fiber.child) queue.push(fiber.child as object);
+    if (fiber.sibling) queue.push(fiber.sibling as object);
+  }
+  return null;
+}
+
+/**
+ * Redux store 通道：① window 挂载的 store 全局 → ② fiber 树内 Provider store
+ * → ③ DevTools hook 根同样扫一遍 store。三路全空返回 null，由下一优先级通道接管。
+ */
+export function findVmViaRedux(): unknown {
+  const w = window as unknown as Record<string, unknown>;
+  // ① 全局 store
+  for (const k of WINDOW_STORE_KEYS) {
+    try {
+      if (isStoreShaped(w[k])) {
+        const vm = vmFromStore(w[k]);
+        if (vm) return vm;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  // ② fiber Provider store
+  for (const el of collectReactRoots()) {
+    const fiberKey = fiberKeyOf(el);
+    if (!fiberKey) continue;
+    const start = (el as unknown as Record<string, unknown>)[fiberKey];
+    if (!start || typeof start !== 'object') continue;
+    const vm = scanFiberForStore(start as object);
+    if (vm) return vm;
+  }
+  // ③ DevTools hook 根
+  try {
+    const hook = (window as unknown as {
+      __REACT_DEVTOOLS_GLOBAL_HOOK__?: {
+        getFiberRoots?: (rendererId: number) => Set<{ current?: object }>;
+      };
+    }).__REACT_DEVTOOLS_GLOBAL_HOOK__;
+    const roots = hook?.getFiberRoots?.(1);
+    if (roots && typeof roots.forEach === 'function') {
+      let found: unknown = null;
+      roots.forEach((rootEntry) => {
+        if (found || !rootEntry?.current) return;
+        found = scanFiberForStore(rootEntry.current as object);
       });
       if (found) return found;
     }
