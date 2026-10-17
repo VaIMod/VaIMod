@@ -49,8 +49,10 @@ header.top{
   padding:26px 0 22px;border-bottom:1px solid var(--hair);
   font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.08em;
 }
-header.top .brand{font-family:var(--disp);font-weight:800;font-size:15px;color:var(--ink);letter-spacing:.02em}
+header.top .brand{font-family:var(--disp);font-weight:800;font-size:15px;color:var(--ink);letter-spacing:.02em;display:inline-flex;align-items:center;gap:10px}
 header.top .brand b{color:var(--amber);font-weight:800}
+.brand .mark{width:27px;height:27px;flex-shrink:0;display:block;filter:drop-shadow(0 2px 10px rgba(230,162,60,.14))}
+.brand a{display:inline-flex;align-items:center;gap:10px}
 header.top nav{display:flex;gap:24px;flex-wrap:wrap}
 header.top nav a{color:var(--ink-dim);transition:color .25s var(--ease);padding:2px 0;border-bottom:1px solid transparent}
 header.top nav a:hover{color:var(--amber)}
@@ -68,6 +70,7 @@ header.top nav a.on{color:var(--amber);border-bottom-color:var(--amber)}
 }
 .page-hero .kicker::after{content:"";height:1px;width:72px;background:var(--amber);opacity:.5}
 .page-hero h1{font-family:var(--disp);font-weight:800;font-size:clamp(36px,6vw,72px);line-height:1.02;letter-spacing:-.015em}
+.page-hero h1::after{content:".";color:var(--amber)}
 .page-hero .sub{margin-top:22px;max-width:640px;font-size:clamp(15px,1.5vw,18px);color:var(--ink-dim)}
 .page-hero .sub strong{color:var(--ink);font-weight:500}
 
@@ -90,9 +93,9 @@ section{padding:clamp(56px,9vh,110px) 0;border-top:1px solid var(--hair)}
   transition:transform .3s var(--ease),background .3s var(--ease),border-color .3s var(--ease),color .3s var(--ease);
 }
 .btn-primary{background:var(--amber);color:#16130c;border:1px solid var(--amber)}
-.btn-primary:hover{background:var(--amber-hi);border-color:var(--amber-hi);transform:translateY(-2px)}
+.btn-primary:hover{background:var(--amber-hi);border-color:var(--amber-hi);transform:translateY(-2px);box-shadow:0 10px 30px rgba(230,162,60,.22)}
 .btn-ghost{color:var(--ink);border:1px solid var(--hair-strong)}
-.btn-ghost:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-2px)}
+.btn-ghost:hover{border-color:var(--amber);color:var(--amber);transform:translateY(-2px);background:rgba(230,162,60,.05)}
 .btn .arr{font-family:var(--mono);font-weight:400}
 
 /* ---------- 徽标串 ---------- */
@@ -231,7 +234,8 @@ tbody tr:hover{background:var(--bg-raise)}
 /* ---------- 页脚 ---------- */
 footer{border-top:1px solid var(--hair);padding:40px 0 56px;margin-top:auto}
 footer .fin{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;font-family:var(--mono);font-size:12px;color:var(--ink-faint);letter-spacing:.06em}
-footer .brand{font-family:var(--disp);font-weight:800;color:var(--ink-dim)}
+footer .brand{font-family:var(--disp);font-weight:800;color:var(--ink-dim);display:inline-flex;align-items:center;gap:9px}
+footer .brand .mark{width:21px;height:21px;filter:none}
 footer .brand b{color:var(--amber)}
 footer a{color:var(--ink-dim);border-bottom:1px solid var(--hair-strong)}
 footer a:hover{color:var(--amber);border-color:var(--amber)}
