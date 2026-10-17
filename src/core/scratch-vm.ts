@@ -45,12 +45,15 @@ interface LockEntry {
  * 访问器级变量锁状态（butterAny f41 同款）：对 variable.value 上 defineProperty
  * 访问器，冻结期外部写入直接被拒（无竞态窗口），解锁恢复原 descriptor（可逆）。
  * 与轮询写回叠加：写回负责面板显示语义，访问器负责真正的值钉死。
+ * accessorSet 保存自家 setter 引用：巡检比对 descriptor.set 是否仍为自家函数，
+ * 外部 delete / defineProperty 绕锁时立即重新上锁（防绕过自愈）。
  */
 interface FrozenVarState {
   variable: Record<string, unknown>;
   variableId: string;
   entry: LockEntry;
   origDesc: PropertyDescriptor | null;
+  accessorSet: (nv: unknown) => void;
 }
 
 export type BridgeEvent =
@@ -89,6 +92,16 @@ export class ScratchVM {
   private bindOrig: typeof Function.prototype.bind | null = null;
   private bindHookInstalled = false;
   private bindHookTried = false;
+
+  // ---- VM 劫持安全加固（防检查/防删除/防修改 + 看门狗自愈） ----
+  // window.vm / window._vm / Scratch.vm 赋值陷阱是否已装（事件驱动第 8 通道）
+  private vmTrapsInstalled = false;
+  // vm 引用健康看门狗定时器（连接后每 3s 验证，失效自动重建通道）
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  // 上次通道重建时间戳（防风暴：两次重建至少间隔 5s）
+  private lastRebuild = 0;
+  // 发现循环计数（诊断：waitForVM 每轮 +1，验证重连循环是否存活）
+  private discoverTries = 0;
 
   // ---- 作品捕获（loadProject 包装，环形缓冲，纯内存、无持久化） ----
   private captureEnabled = true;
@@ -224,6 +237,8 @@ export class ScratchVM {
       if (found) sg.adopt(found);
       // SDP 单包授权：连接建立后颁发一次性访问凭证（此后所有访问须持续验证）
       ztna.issue();
+      // vm 引用健康看门狗：连接期间持续验证，失效自动重建通道（vm 自愈闭环）
+      this.startVmWatchdog();
       window.addEventListener('visibilitychange', this.onVisibilityChange);
       this.emitVariables();
     } catch (err) {
@@ -237,6 +252,7 @@ export class ScratchVM {
 
   disconnect(): void {
     window.removeEventListener('visibilitychange', this.onVisibilityChange);
+    this.stopVmWatchdog();
     this.restoreBindHook();
     this.unbindVM();
     this.stopPolling();
@@ -586,28 +602,31 @@ export class ScratchVM {
     }
     let cur = variable.value;
     const self = this;
+    // setter 引用留存：巡检比对 descriptor.set 判定访问器是否被外部绕过
+    const accessorSet = (nv: unknown): void => {
+      const st = self.frozenVars.get(variable);
+      if (!st) {
+        cur = nv; // 状态已清理（防御：descriptor 残留），放行恢复原语义
+        return;
+      }
+      if (self.valuesEqual(nv, st.entry.value)) {
+        cur = nv; // 自家写回 / 同值写入放行
+      }
+      // 其余写入：冻结，拒绝（值保持锁定值）
+    };
     const state: FrozenVarState = {
       variable,
       variableId,
       entry,
       origDesc: Object.getOwnPropertyDescriptor(variable, 'value') ?? null,
+      accessorSet,
     };
     try {
       Object.defineProperty(variable, 'value', {
         configurable: true,
         enumerable: state.origDesc ? state.origDesc.enumerable !== false : true,
         get: () => cur,
-        set: (nv: unknown) => {
-          const st = self.frozenVars.get(variable);
-          if (!st) {
-            cur = nv; // 状态已清理（防御：descriptor 残留），放行恢复原语义
-            return;
-          }
-          if (self.valuesEqual(nv, st.entry.value)) {
-            cur = nv; // 自家写回 / 同值写入放行
-          }
-          // 其余写入：冻结，拒绝（值保持锁定值）
-        },
+        set: accessorSet,
       });
       this.frozenVars.set(variable, state);
       this.frozenIndex.set(variableId, variable);
@@ -696,6 +715,9 @@ export class ScratchVM {
   private tickLocks = (): void => {
     this.lockTickerTimer = null;
     if (this.locks.size === 0) return;
+    // 访问器锁防绕过自愈：外部 delete / defineProperty 覆盖访问器是唯一的绕锁路径
+    // （configurable:true 是可逆还原的必要代价），每拍校验 + 即时重装，绕锁窗口 ≤ 一拍
+    if (this.frozenIndex.size > 0) this.repairAccessorLocks();
     const now = Date.now();
     for (const [id, entry] of this.locks) {
       if (entry.interval > 0 && now - entry.lastWrite < entry.interval) continue;
@@ -768,6 +790,9 @@ export class ScratchVM {
   }
 
   private async waitForVM(): Promise<unknown> {
+    // 事件驱动钩子先行：window.vm / _vm / Scratch.vm 赋值陷阱在轮询前就位，
+    // 站点赋值瞬间即捕获（快于任何轮询周期一个节拍以上）
+    this.installVmSetterTraps();
     // 不设超时：持续等待直到真正发现 vm（用户要求「直到获取到 vm 才隐藏」）。
     // 前 2 秒快速轮询（100ms），配合多通道并行发现（window/fiber/eureka/iframe/globals），
     // 之后降为 300ms——网络/环境差时也能尽快拿到 vm。
@@ -776,6 +801,7 @@ export class ScratchVM {
     const fastUntil = startedAt + 2000;
     let bindTried = false;
     for (;;) {
+      this.discoverTries++;
       const chained = this.channel.getVm();
       if (chained) return chained;
       const vm = this.discoverVM();
@@ -810,6 +836,210 @@ export class ScratchVM {
     const globalVM = this.findVMInGlobals();
     if (isVMLike(globalVM)) return globalVM;
     return null;
+  }
+
+  /**
+   * 事件驱动 VM 捕获通道（第 8 通道）：对 window.vm / window._vm / Scratch.vm
+   * 上 defineProperty 赋值陷阱。站点脚本赋值瞬间即判定形状并捕获——
+   * 相比轮询，早一个完整节拍；陷阱属性非枚举、赋值语义原样转发，
+   * 行为与普通属性无差别（防检查：descriptor 形态差异是已知最小痕迹，
+   * 换取事件驱动捕获，且轮询通道仍全程兜底，陷阱被移除不影响可用性）。
+   */
+  private installVmSetterTraps(): void {
+    if (this.vmTrapsInstalled) return;
+    this.vmTrapsInstalled = true;
+    const self = this;
+    const trapWindowKey = (key: string): void => {
+      try {
+        const w = window as unknown as Record<string, unknown>;
+        const desc = Object.getOwnPropertyDescriptor(w, key);
+        // 不可配置：无法重定义，放弃陷阱（轮询通道仍覆盖）
+        if (desc && desc.configurable === false) return;
+        let cur: unknown = desc && 'value' in desc ? desc.value : undefined;
+        Object.defineProperty(w, key, {
+          configurable: true,
+          enumerable: desc ? desc.enumerable : false,
+          get: () => cur,
+          set: (nv: unknown) => {
+            cur = nv;
+            try {
+              // 未连接时才采纳（已连接场景由看门狗统一管理，避免误切换通道）
+              if (!self.channel.getVm() && nv && typeof nv === 'object') {
+                if (isVMLike(nv)) self.adoptVmCandidate(nv);
+                else if (self.isVmShaped(nv)) self.adoptVmCandidate(nv);
+              }
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+      } catch {
+        /* ignore */
+      }
+    };
+    trapWindowKey('vm');
+    trapWindowKey('_vm');
+    // Scratch.vm 嵌套一层：Scratch 对象已存在且 vm 属性可配置时同样上陷阱
+    try {
+      const s = (window as unknown as { Scratch?: unknown }).Scratch;
+      if (s && typeof s === 'object') {
+        const sd = Object.getOwnPropertyDescriptor(s as object, 'vm');
+        if (!sd || sd.configurable !== false) {
+          let cur2: unknown = sd && 'value' in sd ? sd.value : undefined;
+          Object.defineProperty(s as object, 'vm', {
+            configurable: true,
+            enumerable: sd ? sd.enumerable : true,
+            get: () => cur2,
+            set: (nv: unknown) => {
+              cur2 = nv;
+              try {
+                if (!self.channel.getVm() && nv && typeof nv === 'object' && isVMLike(nv)) {
+                  self.adoptVmCandidate(nv);
+                }
+              } catch {
+                /* ignore */
+              }
+            },
+          });
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** vm 引用是否健康（isVMLike + runtime.targets 可达）——看门狗/加固巡检共用 */
+  vmRefHealthy(): boolean {
+    try {
+      const vm = this.channel.getVm();
+      if (!isVMLike(vm)) return false;
+      const targets = (vm as { runtime?: { targets?: unknown } }).runtime?.targets;
+      return targets !== undefined && targets !== null;
+    } catch {
+      return false;
+    }
+  }
+
+  /** VM 钩子通道状态报告（调试通道 / 加固巡检用，只读） */
+  hookReport(): {
+    setterTrapsInstalled: boolean;
+    bindHookInstalled: boolean;
+    watchdogActive: boolean;
+    connected: boolean;
+    vmHealthy: boolean;
+    lockedVars: number;
+    status: string;
+    statusInfo: string;
+    discoverTries: number;
+  } {
+    return {
+      setterTrapsInstalled: this.vmTrapsInstalled,
+      bindHookInstalled: this.bindHookInstalled,
+      watchdogActive: this.watchdogTimer !== null,
+      connected: this.connected,
+      vmHealthy: this.vmRefHealthy(),
+      lockedVars: this.locks.size,
+      status: String(this.status),
+      statusInfo: this.statusInfo,
+      discoverTries: this.discoverTries,
+    };
+  }
+
+  /**
+   * VM 引用健康看门狗：连接期间每 3s 验证通道里的 vm 仍可达。
+   * 站点重建 vm（重开作品/切页导致旧实例被 GC）时旧引用静默失效——
+   * 读链路会一直读旧实例的残留 targets（数据陈旧）或空列表。
+   * 看门狗发现失效即自动重建通道（保留锁定：锁定按 variableId 继续在新 vm 上钉值）。
+   */
+  private startVmWatchdog(): void {
+    if (this.watchdogTimer !== null) return;
+    this.watchdogTimer = setInterval(() => {
+      try {
+        if (!this.connected) {
+          this.stopVmWatchdog();
+          return;
+        }
+        if (!this.vmRefHealthy()) this.rebuildChannel();
+      } catch {
+        /* ignore */
+      }
+    }, 3000);
+  }
+
+  private stopVmWatchdog(): void {
+    if (this.watchdogTimer !== null) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  /**
+   * 通道重建（vm 失效自愈）：销毁旧通道 → 新建 → 重新发现并绑定。
+   * 保留锁定与原始值基线（variableId 在新 vm 上通常不变，锁定值继续钉）。
+   * 防风暴：两次重建至少间隔 5s。
+   */
+  rebuildChannel(): void {
+    const now = Date.now();
+    if (now - this.lastRebuild < 5000) return;
+    this.lastRebuild = now;
+    try {
+      this.stopPolling();
+      this.unbindVM(); // 必须在 destroy 前：unregister 事件用的是旧 vm 引用
+      this.channel.destroy();
+    } catch {
+      /* ignore */
+    }
+    this.channel = VpnChannel.create();
+    this.setStatus(BridgeStatus.Connecting, 'VM 引用失效，自动重建通道');
+    void this.connect().catch(() => {
+      /* 重连失败：状态已是 Error，用户可手动重连；看门狗在连接态外不动作 */
+    });
+  }
+
+  /** 访问器锁完整性：全部登记锁的 descriptor 仍是自家访问器（未被子外部覆盖/删除） */
+  locksIntact(): boolean {
+    for (const [, obj] of this.frozenIndex) {
+      const st = this.frozenVars.get(obj);
+      if (!st) continue;
+      try {
+        const desc = Object.getOwnPropertyDescriptor(obj, 'value');
+        if (!desc || typeof desc.set !== 'function' || desc.set !== st.accessorSet) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** 修复被绕过的访问器锁：重装全部失守锁（返回修复数） */
+  repairAccessorLocks(): number {
+    let repaired = 0;
+    for (const [variableId, obj] of [...this.frozenIndex]) {
+      const st = this.frozenVars.get(obj);
+      if (!st) continue;
+      let broken = false;
+      try {
+        const desc = Object.getOwnPropertyDescriptor(obj, 'value');
+        broken = !desc || typeof desc.set !== 'function' || desc.set !== st.accessorSet;
+      } catch {
+        broken = true;
+      }
+      if (!broken) continue;
+      const entry = this.locks.get(variableId);
+      if (!entry) continue;
+      // 清登记后重装（freezeVariableAccessor 对已登记对象只更新 entry，需先摘牌）
+      this.frozenVars.delete(obj);
+      this.frozenIndex.delete(variableId);
+      this.freezeVariableAccessor(variableId, entry);
+      this.writeLockValue(variableId, entry);
+      repaired++;
+    }
+    return repaired;
+  }
+
+  /** 重新安装作品捕获 tap（加固巡检修复用；内部幂等） */
+  reinstallProjectCapture(): void {
+    this.installProjectCapture();
   }
 
   /** Eureka 引擎通道：eureka 对象及其 loader 上查找 vm（多通道并行发现的一路） */

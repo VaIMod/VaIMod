@@ -132,6 +132,19 @@ function wrapValue(v: unknown, boundThis?: object, methodName?: string): unknown
   return v;
 }
 
+/** 原型隔离取值：getPrototypeOf 与 get('__proto__') 共用同一出口（防绕过） */
+function protoOf(t: object): object | null {
+  const proto = Reflect.getPrototypeOf(t);
+  // 全局共享原型（Object/Function.prototype）直接返回，避免过度包装影响基础操作；
+  // null 原样；其余原型返回只读代理，阻断沿原型链逃逸。
+  if (proto === null || proto === Object.prototype || proto === Function.prototype) {
+    return proto;
+  }
+  // Proxy invariant：目标不可扩展时 getPrototypeOf 必须返回真实 [[Prototype]]
+  if (!Reflect.isExtensible(t)) return proto;
+  return wrapValue(proto) as object;
+}
+
 /** 递归包装：对象 → 只读沙盒代理（命中缓存则复用） */
 function sandboxWrap(target: object): unknown {
   const cached = RAW_TO_PROXY.get(target);
@@ -139,6 +152,9 @@ function sandboxWrap(target: object): unknown {
 
   const proxy = new Proxy(target, {
     get(t, p) {
+      // __proto__ 截获：Object.prototype.__proto__ getter 会绕过 getPrototypeOf
+      // trap 直接吐出原生原型（真实逃逸点），必须与 getPrototypeOf 同一出口
+      if (p === '__proto__') return protoOf(t);
       // symbol 属性不再透传：统一包装（Symbol.iterator / toPrimitive / toStringTag 等一并隔离）
       const v = Reflect.get(t, p, t);
       return wrapValue(v, t, typeof p === 'string' ? p : undefined);
@@ -185,15 +201,8 @@ function sandboxWrap(target: object): unknown {
       return out;
     },
     getPrototypeOf(t) {
-      const proto = Reflect.getPrototypeOf(t);
-      // 全局共享原型（Object/Function.prototype）直接返回，避免过度包装影响基础操作；
-      // null 原样；其余原型返回只读代理，阻断沿原型链逃逸。
-      if (proto === null || proto === Object.prototype || proto === Function.prototype) {
-        return proto;
-      }
-      // Proxy invariant：目标不可扩展时 getPrototypeOf 必须返回真实 [[Prototype]]
-      if (!Reflect.isExtensible(t)) return proto;
-      return wrapValue(proto) as object;
+      // 与 get('__proto__') 共用同一出口（protoOf），两路都返回受控原型
+      return protoOf(t);
     },
   });
 

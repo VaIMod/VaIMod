@@ -1,5 +1,5 @@
 import { mount } from 'svelte';
-import { ScratchVM } from './core';
+import { ScratchVM, type ScratchValue } from './core';
 import { createStealthHost, installStealth, getProtectedHosts, trueElementsFromPoint } from './dom-utils';
 import { installXssGuard } from './core/xss-guard';
 import { installCsenseGuard, csenseStatus } from './core/csense-guard';
@@ -15,6 +15,9 @@ import { installEarlyCaptureWatch } from './core/capture-early';
 import { installFeishuGuard, feishuMode, feishuHits, feishuPendingCount, feishuRules } from './core/feishu-guard';
 import { installCcwSanitize, startSanitizeLoop } from './core/ccw-sanitize';
 import { installUiGuard, uiGuardReport } from './core/ui-guard';
+import { installVmHardening, registerVmTamperCheck, vmHardeningReport } from './core/vm-hardening';
+import { isLoadProjectTapped } from './core/lp-guard';
+import { earlyWrapped } from './core/capture-early';
 import {
   getAliasConfig,
   setAliasConfig,
@@ -70,6 +73,21 @@ function installDebug(bridge: ScratchVM): void {
       sandbox: () => bridge.sandboxedVM,
       snapshot: () => bridge.getSecureSnapshot(),
       sandboxCalls: () => bridge.getSandboxCalls(),
+      // VM 劫持系统状态：8 路钩子通道 + 看门狗 + 安全加固巡检
+      vmHooks: () => ({
+        ...bridge.hookReport(),
+        channels: [
+          'window.vm/_vm/Scratch.vm', // ① 三全局
+          'fiber-5-strategies', // ② React fiber 五策略扫描
+          'react-devtools-hook', // ③ DevTools hook
+          'eureka', // ④ Eureka 引擎
+          'iframes', // ⑤ 同域 iframe 递归
+          'global-scan', // ⑥ 全局对象扫描
+          'bind-hijack', // ⑦ Function.prototype.bind 劫持（四形状 + 盯梢）
+          'setter-traps', // ⑧ 赋值陷阱（事件驱动，defineProperty）
+        ],
+        hardening: vmHardeningReport(),
+      }),
       vpn: () => vpnReport(),
       ztna: () => ({ isolated: ztna.isolatedState, stats: ztna.accessStats() }),
       secure: () => ({
@@ -85,6 +103,10 @@ function installDebug(bridge: ScratchVM): void {
       // 调试专用：宿主在 light DOM 被 stealth 全部查询 API 过滤掉，只能从登记表直接取
       hosts: () => getProtectedHosts(),
       trueHitTest: (x: number, y: number) => trueElementsFromPoint(x, y),
+      // 调试专用：变量锁操作（探针验证访问器锁防绕过自愈用）
+      lock: (id: string, value: unknown, targetId: string) =>
+        bridge.lockVariable(id, value as ScratchValue, targetId),
+      unlock: (id: string) => bridge.unlockVariable(id),
       /**
        * 诊断：给变量读链路分段计时（毫秒）。
        * 刻意不返回变量数据本身 —— 让它经 CDP 序列化回来会把测量对象本身的开销
@@ -256,6 +278,38 @@ function boot(): void {
     document.addEventListener('visibilitychange', syncVpnPatrol);
 
     installDebug(bridge);
+
+    // ⑧ VM 劫持安全加固（防检查/防删除/防修改 + 看门狗自愈，静默零 UI）：
+    // 登记表不可枚举 Symbol 槽位 + 定时器句柄闭包持有 + 巡检自愈闭环。
+    // 三项检查：vm 引用健康（失效重建）、访问器锁完整（绕锁重装）、
+    // loadProject 捕获 tap 存活（被剥离重挂）。
+    installVmHardening(5000);
+    registerVmTamperCheck(
+      'vm-ref',
+      () => !bridge.connected || bridge.vmRefHealthy(),
+      () => {
+        if (bridge.connected) bridge.rebuildChannel();
+      },
+    );
+    registerVmTamperCheck(
+      'vm-locks',
+      () => bridge.locksIntact(),
+      () => bridge.repairAccessorLocks(),
+    );
+    registerVmTamperCheck(
+      'lp-tap',
+      () => {
+        const vm = bridge.rawVM as object | null;
+        if (!vm || typeof vm !== 'object') return true; // 未连接不判失败（vm-ref 管连接健康）
+        try {
+          return earlyWrapped(vm) || isLoadProjectTapped(vm);
+        } catch {
+          return true;
+        }
+      },
+      () => bridge.reinstallProjectCapture(),
+      3, // 每 15s 查一次（捕获 tap 被剥离的影响是渐进的，无需高频）
+    );
 
     // CCW 运行时方法持续洗白（CSRT AntiCSense 移植）：bridge 即 VM 引用，
     // 循环内 100ms 重刷对抗页面侧重新包装，上限 180s 自动停止

@@ -17,12 +17,19 @@ export function cleanDisplay(name: unknown): string {
 export function isVMLike(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false;
   const vm = value as Record<string, unknown>;
-  return (
-    typeof vm.setVariableValue === 'function' &&
-    typeof vm.getVariableValue === 'function' &&
-    vm.runtime !== undefined &&
-    typeof (vm.runtime as { targets?: unknown }).targets !== 'undefined'
-  );
+  if (typeof vm.setVariableValue !== 'function' || typeof vm.getVariableValue !== 'function') {
+    return false;
+  }
+  // runtime 为 null（页面侧半残假 vm / 站点摘除 runtime）时不能抛异常：
+  // 旧实现 `vm.runtime.targets` 在 runtime === null 时抛 TypeError，
+  // 且 discoverVM 调用它无 try 保护 → 整条发现链被打断、桥接永久 Error 态。
+  if (vm.runtime === undefined || vm.runtime === null) return false;
+  try {
+    return typeof (vm.runtime as { targets?: unknown }).targets !== 'undefined';
+  } catch {
+    // runtime 是 getter 且访问抛异常 → 按 vm-like 否处理（不得让异常打断发现循环）
+    return false;
+  }
 }
 
 function scanFiberFromNode(node: object): unknown {
