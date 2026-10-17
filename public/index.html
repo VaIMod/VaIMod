@@ -7,7 +7,7 @@
 <meta name="description" content="VaIMod：为 ccw.site 打造的变量手术台。明文读写、云数据直改、还原点、插件体系，八路 VM 钩子评分制自动选优，以及一套 document-start 就位的纵深安全系统。">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./assets/site.css">
 <link rel="icon" type="image/svg+xml" href="./assets/logo.svg">
 </head>
@@ -16,7 +16,7 @@
 <div class="wrap">
 
 <header class="top">
-  <div class="brand"><a href="./"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="var(--bg-raise)" stroke="var(--hair-strong)"/><path d="M8.5 9.5 L16 22.5 L23.5 9.5" fill="none" stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23.5" cy="9.5" r="2.1" fill="var(--amber)"/></svg>Va<b>I</b>Mod</a></div>
+  <div class="brand"><a href="./"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="vlg1" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4493f8"/><stop offset="1" stop-color="#1f6feb"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#vlg1)"/><path d="M9 10.5 L16 22 L23 10.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23" cy="10.5" r="2" fill="#fff"/></svg>Va<b>I</b>Mod</a></div>
   <nav>
     <a href="./" class="on">主页</a>
     <a href="./flow.html">运行流程</a>
@@ -29,11 +29,17 @@
 </header>
 
 <!-- ================= HERO ================= -->
-<div class="hero" style="padding:clamp(64px,11vh,140px) 0 clamp(48px,8vh,96px)">
+<div class="hero glow" style="padding:clamp(64px,11vh,140px) 0 clamp(48px,8vh,96px)">
   <svg class="hero-logo rv" viewBox="0 0 32 32" aria-hidden="true" style="width:clamp(52px,6vw,68px);height:auto;margin-bottom:30px;display:block">
-    <rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="var(--bg-raise)" stroke="var(--hair-strong)"/>
-    <path d="M8.5 9.5 L16 22.5 L23.5 9.5" fill="none" stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="23.5" cy="9.5" r="2.1" fill="var(--amber)"/>
+    <defs>
+      <linearGradient id="vlg-hero" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#4493f8"/>
+        <stop offset="1" stop-color="#1f6feb"/>
+      </linearGradient>
+    </defs>
+    <rect width="32" height="32" rx="9" fill="url(#vlg-hero)"/>
+    <path d="M9 10.5 L16 22 L23 10.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="23" cy="10.5" r="2" fill="#fff"/>
   </svg>
   <div class="kicker rv">CCW.SITE · USERSCRIPT · STEALTH-FIRST</div>
   <h1 class="rv rv-d1" style="font-family:var(--disp);font-weight:800;font-size:clamp(56px,11vw,148px);line-height:.95;letter-spacing:-.015em">
@@ -332,7 +338,7 @@
 
 <footer>
   <div class="fin">
-    <div class="brand"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1.5" y="1.5" width="29" height="29" rx="7" fill="var(--bg-raise)" stroke="var(--hair-strong)"/><path d="M8.5 9.5 L16 22.5 L23.5 9.5" fill="none" stroke="var(--amber)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23.5" cy="9.5" r="2.1" fill="var(--amber)"/></svg>Va<b>I</b>Mod</div>
+    <div class="brand"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><defs><linearGradient id="vlg2" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4493f8"/><stop offset="1" stop-color="#1f6feb"/></linearGradient></defs><rect width="32" height="32" rx="9" fill="url(#vlg2)"/><path d="M9 10.5 L16 22 L23 10.5" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="23" cy="10.5" r="2" fill="#fff"/></svg>Va<b>I</b>Mod</div>
     <div class="flinks">
       <a href="./flow.html">运行流程</a>
       <a href="./features.html">特性</a>
