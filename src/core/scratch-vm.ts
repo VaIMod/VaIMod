@@ -8,6 +8,7 @@ import {
   type VariableValue,
 } from './types';
 import { findVmViaFiber, findVmViaRedux, isVMLike, normalizeValue, sleep, stringToListValue } from './utils';
+import { trueHidden } from './vm-antidetect';
 import { markNative } from '../dom-utils';
 import { ccwDataStore } from './ccwdata';
 import { installLoadProjectTap } from './lp-guard';
@@ -1932,9 +1933,11 @@ export class ScratchVM {
     return out;
   }
 
-  // 页面隐藏（切后台/最小化）时暂停轮询，回到前台自动恢复：后台零轮询开销
+  // 页面隐藏（切后台/最小化）时暂停轮询，回到前台自动恢复：后台零轮询开销。
+  // 读真实可见性：document.hidden 已被 vm-antidetect 对页面侧伪装为恒 visible，
+  // 内部生命周期必须绕过伪装层取真值，否则后台暂停优化失效。
   private onVisibilityChange = (): void => {
-    if (document.hidden) this.pausePolling();
+    if (trueHidden()) this.pausePolling();
     else if (this.connected) this.startPolling();
   };
 }

@@ -16,6 +16,7 @@ import { installFeishuGuard, feishuMode, feishuHits, feishuPendingCount, feishuR
 import { installCcwSanitize, startSanitizeLoop } from './core/ccw-sanitize';
 import { installUiGuard, uiGuardReport } from './core/ui-guard';
 import { installVmHardening, registerVmTamperCheck, vmHardeningReport } from './core/vm-hardening';
+import { installVmAntidetect, trueHidden, vmAntiStatus } from './core/vm-antidetect';
 import { isLoadProjectTapped } from './core/lp-guard';
 import { earlyWrapped } from './core/capture-early';
 import {
@@ -55,6 +56,7 @@ installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住
 installCcwSanitize(); // ③″ DOM 注入反制（script src 陷阱 / innerHTML 反制 / 隐藏反制，CSRT 移植）
 installHoneypotGuard(); // ④ 蜜罐陷阱防检测（假修改器 UI 诱饵 + window 假 vm 陷阱，攻击即轮换）
 installEarlyCaptureWatch(); // ④′ 早期作品捕获（25ms 盯 window.vm，抢在站点初始 loadProject 前包装）
+installVmAntidetect(); // ④″ VM 环境反检测（BA.js v0.1.7 七组钩子移植：GPU/Canvas/音频/硬件/屏幕/时区/行为，条件式伪装）
 installUiGuard(); // ⑤′ UI 防篡改（宿主不可移除/搬走/隐藏 + 层级恒定最顶层）
 
 let booted = false;
@@ -92,6 +94,7 @@ function installDebug(bridge: ScratchVM): void {
         ],
         hardening: vmHardeningReport(),
       }),
+      vmAnti: () => vmAntiStatus(),
       vpn: () => vpnReport(),
       ztna: () => ({ isolated: ztna.isolatedState, stats: ztna.accessStats() }),
       secure: () => ({
@@ -268,7 +271,9 @@ function boot(): void {
       }
     };
     const syncVpnPatrol = (): void => {
-      if (document.hidden) {
+      // 读真实可见性（页面侧 document.hidden 已被 vm-antidetect 伪装为恒 visible，
+      // 内部后台暂停优化必须走 trueHidden 才能保持「后台零巡检」语义）
+      if (trueHidden()) {
         if (vpTick) {
           clearInterval(vpTick);
           vpTick = null;
