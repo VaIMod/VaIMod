@@ -83,6 +83,14 @@ function scanFiberFromNode(node: object): unknown {
       const gui = memoizedProps.scratchGui as { vm?: unknown } | undefined;
       if (gui && isVMLike(gui.vm)) return gui.vm;
     }
+    // pendingProps.vm（butterAny.vm 同款）：组件渲染中 VM 挂在 pendingProps、
+    // 尚未提交为 memoizedProps 的窗口期也要接得住
+    const pendingProps = (cur as { pendingProps?: unknown }).pendingProps as
+      | Record<string, unknown>
+      | undefined;
+    if (pendingProps && pendingProps !== memoizedProps) {
+      if (isVMLike(pendingProps.vm)) return pendingProps.vm;
+    }
 
     const stateNode = (cur as { stateNode?: unknown }).stateNode as
       | (Record<string, unknown> & { state?: { scratchGui?: { vm?: unknown } } })

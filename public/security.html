@@ -53,7 +53,7 @@
 
           <rect class="bd-box" x="30" y="176" width="980" height="40" rx="2"/>
           <text class="bd-dim" x="50" y="201">L2 · 反检测</text>
-          <text class="bd-faint" x="990" y="201" text-anchor="end" font-size="11">七组环境钩子 · 取证自检 · toString 白名单</text>
+          <text class="bd-faint" x="990" y="201" text-anchor="end" font-size="11">七组环境钩子 · CSP 封锁对抗 · 取证自检 · toString 白名单</text>
 
           <rect class="bd-box-amber" x="30" y="132" width="980" height="40" rx="2"/>
           <text class="bd-amber" x="50" y="157">L3 · 隐身宿主</text>
@@ -109,6 +109,14 @@
         <div class="cd">SANITIZE AT BOUNDARY</div>
       </div>
       <div class="ct">一切进入 UI 的动态内容在边界消毒：脚本、iframe、内联事件、伪协议一律剥除。</div>
+    </div>
+    <div class="chain-item rv">
+      <div class="step">②″</div>
+      <div>
+        <h4>CSP 封锁对抗<code>cspGuard</code></h4>
+        <div class="cd">META CSP FULL-CHAIN INTERCEPT · 8 ROUTES</div>
+      </div>
+      <div class="ct">恶意作品最廉价的封杀手段：<code>&lt;meta http-equiv=CSP&gt;</code> 一进 DOM 就能封死 eval 与脚本通道。setAttribute / httpEquiv 属性 / 五类插入 API / innerHTML 写入 / 观察器兜底<b>全链路拦截</b>，注入即消失；热路径只付两次属性读，正常 meta 零感知。</div>
     </div>
     <div class="chain-item rv">
       <div class="step">③</div>

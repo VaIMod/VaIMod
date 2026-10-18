@@ -2,6 +2,7 @@ import { mount } from 'svelte';
 import { ScratchVM, type ScratchValue } from './core';
 import { createStealthHost, installStealth, getProtectedHosts, trueElementsFromPoint } from './dom-utils';
 import { installXssGuard } from './core/xss-guard';
+import { installCspGuard, cspGuardReport } from './core/csp-guard';
 import { installCsenseGuard, csenseStatus } from './core/csense-guard';
 import { installVeilGuard, VEIL_CSS, getVeilChannel } from './core/veil-manager';
 import { hookOfficialCloudApi } from './core/official-cloud';
@@ -50,6 +51,8 @@ installSecureGuardFront(); // ⓪ 反作弊扩展反制前置（最先：签名�
 installSigGuardFront(); // ⓪′ 数字签名扩展反制（实例净化 + 双注册咽喉 + 变量名保护）
 installStealth(); // ① stealth 防检测（DOM/遍历/MO/toString 全套）
 installXssGuard(); // ② XSS 速执行拦截（document.write / 字符串定时器）
+installCspGuard(); // ②″ CSP meta 注入全链路拦截（butterAny.vm.0.1.7 CSP Remover 链移植：
+//     防恶意作品/页面借 <meta http-equiv=CSP> 封死 eval 与 userscript 通道）
 installCsenseGuard(); // ②′ CSense 拦截器反制（吞掉其 supabase/csdetected 上报，检测数据不出网）
 hookOfficialCloudApi(); // ③ 官方云 API 通道（fetch 观察，随时捕获 endpoint）
 installFeishuGuard(); // ③′ 飞书消息请求拦截（document-start 占住 fetch/XHR，默认 off 零影响）
@@ -95,6 +98,7 @@ function installDebug(bridge: ScratchVM): void {
         hardening: vmHardeningReport(),
       }),
       vmAnti: () => ({ ...vmAntiStatus(), trueHidden: trueHidden() }),
+      csp: () => cspGuardReport(),
       vpn: () => vpnReport(),
       ztna: () => ({ isolated: ztna.isolatedState, stats: ztna.accessStats() }),
       secure: () => ({

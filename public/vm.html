@@ -45,7 +45,7 @@
       <thead><tr><th>#</th><th>通道</th><th>类型</th><th>原理</th></tr></thead>
       <tbody>
         <tr><td>1</td><td><b>redux store</b></td><td>轮询</td><td>三路子扫描：window 五键名 / fiber Provider <code>props.store</code> / DevTools 根，从 <code>state.scratchGui.vm</code> 取引用</td></tr>
-        <tr><td>2</td><td><b>react fiber</b></td><td>轮询</td><td>五策略遍历 + DevTools 子路；多 fiber key 全部收集逐个尝试，防站点重建残留 key 遮蔽</td></tr>
+        <tr><td>2</td><td><b>react fiber</b></td><td>轮询</td><td>六策略遍历（含 <code>pendingProps.vm</code> 渲染窗口期）+ DevTools 子路；多 fiber key 全部收集逐个尝试，防站点重建残留 key 遮蔽</td></tr>
         <tr><td>3</td><td><b>三全局键</b></td><td>轮询</td><td><code>window.vm</code> / <code>_vm</code> / <code>Scratch.vm</code> 直查</td></tr>
         <tr><td>4</td><td><b>Eureka</b></td><td>轮询</td><td>站点专属挂载点探测</td></tr>
         <tr><td>5</td><td><b>iframe</b></td><td>轮询</td><td>同源子框架内扫描</td></tr>
