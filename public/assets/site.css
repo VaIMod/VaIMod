@@ -178,7 +178,7 @@ section{padding:clamp(56px,9vh,110px) 0;border-top:1px solid var(--hair)}
 .chain-item .ct b{color:var(--ink);font-weight:600}
 
 /* ---------- 双列层 ---------- */
-.layers{display:grid;grid-template-columns:1fr 1fr;gap:0 clamp(28px,5vw,72px)}
+.layers{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 clamp(28px,5vw,72px)}
 @media(max-width:780px){.layers{grid-template-columns:1fr}}
 .layer{padding:28px 0;border-top:1px solid var(--hair)}
 .layer:nth-child(1),.layer:nth-child(2){border-top:none}
@@ -252,7 +252,7 @@ tbody tr:hover{background:var(--bg-raise)}
 .codeblock{
   font-family:var(--mono);font-size:13px;color:var(--amber);
   background:var(--bg-deep);border:1px solid var(--hair);border-radius:11px;padding:16px 18px;
-  overflow-x:auto;white-space:nowrap;line-height:1.7;
+  overflow-x:auto;white-space:nowrap;line-height:1.7;max-width:100%;
 }
 .codeblock .cm{color:var(--ink-faint)}
 .codeblock .kw{color:#bc8cff}

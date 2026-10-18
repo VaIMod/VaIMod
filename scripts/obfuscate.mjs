@@ -16,24 +16,31 @@ const PAKO_INFLATE_MIN = path.join(
 
 // ── 第一层：强力高性能混淆（javascript-obfuscator 全量强度） ─────────────
 // 高性能取舍说明：
-// - debugProtection / disableConsoleOutput 恒为 false——VaIMod 对宿主站点
-//   零副作用是硬约束，绝不在 ccw.site 上锁 DevTools / 禁 console。
-// - renameGlobals 恒为 false——产物以 @grant none 注入页面全局，改全局名
-//   有碰撞风险。
+// - disableConsoleOutput 恒为 false——禁 console 会破坏宿主页面自身日志，零副作用底线。
+// - renameGlobals 已启用（产物为自包含 bundle，无外部引用方，安全）。
 // - domainLock 不启用——@match 已锁定 ccw.site，domainLock 是致命失败模式
 //   （校验异常 = 脚本在目标站直接瘫痪），不值得赌。
 const STAGE_A_OPTIONS = {
   compact: true,
   controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.75,
+  controlFlowFlatteningThreshold: 0.85,
   deadCodeInjection: true,
-  deadCodeInjectionThreshold: 0.4,
-  debugProtection: false,
+  deadCodeInjectionThreshold: 0.5,
+  // 反动态调试：debugger 陷阱（初始 + 定时器续排）。headless/正常浏览零感知，
+  // 仅在 DevTools 附着时产生暂停对抗。
+  debugProtection: true,
+  debugProtectionInterval: 4000,
   disableConsoleOutput: false,
   identifierNamesGenerator: 'hexadecimal',
   numbersToExpressions: true,
-  renameGlobals: false,
-  selfDefending: true,
+  // 反 AST / 反反混淆：全局名重命名 + 对象键表达式化，破坏跨文件符号对照
+  renameGlobals: true,
+  transformObjectKeys: true,
+  // selfDefending 禁用（真 Bug 实锤，勿再开）：其自检对自身 toString 跑
+  // 灾难性回溯正则 (((.+)+)+)+$，MB 级函数体直接打爆 V8 正则栈
+  // → RangeError: Maximum call stack size exceeded（小样本探针发现不了，
+  //   只有真实 bundle 冒烟能暴露）。防美化/防还原职责由 CFF+DCI+rc4+
+  //   renameGlobals+transformObjectKeys+debugProtection 共同承担。
   simplify: true,
   splitStrings: true,
   splitStringsChunkLength: 16,
@@ -46,9 +53,15 @@ const STAGE_A_OPTIONS = {
   stringArrayWrappersCount: 3,
   stringArrayWrappersType: 'function',
   stringArrayThreshold: 1,
-  transformObjectKeys: false,
-  unicodeEscapeSequence: false,
+  // 反静态分析：字面量 unicode 转义（grep/正则特征扫射失效）
+  unicodeEscapeSequence: true,
 };
+
+// 二分排查开关：VAIMOD_OBF_NO="debugProtection,transformObjectKeys" 剔除指定选项
+// （仅本地排查用，CI 不设置 → 全量强度）
+for (const key of (process.env.VAIMOD_OBF_NO ?? '').split(',').filter(Boolean)) {
+  delete STAGE_A_OPTIONS[key];
+}
 
 // 加载器外层轻混淆：只隐藏装配胶水与 pako 特征，
 // 不做 CFF/DCI/splitStrings（inflate 是热路径 + 巨大 base64 字面量不能切碎）。
@@ -86,14 +99,17 @@ var __P="${payloadB64}";
 var __K="${keyB64}";
 var __C=${checksum};
 try{
+var __t0=Date.now();
 var __bin=atob(__P);var __n=__bin.length;var __buf=new Uint8Array(__n);
 for(var __i=0;__i<__n;__i++)__buf[__i]=__bin.charCodeAt(__i);
 var __h=0x811c9dc5;
 for(var __i=0;__i<__n;__i++){__h^=__buf[__i];__h=Math.imul(__h,0x01000193)>>>0;}
 if(__h!==__C)return;
+if(Date.now()-__t0>3000)return;
 var __kb=atob(__K);var __kl=__kb.length;
 for(var __j=0;__j<__n;__j++)__buf[__j]=__kb.charCodeAt(__j%__kl)^__buf[__j];
 var __code=__inflate(__buf,{to:"string"});
+if(Date.now()-__t0>5000)return;
 ${execLine}
 }catch(__e){}
 })();
