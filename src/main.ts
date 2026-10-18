@@ -118,6 +118,8 @@ function installDebug(bridge: ScratchVM): void {
       lock: (id: string, value: unknown, targetId: string) =>
         bridge.lockVariable(id, value as ScratchValue, targetId),
       unlock: (id: string) => bridge.unlockVariable(id),
+      // 调试专用：变量表（含 isLocked）——验证锁定状态与 emit 判重同步
+      vars: () => bridge.getVariables(),
       /**
        * 诊断：给变量读链路分段计时（毫秒）。
        * 刻意不返回变量数据本身 —— 让它经 CDP 序列化回来会把测量对象本身的开销

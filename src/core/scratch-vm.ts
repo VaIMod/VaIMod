@@ -1665,6 +1665,12 @@ export class ScratchVM {
     }
     // 安全变量摘要（数量少，直接拼入判重）
     parts.push(this.secureGuard.key());
+    // 锁定集合必须入摘要：锁定/解锁不改变变量值（锁定值=当前值），
+    // 漏掉会导致 emitVariablesList 判重命中旧摘要 → UI 永远收不到
+    // isLocked 变化（锁按钮看似失灵）。无锁时零追加，热路径不受影响。
+    if (this.locks.size > 0) {
+      parts.push('\u0003', [...this.locks.keys()].sort().join(','), '\u001f');
+    }
     return parts.join('');
   }
 

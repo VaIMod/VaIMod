@@ -1106,9 +1106,16 @@
       () => {
         if (bridge.isVariableLocked(v.id)) {
           bridge.unlockVariable(v.id);
+          showToast(`已解锁「${v.name}」`, 'ok');
         } else {
-          bridge.lockVariable(v.id, v.value, v.targetId, 0);
+          const ok = bridge.lockVariable(v.id, v.value, v.targetId, 0);
+          showToast(
+            ok ? `已锁定「${v.name}」` : `「${v.name}」锁定失败`,
+            ok ? 'ok' : 'err',
+          );
         }
+        // 立即回读刷新：锁定状态随摘要入 emit 判重后也会自行同步，这里先到先得
+        variables = decodeVariables(bridge.getVariables());
       },
       { alive: () => bridge.getStatus() === BridgeStatus.Connected },
     );
