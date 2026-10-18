@@ -3,21 +3,21 @@
 export type LoadMode = 'async' | 'sync';
 
 /**
- * 面板 Tab 标识：内置固定 5 个，插件页用 `plug:<id>` 形式的动态标识。
+ * 面板 Tab 标识：内置固定 3 个，插件页用 `plug:<id>` 形式的动态标识。
+ * （系统页已随 v29 UI 收敛移除：新建/删除功能下线后回收站/快照无存在意义；
+ *   工具页随之移除——批量新建/删除能力下线后无独立成页的内容。）
  *
  * 网络防火墙**既不是内置 Tab、也不在本体内** —— 它是一个可分发的扩展插件
  * （`docs/plugin-net-firewall.js`）：不导入就完全没有这个功能，
  * 导入后自带一个标签页。
  */
-export type BuiltinTabId = 'vars' | 'ccw' | 'tools' | 'feishu' | 'system';
+export type BuiltinTabId = 'vars' | 'ccw' | 'feishu';
 export type TabId = BuiltinTabId | `plug:${string}`;
 
 export const TAB_LABELS: Record<BuiltinTabId, string> = {
   vars: '变量',
   ccw: '云数据',
-  tools: '工具',
   feishu: '飞书',
-  system: '系统',
 };
 
 /** Tab 偏好：顺序（数组下标）即显示顺序；enabled=false 隐藏该 Tab */
@@ -26,7 +26,7 @@ export interface TabPref {
   enabled: boolean;
 }
 
-export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'tools', 'feishu', 'system'];
+export const ALL_TAB_IDS: BuiltinTabId[] = ['vars', 'ccw', 'feishu'];
 
 /** 判断是否内置 Tab */
 export function isBuiltinTab(id: string): id is BuiltinTabId {
@@ -93,7 +93,7 @@ const KEY = 'vaimod_settings_v1';
  * 系统、防火墙、工具、飞书都改为默认关闭（在设置页里随时可开），
  * 因为它们要么是低频运维入口、要么是重型安全组件，不该占默认面板的位置。
  */
-const TABS_SCHEMA_VER = 2;
+const TABS_SCHEMA_VER = 3;
 
 /** 默认显示的内置标签页：只有变量与云数据（其余内置 Tab 默认关闭，可在设置页手动开启） */
 const DEFAULT_ENABLED_TABS: ReadonlySet<BuiltinTabId> = new Set(['vars', 'ccw']);

@@ -1,7 +1,6 @@
 <script lang="ts">
   import { ccwDataStore, LOCK_PREFIX, type CloudType } from '../core/ccwdata';
   import { cleanDisplay } from '../core';
-  import { cloneJson, trashAdd, subscribeOps, trashCountsByScope } from '../core/ops-meta';
   import { fly } from 'svelte/transition';
   import {
     loadDisplayNames,
@@ -16,16 +15,11 @@
   import unlockIcon from '../assets/unlock.svg?raw';
   import { secureAction } from '../core/veil-chain';
 
-  // 行内小图标（避免新增 asset 文件）
-  const trashIcon =
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>';
-
   let {
     active = true,
     // selected 提升为可双向绑定：父面板在「变量/云数据」tab 间切换时保留上次打开的子标签
     selected = $bindable<CloudType>('project'),
-    onOpenSystem,
-  }: { active?: boolean; selected?: CloudType; onOpenSystem?: () => void } = $props();
+  }: { active?: boolean; selected?: CloudType } = $props();
 
   // 手动刷新计数：驱动内容重挂载重播动画（轮询刷新不 +1，避免每 500ms 闪动）
   let animKey = $state(0);
@@ -419,135 +413,7 @@
     });
   }
 
-  // ===== 新建云变量（官方 Cloud Database save API 直写，不依赖扩展捕获） =====
-  let creating = $state(false);
-  let createName = $state('');
-  let createValue = $state('');
-  let createBusy = $state(false);
-
-  function startCreate() {
-    createName = '';
-    createValue = '';
-    creating = true;
-  }
-
-  function cancelCreate() {
-    creating = false;
-    createName = '';
-    createValue = '';
-  }
-
-  async function doCreate() {
-    if (createBusy) return;
-    // 点击经统一多层安全栈（遮罩→SDP cloud→审核→多层封印）后执行
-    await secureAction('cloud', `cloud-create:${createName}`, async () => {
-      const name = createName.trim();
-      if (!name) {
-        showToast('变量名不能为空', 'err');
-        return;
-      }
-      if (name.includes('\x23BVM\x23') || name === '\x23VMDBS\x23') {
-        showToast('变量名不合法', 'err');
-        return;
-      }
-      const db = selected === 'project' ? ccwDataStore.project : ccwDataStore.user;
-      if (db.has(name)) {
-        showToast(`「${name}」已存在，直接编辑即可`, 'err');
-        return;
-      }
-      createBusy = true;
-      try {
-        const r = await ccwDataStore.createValue(selected, name, createValue);
-        // 成功后清空表单回到列表（store 已乐观镜像并通知刷新）
-        creating = false;
-        createName = '';
-        createValue = '';
-        if (selected === 'project' && !r.official) {
-          showToast(`「${name}」已新建，但官方后端直写失败，可能未永久保存（刷新后可能丢失）`, 'err');
-        } else {
-          showToast(`「${name}」已新建`, 'ok');
-        }
-      } catch (e) {
-        showToast(
-          `新建失败：${e instanceof Error ? e.message : e}`,
-          'err',
-        );
-      } finally {
-        createBusy = false;
-      }
-    });
-  }
-
-  // ===== 删除云数据（先进回收站，系统页可一键还原） =====
-  let trashVer = $state(0);
-  // 订阅 ops-meta 广播：系统页还原/清空回收站后，本页「回收站 · N 项」横幅立即同步，
-  // 不再滞留旧数（旧实现只在本页删除时手动 +1）。
-  $effect(() => subscribeOps(() => (trashVer = trashVer + 1)));
-  const trashTotal = $derived.by(() => {
-    void trashVer;
-    const c = trashCountsByScope();
-    return c['cloud:p'] + c['cloud:u'];
-  });
-  let deletingName = $state<string | null>(null);
-
-  const scopeOf = (type: CloudType): 'cloud:p' | 'cloud:u' =>
-    type === 'project' ? 'cloud:p' : 'cloud:u';
-
-  function toTrashValue(v: unknown): { kind: 'variable' | 'list'; value: unknown } {
-    if (Array.isArray(v)) {
-      return {
-        kind: 'list',
-        value: v.map((x) =>
-          x !== null && typeof x === 'object' ? JSON.stringify(x) : x,
-        ),
-      };
-    }
-    if (v === null || v === undefined) return { kind: 'variable', value: '' };
-    if (typeof v === 'object') {
-      try {
-        return { kind: 'variable', value: JSON.stringify(v) };
-      } catch {
-        return { kind: 'variable', value: String(v) };
-      }
-    }
-    return { kind: 'variable', value: v as string | number | boolean };
-  }
-
-  async function deleteCloudItem(name: string) {
-    if (deletingName) return;
-    const type = selected;
-    const db = type === 'project' ? ccwDataStore.project : ccwDataStore.user;
-    await secureAction('cloud', `cloud-del:${name}`, async () => {
-      const cur = db.get(name);
-      if (cur === undefined) {
-        showToast(`「${name}」不存在`, 'err');
-        return;
-      }
-      deletingName = name;
-      try {
-        const { kind, value } = toTrashValue(cloneJson(cur));
-        await ccwDataStore.removeValue(type, name);
-        trashAdd({
-          key: name,
-          name,
-          kind,
-          value: value as never,
-          scope: scopeOf(type),
-        });
-        // 同步清理本地显示别名
-        const key = cloudKey(name);
-        if (displayNames[key]) {
-          delete displayNames[key];
-          removeDisplayName(key);
-        }
-        showToast(`「${name}」已移入回收站`, 'ok');
-      } catch (e) {
-        showToast(`删除失败：${e instanceof Error ? e.message : e}`, 'err');
-      } finally {
-        deletingName = null;
-      }
-    });
-  }
+  // ===== 删除/新建功能已随 v29 UI 收敛移除：云数据页只读+改值+重命名+锁定 =====
 </script>
 
 <div class="svp-ccw">
@@ -583,13 +449,6 @@
       </button>
     </div>
 
-    {#if trashTotal > 0}
-      <div class="svp-trashbar">
-        <span class="svp-trashbar-count">回收站 · {trashTotal} 项</span>
-        <button class="svp-trashbar-go" onclick={() => onOpenSystem?.()}>前往系统页还原</button>
-      </div>
-    {/if}
-
     <div class="svp-actionbar">
       <input
         class="svp-search"
@@ -607,43 +466,7 @@
     </div>
     <div class="svp-actionbar">
       <button class="svp-saveall" onclick={saveAll}>保存全部</button>
-      <button class="svp-btn svp-new-cloud" onclick={startCreate} aria-label="新建云变量">
-        ＋ 新建
-      </button>
     </div>
-
-    {#if creating}
-      <div class="svp-create-row">
-        <input
-          class="svp-input svp-create-name"
-          type="text"
-          bind:value={createName}
-          placeholder="变量名"
-          spellcheck="false"
-          use:keyboardGuard
-          onkeydown={(e) => {
-            if (e.key === 'Enter') doCreate();
-            else if (e.key === 'Escape') cancelCreate();
-          }}
-        />
-        <input
-          class="svp-input svp-create-value"
-          type="text"
-          bind:value={createValue}
-          placeholder="初始值"
-          spellcheck="false"
-          use:keyboardGuard
-          onkeydown={(e) => {
-            if (e.key === 'Enter') doCreate();
-            else if (e.key === 'Escape') cancelCreate();
-          }}
-        />
-        <button class="svp-btn" onclick={doCreate} disabled={createBusy}>
-          {createBusy ? '创建中…' : '创建'}
-        </button>
-        <button class="svp-btn svp-btn-ghost" onclick={cancelCreate}>取消</button>
-      </div>
-    {/if}
 
     <div class="svp-ccw-content">
       {#key `${selected}:${animKey}`}
@@ -651,7 +474,6 @@
           <div class="svp-empty svp-empty-cloud">
             <div class="svp-empty-icon" aria-hidden="true">☁</div>
             <p class="svp-empty-msg">当前{selected === 'project' ? '作品' : '用户'}还没有云数据</p>
-            <button class="svp-btn" onclick={startCreate}>＋ 新建云数据</button>
           </div>
         {:else}
           {#each filtered as v, idx (v.name)}
@@ -729,14 +551,6 @@
                   />
                 {/if}
                 <button class="svp-ccw-save" onclick={() => saveOne(v.name)} disabled={rowLocked(v.name)}>保存</button>
-                <button
-                  class="svp-ccw-del"
-                  onclick={() => deleteCloudItem(v.name)}
-                  disabled={deletingName === v.name || rowLocked(v.name)}
-                  aria-label="删除"
-                >
-                  {@html trashIcon}
-                </button>
               </div>
             </div>
           {/each}

@@ -7,13 +7,12 @@
     type ScratchVaIMod,
     type VaIModValue,
     normalizeValue,
+    sanitizePlain,
     stringToListValue,
   } from '../core';
   import VaIModItem from './VaIModItem.svelte';
   import CcwDataPanel from './CcwDataPanel.svelte';
-  import ToolsPanel from './ToolsPanel.svelte';
   import FeishuPanel from './FeishuPanel.svelte';
-  import SystemPanel from './SystemPanel.svelte';
   import SettingsOverlay from './SettingsOverlay.svelte';
   import PluginTab from './PluginTab.svelte';
   import { pluginRegistry } from '../core/plugin-registry';
@@ -24,7 +23,6 @@
   import type { CloudType } from '../core/ccwdata';
   import { ccwDataStore } from '../core/ccwdata';
   import { exportVaIModBundle, importVaIModBundle, applyVaIModBundleLocal, pluginInstallDetail, resolveBundleVariables, detectBundleKind, summarizeBundle, summaryText, WILDCARD } from '../core/bundle';
-  import { trashAdd, trashCount, subscribeOps } from '../core/ops-meta';
   import {
     loadDisplayNames,
     setDisplayName,
@@ -146,12 +144,12 @@
     return pluginRegistry.get(pid);
   });
   // ---------- 按 Tab 粒度的 VM 状态门（真实状态，不是假动画） ----------
-  // 数据源是作品变量的内置页（变量/工具）在未连接时显示「等待获取vm」；
-  // 云数据 / 飞书 / 系统 / 未声明 waitVm 的插件页**不依赖 VM**——连接中照常可用
+  // 数据源是作品变量的内置页（变量）在未连接时显示「等待获取vm」；
+  // 云数据 / 飞书 / 未声明 waitVm 的插件页**不依赖 VM**——连接中照常可用
   //（就算作品没有云数据和变量也要能正常使用）。
   // 插件声明了 waitVm：未连接 → 「等待获取vm」；就绪后若声明的 aspect 为空
   //（无任何变量 / 无任何云变量）→ 显示真实的「没有」空态，数据出现才真正挂载。
-  const VM_BUILTIN_TABS: ReadonlySet<string> = new Set(['vars', 'tools']);
+  const VM_BUILTIN_TABS: ReadonlySet<string> = new Set(['vars']);
   type VmGate = 'none' | 'wait' | 'no-vars' | 'no-cloud';
   const activeVmGate = $derived.by<VmGate>(() => {
     if (status !== BridgeStatus.Connected) {
@@ -197,7 +195,7 @@
   });
 
   // Header 设置齿轮常驻右上角（所有 Tab、任何连接状态下都可见）——
-  // 系统页不再有右下角入口，这里是设置的唯一入口，绝不能条件隐藏。
+  // 这里是设置的唯一入口，绝不能条件隐藏。
   // 初始 activeTab 直接取第一个可见 Tab——vars 被隐藏时不至于默认加载一个看不见的页
   let activeTab = $state<TabId>(bootSettings.tabs.find((t) => t.enabled)?.id ?? 'vars');
   // 当前可见 Tab 的第一个（默认加载用）
@@ -235,9 +233,7 @@
   // 插件 waitVm 语义：一直等待真实桥接状态（连接成功 / 出错），不再有计时器上限——
   // 「需要 VM 的插件和标签页一直显示等待获取vm」是产品语义，不是假动画。
   let ccwPanel: { animateRefresh: () => void } | null = $state(null);
-  let toolsPanel: { refresh: () => void } | null = $state(null);
   let feishuPanel: { refresh: () => void } | null = $state(null);
-  let systemPanel: { refresh: () => void } | null = $state(null);
   // 插件页实例：刷新按钮在插件页调用插件声明的 refresh 钩子
   let pluginTabRef: { refresh: () => void } | null = $state(null);
   let editing = $state(false);
@@ -599,13 +595,8 @@
     };
   });
 
-  // 操作元数据刷新节拍：回收站 / 监视器变化后驱动列表重渲染
+  // 操作元数据刷新节拍：监视器变化后驱动列表重渲染
   let monitorTick = $state(0);
-  let trashTick = $state(0);
-  // 回收站变更统一订阅 ops-meta 广播：任意面板（系统页还原/清空、云数据页删除、
-  // 工具页批量删除、配置包导入）改动回收站后，变量页徽标立即同步——
-  // 旧实现只在本组件删除时手动 +1，系统页还原后变量页「回收站 N ›」会滞留旧数。
-  $effect(() => subscribeOps(() => (trashTick = trashTick + 1)));
 
   // 普通变量搜索（按显示名/原始名/目标名模糊匹配）；
   // 「#SVV# 值」前缀切换为按变量值匹配（大小写不敏感，容忍全宽＃，前缀后可不带空格）
@@ -685,21 +676,7 @@
     if (manual) return manual;
     return resolveAlias(v.name, v.targetName || '') ?? '';
   }
-  // ===== 变量页增强：新建变量 / 删除(回收站) / 监视器显隐 =====
-  const targetOptions = $derived.by(() => {
-    const map = new Map<string, string>();
-    for (const v of variables) {
-      if (v.targetId && !map.has(v.targetId)) map.set(v.targetId, v.targetName || v.targetId);
-    }
-    return [...map.entries()].map(([id, name]) => ({ id, name }));
-  });
-
-  const vmTrashCount = $derived.by(() => {
-    void trashTick;
-    return trashCount('vm');
-  });
-
-  // 监视器当前状态映射（一次性读取，模板按变量 id 查询；缺项 = 无监视器块）
+  // ===== 变量页：监视器显隐 =====
   const monitorMap = $derived.by(() => {
     void monitorTick;
     void status;
@@ -731,145 +708,6 @@
       },
       { alive: () => bridge.getStatus() === BridgeStatus.Connected },
     );
-  }
-
-  function trashVariable(v: ScratchVaIMod) {
-    if (v.targetName === '安全变量') {
-      showToast('安全变量不支持删除', 'err');
-      return;
-    }
-    if (v.isCloud) {
-      showToast('云变量请到「云数据」页删除', 'err');
-      return;
-    }
-    secureAction(
-      'write',
-      `trash:${v.id}`,
-      () => {
-        const raw = bridge.readVariableValue(v.id, v.targetId);
-        const value = raw === null ? '' : raw;
-        const alias = aliasNameOf(v) || undefined;
-        // 解锁再删：锁定器不会再写回
-        if (bridge.isVariableLocked(v.id)) bridge.unlockVariable(v.id);
-        const ok = bridge.deleteVariableEntry(v.id, v.targetId);
-        if (!ok) {
-          showToast(`「${v.name}」删除失败`, 'err');
-          return;
-        }
-        trashAdd({
-          key: v.id,
-          name: v.name,
-          kind: v.kind,
-          value,
-          scope: 'vm',
-          targetId: v.targetId,
-          targetName: v.targetName,
-          isCloud: v.isCloud,
-          displayName: alias && alias !== v.name ? alias : undefined,
-        });
-        // 只清「手动别名」；规则表命中的显示名属于配置（删变量不该动配置）
-        if (displayNames[nameKey(v)]) {
-          delete displayNames[nameKey(v)];
-          removeDisplayName(nameKey(v));
-        }
-        showToast(`「${v.name}」已移入回收站（可一键还原）`, 'ok');
-      },
-      { alive: () => bridge.getStatus() === BridgeStatus.Connected },
-    );
-  }
-
-  // 新建普通变量行
-  let creatingVar = $state(false);
-  let newVarName = $state('');
-  let newVarKind = $state<'variable' | 'list'>('variable');
-  let newVarTarget = $state('');
-  let newVarValue = $state('');
-  let newVarBusy = $state(false);
-
-  function startCreateVar() {
-    newVarName = '';
-    newVarValue = '';
-    newVarKind = 'variable';
-    newVarTarget = targetOptions[0]?.id ?? '';
-    creatingVar = true;
-  }
-
-  function cancelCreateVar() {
-    creatingVar = false;
-  }
-
-  function coerceNewValue(kind: 'variable' | 'list', raw: string): VaIModValue | VaIModValue[] {
-    if (kind === 'list') {
-      const t = raw.trim();
-      if (t.startsWith('[')) {
-        try {
-          const arr = JSON.parse(t) as unknown;
-          if (Array.isArray(arr)) return arr.map((x) => String(x));
-        } catch {
-          /* 落回逗号 */
-        }
-      }
-      return stringToListValue(raw);
-    }
-    const t = raw.trim();
-    if (t === '') return '';
-    if (t === 'true') return true;
-    if (t === 'false') return false;
-    const n = Number(t);
-    if (!Number.isNaN(n)) return n;
-    return raw;
-  }
-
-  function doCreateVar() {
-    if (newVarBusy) return;
-    if (bridge.getStatus() !== BridgeStatus.Connected) {
-      showToast('请先连接到项目', 'err');
-      return;
-    }
-    const name = newVarName.trim();
-    if (!name) {
-      showToast('变量名不能为空', 'err');
-      return;
-    }
-    if (!newVarTarget) {
-      showToast('请选择目标', 'err');
-      return;
-    }
-    const dup = bridge.nameTakenInTarget(name, newVarKind, newVarTarget);
-    if (dup) {
-      showToast(`「${name}」已存在于 ${dup}`, 'err');
-      return;
-    }
-    secureAction(
-      'write',
-      `create-var:${name}`,
-      () => {
-        const init = coerceNewValue(newVarKind, newVarValue);
-        newVarBusy = true;
-        const r = bridge.createRuntimeVariable(
-          name,
-          newVarKind,
-          newVarTarget,
-          Array.isArray(init) ? init : (init as VaIModValue),
-        );
-        newVarBusy = false;
-        if (!r.ok) {
-          showToast(r.message ?? '新建失败', 'err');
-          return;
-        }
-        creatingVar = false;
-        // 立即刷新列表，让新变量马上出现在面板（不依赖下轮轮询/节流）
-        variables = decodeVariables(bridge.getVariables());
-        showToast(`已新建变量「${name}」`, 'ok');
-      },
-      { alive: () => bridge.getStatus() === BridgeStatus.Connected },
-    );
-  }
-
-  function goSystem() {
-    activeTab = 'system';
-    userSized = false;
-    editing = false;
   }
 
   // 面板输入框按键不冒泡到页面（防全局键盘监听干扰）
@@ -1229,7 +1067,7 @@
         if (!displayNames[key]) {
           // 显示名来自「本地重命名」规则表时删不掉：那是配置条目，不是这个变量的别名
           if (resolveAlias(variable.name, variable.targetName || '')) {
-            showToast('该名称来自「本地重命名」配置，请到系统设置里调整', 'err');
+            showToast('该名称来自「本地重命名」配置，请到设置里调整', 'err');
           }
           return;
         }
@@ -1509,9 +1347,7 @@
     // 绝不能用空数组覆盖（那比显示上一次数据更糟）。
     const fresh = bridge.forceRefreshList();
     if (fresh) variables = decodeVariables(fresh);
-    if (activeTab === 'tools') toolsPanel?.refresh();
-    else if (activeTab === 'feishu') feishuPanel?.refresh();
-    else if (activeTab === 'system') systemPanel?.refresh();
+    if (activeTab === 'feishu') feishuPanel?.refresh();
   }
 
   function refresh() {
@@ -1540,7 +1376,7 @@
       }
 
       if (activeTab === 'vars') varsAnimKey = varsAnimKey + 1;
-      // 变量 / 工具 / 飞书 / 系统：数据源都是 vm 变量 + 本地存储，
+      // 变量 / 飞书：数据源都是 vm 变量 + 本地存储，
       // 统一走一次真实重取（变量列表刷新 + 子面板自刷新），而非空转动画。
       whenReady(refreshPageOnEnter);
     });
@@ -1759,7 +1595,7 @@
       const text = await file.text();
       let raw: unknown;
       try {
-        raw = JSON.parse(text) as unknown;
+        raw = sanitizePlain(JSON.parse(text) as unknown);
       } catch {
         showToast('文件不是合法 JSON，请确认导出来源', 'err');
         return;
@@ -2048,58 +1884,6 @@
             {:else}
             {#key `${activeTab}:${bodyAnimKey}`}
               {#if activeTab === 'vars'}
-                {#if creatingVar}
-                  <div class="svp-var-create">
-                    <div class="svp-field svp-row2">
-                      <input
-                        class="svp-input"
-                        type="text"
-                        bind:value={newVarName}
-                        placeholder="变量名"
-                        spellcheck="false"
-                        use:keyboardGuard
-                      />
-                      <select class="svp-input svp-select" bind:value={newVarKind}>
-                        <option value="variable">变量</option>
-                        <option value="list">列表</option>
-                      </select>
-                    </div>
-                    <div class="svp-field svp-row2">
-                      <select class="svp-input svp-select" bind:value={newVarTarget}>
-                        {#each targetOptions as t}
-                          <option value={t.id}>{t.name}</option>
-                        {/each}
-                      </select>
-                      <input
-                        class="svp-input"
-                        type="text"
-                        bind:value={newVarValue}
-                        placeholder="初始值（列表填 JSON 或逗号分隔）"
-                        spellcheck="false"
-                        use:keyboardGuard
-                        onkeydown={(e) => {
-                          if (e.key === 'Enter') doCreateVar();
-                        }}
-                      />
-                    </div>
-                    <div class="svp-btnrow">
-                      <button class="svp-btn svp-btn-sm" onclick={doCreateVar} disabled={newVarBusy || !newVarName.trim()}>
-                        {newVarBusy ? '创建中…' : '创建'}
-                      </button>
-                      <button class="svp-btn svp-btn-ghost svp-btn-sm" onclick={cancelCreateVar}>取消</button>
-                    </div>
-                  </div>
-                {/if}
-                <div class="svp-actionbar">
-                  <button class="svp-new-cloud" onclick={() => (creatingVar ? (creatingVar = false) : startCreateVar())}>
-                    {creatingVar ? '收起新建' : '＋ 新建变量'}
-                  </button>
-                  {#if vmTrashCount > 0}
-                    <button class="svp-trashbar-go svp-inline" onclick={goSystem}>
-                      回收站 {vmTrashCount} ›
-                    </button>
-                  {/if}
-                </div>
                 <div class="svp-searchbar">
                   <input
                     class="svp-input"
@@ -2160,8 +1944,6 @@
                               onrename={renameVaIMod}
                               onrestore={restoreVaIModName}
                               canRename={v.targetName !== '\u5b89\u5168\u53d8\u91cf'}
-                              ondelete={trashVariable}
-                              canDelete={v.targetName !== '\u5b89\u5168\u53d8\u91cf' && !v.isCloud}
                               onmonitor={toggleMonitor}
                               monitorOn={monitorOnOf(v)}
                               oneditstart={startEdit}
@@ -2179,16 +1961,10 @@
                 {/key}
               {/if}
               {#if activeTab === 'ccw'}
-                <CcwDataPanel active={!minimized} bind:selected={ccwSelected} bind:this={ccwPanel} onOpenSystem={goSystem} />
-              {/if}
-              {#if activeTab === 'tools'}
-                <ToolsPanel bridge={bridge} variables={variables} bind:this={toolsPanel} />
+                <CcwDataPanel active={!minimized} bind:selected={ccwSelected} bind:this={ccwPanel} />
               {/if}
               {#if activeTab === 'feishu'}
                 <FeishuPanel variables={variables} bind:this={feishuPanel} />
-              {/if}
-              {#if activeTab === 'system'}
-                <SystemPanel bind:this={systemPanel} bridge={bridge} variables={variables} active={!minimized} {settings} />
               {/if}
               {#if activePlugin}
                 <!-- 键只含插件 id：其它插件的注册表事件（安装/启停）不重建本页；

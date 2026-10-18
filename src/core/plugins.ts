@@ -224,6 +224,7 @@ export interface PatchApi {
 }
 
 import type { PluginUIApi } from './plugin-ui';
+import { sanitizePlain } from './utils';
 
 /** 角色清单条目（ctx.project.listSprites） */
 export interface PluginSpriteInfo {
@@ -727,7 +728,9 @@ export function parsePluginSource(src: string): PluginDef {
     // 标签写法只能是字符串，按 JSON 解析；解析不出来就当作没写（不让一份写歪的
     // @settings 阻断整个插件安装）
     try {
-      settingsInput = JSON.parse(rawSettings);
+      // sanitizePlain：插件文件是不可信输入，__proto__/constructor/prototype 键
+      // 不许进后续的设置合并链（防原型污染）
+      settingsInput = sanitizePlain(JSON.parse(rawSettings) as unknown);
     } catch {
       settingsInput = undefined;
     }

@@ -23,6 +23,7 @@ export {
   isVMLike,
   listValueToString,
   normalizeValue,
+  sanitizePlain,
   sleep,
   stringToListValue,
 } from './utils';

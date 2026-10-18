@@ -82,6 +82,14 @@ function mountPoint(): Node | null {
  * `last=true` 时移动到父节点末尾——z-index 平级时 DOM 顺序决定胜负，
  * 只在检测到「有人也在顶格抢层级」时才用，平时保持随机插入位置（不破坏 stealth）。
  */
+/** 「非末位子节点」连续计数（按宿主元素）：防拉锯去抖。
+ *  某些站点脚本会把自己的浮层也 append 到同一父节点末尾——若我们每拍看到
+ *  「自己不是最后一个」就立即 appendChild 抢回去，双方就形成每秒一次的
+ *  DOM 挪动拉锯，用户看到面板/浮层反复抖动（鬼畜）。要求**连续两拍**
+ *  都不在末位才动手：单拍的顺序扰动（对方刚 append 完、下一拍我们自然
+ *  会被顶下去又顶回来）不再触发任何 DOM 写入。 */
+const notLastStrikes = new WeakMap<HTMLElement, number>();
+
 function healHost(host: HTMLElement, last: boolean): void {
   if (!host) return;
   if (!host.isConnected) {
@@ -97,11 +105,20 @@ function healHost(host: HTMLElement, last: boolean): void {
   } else if (last) {
     const parent = host.parentNode;
     if (parent && parent.lastChild !== host) {
-      try {
-        parent.appendChild(host);
-      } catch {
-        /* ignore */
+      const strikes = (notLastStrikes.get(host) ?? 0) + 1;
+      // 连续两拍都不在末位才回抢：把单拍扰动从「立刻挪 DOM」降级为「忍一拍」
+      if (strikes >= 2) {
+        notLastStrikes.set(host, 0);
+        try {
+          parent.appendChild(host);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        notLastStrikes.set(host, strikes);
       }
+    } else {
+      notLastStrikes.delete(host);
     }
   }
   try {

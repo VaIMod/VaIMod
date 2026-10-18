@@ -32,6 +32,33 @@ export function isVMLike(value: unknown): boolean {
   }
 }
 
+/** 危险键集合：导入 JSON 的原型污染通道 */
+const UNSAFE_JSON_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * 递归清洗导入 JSON 的危险键（__proto__ / constructor / prototype），深度限 8 层。
+ * 手改的配置包/快照 JSON 可能借「对象字面量键」注入这些名字——JSON.parse 虽不
+ * 触发污染，但后续 `Object.assign` / 逐键写回（applyVaIModBundleLocal 等）会把
+ * 它们搬到真实对象上。导入入口统一过这一层。
+ */
+export function sanitizePlain<T>(v: T, depth = 8): T {
+  if (depth <= 0 || v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) {
+    const arr = v as unknown[];
+    for (let i = 0; i < arr.length; i++) arr[i] = sanitizePlain(arr[i], depth - 1);
+    return v;
+  }
+  const o = v as unknown as Record<string, unknown>;
+  for (const k of Object.keys(o)) {
+    if (UNSAFE_JSON_KEYS.has(k)) {
+      delete o[k];
+      continue;
+    }
+    o[k] = sanitizePlain(o[k], depth - 1);
+  }
+  return v;
+}
+
 function scanFiberFromNode(node: object): unknown {
   const seen = new Set<object>();
   const queue: object[] = [node];

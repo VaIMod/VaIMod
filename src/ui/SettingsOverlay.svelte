@@ -470,7 +470,7 @@
   function clearLocalData() {
     if (
       !confirm(
-        '确定清空全部本地记忆？将删除：飞书机器人记录、快照、回收站、变量显示别名、本地重命名规则、分组展开记忆。\n（不影响作品本体与云端数据）',
+        '确定清空全部本地记忆？将删除：飞书机器人记录、变量显示别名、本地重命名规则、分组展开记忆，以及历史版本遗留的快照/回收站数据。\n（不影响作品本体与云端数据）',
       )
     )
       return;
@@ -484,7 +484,7 @@
       // 同理：本地重命名配置也有模块缓存，必须走 API
       clearAliasConfig();
       localStorage.removeItem(['vai', 'mod', '_grp_exp'].join(''));
-      // 回收站/快照是整键删除：广播一次让系统页/变量页/云数据页的回收站与快照列表即时同步
+      // 快照/回收站是整键删除：广播一次让各订阅面板即时同步
       emitOpsChanged();
       clearedPulse = true;
       setTimeout(() => (clearedPulse = false), 800);
@@ -635,7 +635,7 @@
     <div class="svp-setting-item">
       <div class="svp-setting-text">
         <div class="svp-setting-name">清空本地记忆</div>
-        <div class="svp-setting-desc">删除机器人记录、快照、回收站、显示别名、重命名规则、分组记忆</div>
+        <div class="svp-setting-desc">删除机器人记录、显示别名、重命名规则、分组记忆及历史快照/回收站数据</div>
       </div>
       <button
         class="svp-icon-act svp-icon-act-danger"
