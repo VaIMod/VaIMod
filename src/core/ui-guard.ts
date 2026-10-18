@@ -173,13 +173,22 @@ function detectContest(): boolean {
 export function assertUiTop(): void {
   const hosts = allHosts();
   if (hosts.length === 0) return;
-  const contest = detectContest();
+  // 性能：detectContest 里的 getBoundingClientRect / elementsFromPoint /
+  // getComputedStyle 全是强制 layout 的操作（作品运行时舞台 DOM 每帧都在变，
+  // 每秒强制一次 layout 会持续打断渲染管线）。采样裁决本身容忍秒级滞后
+  // （层级争用是慢变量），限到 3s 一拍；revertInlineHide / healHost 只读
+  // inline style（不触发 layout），保持每拍执行，即时回滚语义不变。
+  const now = Date.now();
+  const contest = now - lastContestProbe >= 3000 ? ((lastContestProbe = now), detectContest()) : lastContest;
+  lastContest = contest;
   for (const host of hosts) {
     if (!host) continue;
     revertInlineHide(host);
     healHost(host, contest);
   }
 }
+let lastContestProbe = -Infinity;
+let lastContest = false;
 
 function schedulePatrol(): void {
   try {

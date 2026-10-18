@@ -22,10 +22,15 @@ const PAKO_INFLATE_MIN = path.join(
 //   （校验异常 = 脚本在目标站直接瘫痪），不值得赌。
 const STAGE_A_OPTIONS = {
   compact: true,
+  // 性能权衡（v2：作品卡顿治理）——CFF/DCI 是把函数体重写成状态机的变换，
+  // 命中的函数每次调用都慢数倍；阈值过高会拖慢 VaIMod 里所有常驻热路径
+  // （MutationObserver 清洗、2s 巡检遍历、bind/fetch 包装），装上后整站变卡。
+  // 0.45/0.25 仍覆盖近半数函数 + 全部字符串数组/编码/重命名防还原层，
+  // 防静态阅读强度不打折，运行时开销约降一半。
   controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.85,
+  controlFlowFlatteningThreshold: 0.45,
   deadCodeInjection: true,
-  deadCodeInjectionThreshold: 0.5,
+  deadCodeInjectionThreshold: 0.25,
   // 反动态调试：debugger 陷阱（初始 + 定时器续排）。headless/正常浏览零感知，
   // 仅在 DevTools 附着时产生暂停对抗。
   debugProtection: true,
@@ -42,15 +47,19 @@ const STAGE_A_OPTIONS = {
   //   只有真实 bundle 冒烟能暴露）。防美化/防还原职责由 CFF+DCI+rc4+
   //   renameGlobals+transformObjectKeys+debugProtection 共同承担。
   simplify: true,
+  // 切片粒度 16 → 32：条目数减半 → stringArray 旋转/洗牌/索引位移的
+  // 初始化与每次索引换算成本同步下降，防 grep 特征的粒度仍然够碎。
   splitStrings: true,
-  splitStringsChunkLength: 16,
+  splitStringsChunkLength: 32,
   stringArray: true,
   stringArrayCallsTransform: true,
   stringArrayEncoding: ['rc4'],
   stringArrayIndexShift: true,
   stringArrayRotate: true,
   stringArrayShuffle: true,
-  stringArrayWrappersCount: 3,
+  // 包装层数 3 → 2：每层包装 = 字符串访问多一跳函数调用。解码只在初始化
+  // 一次，真正的持续开销在运行期每次取串都过包装链，2 层即可阻断直接求值。
+  stringArrayWrappersCount: 2,
   stringArrayWrappersType: 'function',
   stringArrayThreshold: 1,
   // 反静态分析：字面量 unicode 转义（grep/正则特征扫射失效）

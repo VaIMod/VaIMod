@@ -242,40 +242,50 @@ function guardVariableNames(vm: object): void {
     for (const t of targets) {
       const vars = (t as { variables?: unknown })?.variables;
       if (!vars || typeof vars !== 'object') continue;
-      // 变量表两种形态都要盖到：普通对象（真实 VM 的 target.variables）与
-      // Map（部分宿主直接用 Map 存，本仓库验证用假 vm 也是 Map）
-      const entries: unknown[] =
-        vars instanceof Map
-          ? Array.from((vars as Map<string, unknown>).values())
-          : Object.values(vars as Record<string, unknown>);
-      for (const raw of entries) {
-        if (!raw || typeof raw !== 'object') continue;
-        const entry = raw as { name?: unknown };
-        if (typeof entry.name !== 'string') continue;
-        const obj = entry as object;
-        if (guardedNames.has(obj)) continue;
-        const orig = entry.name;
-        guardedNames.set(obj, orig);
-        try {
-          Object.defineProperty(obj, 'name', {
-            configurable: true,
-            enumerable: true,
-            get: () => guardedNames.get(obj) ?? orig,
-            set: (v: unknown) => {
-              // 拒绝被清空：空串且原名非空 → 静默忽略（保留原名）
-              if (typeof v === 'string' && v === '' && (guardedNames.get(obj) ?? '') !== '') {
-                return;
-              }
-              guardedNames.set(obj, typeof v === 'string' ? v : String(v));
-            },
-          });
-        } catch {
-          /* 属性不可重定义时跳过该条目 */
+      // 2s 巡检热路径：已装守卫的条目一次 WeakSet 命中即跳过。
+      // 惰性直查（不再 Object.values / Array.from 全量建数组），
+      // 大变量表下每拍零中间分配、零 GC 压力。
+      if (vars instanceof Map) {
+        for (const raw of (vars as Map<string, unknown>).values()) {
+          guardEntryName(raw);
+        }
+      } else {
+        const rec = vars as Record<string, unknown>;
+        for (const k in rec) {
+          if (!Object.prototype.hasOwnProperty.call(rec, k)) continue;
+          guardEntryName(rec[k]);
         }
       }
     }
   } catch {
     /* ignore */
+  }
+}
+
+/** 单条目守卫装配（guardVariableNames 的惰性回调；已守卫即时返回）。 */
+function guardEntryName(raw: unknown): void {
+  if (!raw || typeof raw !== 'object') return;
+  const entry = raw as { name?: unknown };
+  if (typeof entry.name !== 'string') return;
+  const obj = entry as object;
+  if (guardedNames.has(obj)) return;
+  const orig = entry.name;
+  guardedNames.set(obj, orig);
+  try {
+    Object.defineProperty(obj, 'name', {
+      configurable: true,
+      enumerable: true,
+      get: () => guardedNames.get(obj) ?? orig,
+      set: (v: unknown) => {
+        // 拒绝被清空：空串且原名非空 → 静默忽略（保留原名）
+        if (typeof v === 'string' && v === '' && (guardedNames.get(obj) ?? '') !== '') {
+          return;
+        }
+        guardedNames.set(obj, typeof v === 'string' ? v : String(v));
+      },
+    });
+  } catch {
+    /* 属性不可重定义时跳过该条目 */
   }
 }
 
@@ -365,9 +375,19 @@ class SigGuard {
     this.tickInstalled = true;
     onVmTick((vm) => {
       hookExtensionManager(vm, () => this.rescan(vm));
-      this.rescan(vm);
+      this.rescanThrottled(vm);
       guardVariableNames(vm);
     });
+  }
+
+  /** 巡检兜底扫描限频：完整 detect* 扫描至多 6s 一拍（注册咽喉已同步覆盖
+   *  全通道，巡检扫描纯兜底；变量名守卫不受限频，每拍照常补装）。 */
+  private lastTickScan = -Infinity;
+  private rescanThrottled(vm: object): void {
+    const now = Date.now();
+    if (now - this.lastTickScan < 6000) return;
+    this.lastTickScan = now;
+    this.rescan(vm);
   }
 
   /** vm 上直接查找数字签名扩展实例 */

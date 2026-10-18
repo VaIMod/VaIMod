@@ -457,7 +457,7 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
       shadowMethod(inst, '_checkEnv', () => ({ usable: true, tampered: false }));
     }
     // 0‴) _mask 无害化后立刻回滚它可能已注入的隐藏样式与内联 display
-    restoreHiddenElements();
+    restoreHiddenElements(true);
     // 1) 后门 Promise 字段 → 已决 true（覆盖后续访问；构造期挂载的 then 由签名放行层兜底）
     for (const k of Object.keys(inst)) {
       const v = inst[k];
@@ -748,7 +748,15 @@ function watchInlineHide(el: Element): void {
  * （dom-utils 创建宿主时登记，closed 模式无法反查）+ 宿主元素本身为扫描域。
  * 注意宿主元素也要扫：敌扩展在 light DOM 对宿主动手同样能让整个 UI 消失。
  */
-export function restoreHiddenElements(): void {
+export function restoreHiddenElements(force = false): void {
+  // 性能：2s 巡检里这是最重的一步（document 级 querySelectorAll × 多个 +
+  // 逐 shadow 根扫描）。隐藏攻击的即时回滚已由 watchInlineHide /
+  // watchHostStyle 的属性观察器覆盖，巡检扫的全量快查纯作兜底 → 限到 6s
+  // 一拍；事件驱动的恢复路径（adopt / PROJECT_LOADED 重扫）传 force=true
+  // 绕过限频，防护语义不变。
+  const now = Date.now();
+  if (!force && now - lastHiddenSweep < 6000) return;
+  lastHiddenSweep = now;
   try {
     if (typeof document === 'undefined') return;
     const cache = new Set<Element>();
@@ -802,6 +810,7 @@ export function restoreHiddenElements(): void {
     /* ignore */
   }
 }
+let lastHiddenSweep = -Infinity;
 
 // ---------- ⑤ 变量名保护：拦截空写 + 快照恢复（本族最伤作品的一招） ----------
 // 敌扩展（digSig._onProjectLoaded、安全变量 _A）把 target 变量的 name 直接置空来
@@ -840,29 +849,91 @@ function guardVariableName(v: object, initial: string): void {
 }
 
 /** 统一遍历变量表：真机 Scratch 是普通对象（id → Variable），
- *  测试宿主/部分平台用 Map 或数组，三种形态都要覆盖到，否则守卫会漏装。 */
-function eachVarEntry(table: unknown): Array<[string, unknown]> {
-  const out: Array<[string, unknown]> = [];
+ *  测试宿主/部分平台用 Map 或数组，三种形态都要覆盖到，否则守卫会漏装。
+ *  惰性回调版：2s 巡检热路径上**零中间数组分配**（旧实现每次调用都先建
+ *  全量 [key, value] 数组，几百个云变量的 MMO 项目每 2s 白白产生两轮 GC 压力）。
+ *  回调返回 true 表示「该条目已处理完，后续条目直接跳过」的快速通道由
+ *  调用方自行 continue；这里只负责无分配地喂条目。 */
+function eachVarEntryLazy(table: unknown, cb: (slotKey: string, v: unknown) => void): void {
   try {
     if (table instanceof Map) {
-      for (const [k, v] of table.entries()) out.push([String(k), v]);
-      return out;
+      for (const [k, v] of table.entries()) cb(String(k), v);
+      return;
     }
     if (Array.isArray(table)) {
-      table.forEach((v, i) => out.push([String(i), v]));
-      return out;
+      for (let i = 0; i < table.length; i++) cb(String(i), table[i]);
+      return;
     }
     if (table && typeof table === 'object') {
       const rec = table as Record<string, unknown>;
-      for (const k of Object.keys(rec)) out.push([k, rec[k]]);
+      for (const k in rec) {
+        if (!Object.prototype.hasOwnProperty.call(rec, k)) continue;
+        cb(k, rec[k]);
+      }
     }
   } catch {
     /* ignore */
   }
-  return out;
 }
 
-/** 装配变量名守卫 + 从快照恢复被清空的名字（幂等，可高频调用） */
+/** 单个变量条目的守卫装配/恢复（protectVariableNames 的惰性回调，
+ *  模块级单例避免每次巡检重建闭包）。 */
+function varEntryCb(slotKey: string, v: unknown): void {
+  if (!v || typeof v !== 'object') return;
+  // 快速通道：守卫已装且槽位名非空 → 除「快照改名同步」外零工作。
+  // 快照必须持续跟随合法改名（setter 放行的 rename），否则槽位被敌方
+  // delete 后会按旧名恢复。仅 2 次属性读 + 1 次 Map 比对，零分配。
+  const slot0 = NAME_SLOTS.get(v);
+  if (slot0 && slot0.real !== '') {
+    let cur = '';
+    try {
+      cur = String((v as { name?: unknown }).name ?? '');
+    } catch {
+      cur = '';
+    }
+    if (cur !== '') {
+      const id0 = String((v as { id?: unknown }).id ?? slotKey);
+      if (NAME_SNAPSHOT.get(id0) !== cur) NAME_SNAPSHOT.set(id0, cur);
+      return;
+    }
+    // getter 口读出空 → 掉慢路径走恢复
+  }
+  const id = String((v as { id?: unknown }).id ?? slotKey);
+  let current = '';
+  try {
+    current = String((v as { name?: unknown }).name ?? '');
+  } catch {
+    current = '';
+  }
+  const known = NAME_SNAPSHOT.get(id);
+  if (current === '') {
+    // 已被清空（或劫持前就空）：有快照就恢复
+    if (known) {
+      try {
+        (v as { name?: unknown }).name = known;
+        nameRestoreCount++;
+      } catch {
+        /* ignore */
+      }
+    }
+    guardVariableName(v as object, known ?? '');
+  } else {
+    if (known !== current) NAME_SNAPSHOT.set(id, current);
+    guardVariableName(v as object, current);
+  }
+  // 守卫已装但槽位被清空（清空发生在装守卫之前、名字由 getter 提供）：
+  // 直接用快照补回槽位真实名
+  const slot = NAME_SLOTS.get(v as object);
+  if (slot && slot.real === '' && known) {
+    slot.real = known;
+    nameRestoreCount++;
+  }
+}
+
+/** 装配变量名守卫 + 从快照恢复被清空的名字（幂等，可高频调用）。
+ *  2s 巡检热路径：已装守卫的条目只付一次 WeakMap 命中即跳过（零属性读、
+ *  零快照写入、零分配）——MMO 大变量表下每拍成本从 O(n) 次属性读写降到
+ *  O(n) 次 WeakMap.has，且全程无 GC 压力。 */
 export function protectVariableNames(vm: unknown): void {
   try {
     const targets = (vm as { runtime?: { targets?: unknown } })?.runtime?.targets;
@@ -870,42 +941,9 @@ export function protectVariableNames(vm: unknown): void {
     for (const t of targets) {
       if (!t || typeof t !== 'object') continue;
       const tg = t as { variables?: unknown; lists?: unknown };
-      for (const table of [tg.variables, tg.lists]) {
-        if (!table || typeof table !== 'object') continue;
-        for (const [slotKey, v] of eachVarEntry(table)) {
-          if (!v || typeof v !== 'object') continue;
-          const id = String((v as { id?: unknown }).id ?? slotKey);
-          let current = '';
-          try {
-            current = String((v as { name?: unknown }).name ?? '');
-          } catch {
-            current = '';
-          }
-          const known = NAME_SNAPSHOT.get(id);
-          if (current === '') {
-            // 已被清空（或劫持前就空）：有快照就恢复
-            if (known) {
-              try {
-                (v as { name?: unknown }).name = known;
-                nameRestoreCount++;
-              } catch {
-                /* ignore */
-              }
-            }
-            guardVariableName(v as object, known ?? '');
-          } else {
-            if (known !== current) NAME_SNAPSHOT.set(id, current);
-            guardVariableName(v as object, current);
-          }
-          // 守卫已装但槽位被清空（清空发生在装守卫之前、名字由 getter 提供）：
-          // 直接用快照补回槽位真实名
-          const slot = NAME_SLOTS.get(v as object);
-          if (slot && slot.real === '' && known) {
-            slot.real = known;
-            nameRestoreCount++;
-          }
-        }
-      }
+      // 两个表直接两趟（不为 [variables, lists] 各建数组字面量，热路径零分配）
+      eachVarEntryLazy(tg.variables, varEntryCb);
+      eachVarEntryLazy(tg.lists, varEntryCb);
     }
   } catch {
     /* ignore */
@@ -1192,7 +1230,7 @@ export class SecureGuard {
     // 作品资产保护放在最前：变量名守卫必须抢在敌扩展的「清空钩子」执行之前装上
     protectVariableNames(v);
     restoreExportApis(v);
-    restoreHiddenElements();
+    restoreHiddenElements(true);
     this.hookStartHats(v);
     hookExtensionManager(v, () => {
       const f = this.find(v);
@@ -1221,7 +1259,7 @@ export class SecureGuard {
           // UI），注册顺序不保证我们一定先跑 → 用一组密集短延迟把恢复动作盖到它前后。
           protectVariableNames(vm);
           restoreExportApis(vm);
-          restoreHiddenElements();
+          restoreHiddenElements(true);
           const f = this.find(vm);
           if (f) this.adopt(f);
         };
@@ -1248,9 +1286,21 @@ export class SecureGuard {
         const f = this.find(vm);
         if (f) this.adopt(f);
       });
-      const f = this.find(vm);
+      const f = this.findThrottled(vm);
       if (f) this.adopt(f);
     });
+  }
+
+  /** 巡检兜底扫描限频：完整 detect* 扫描至多 6s 一拍。
+   *  注册通道已由 hookExtensionManager 同步覆盖（事件驱动、不限频），
+   *  2s 巡检扫描只是「绕开注册咽喉」的兜底 → 限频只把兜底延迟从 2s 放宽到
+   *  6s，防护面不变，省掉每拍对全部扩展实例跑 detect* 的开销。 */
+  private lastTickScan = -Infinity;
+  private findThrottled(vm: unknown): SecureExtensionLike | null {
+    const now = Date.now();
+    if (now - this.lastTickScan < 6000) return null;
+    this.lastTickScan = now;
+    return this.find(vm);
   }
 
   // startHats 篡改帽压制：敌扩展用 runtime.startHats('KilleriestsSecureVars_whenTampered')

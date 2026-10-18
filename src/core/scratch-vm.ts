@@ -1253,10 +1253,33 @@ export class ScratchVM {
     this.bindHookTried = true;
     this.bindOrig = Function.prototype.bind;
     const self = this;
-    const hooked = function (this: Function, self2: unknown, ...args: unknown[]): unknown {
-      const bound = self.bindOrig?.call(this, self2, ...args);
-      if (!self.channel.getVm() && self2 && typeof self2 === 'object' && self.isVmShaped(self2)) {
-        self.adoptVmCandidate(self2);
+    // 性能关键（bind 是全站热路径：VM/React/事件系统每秒成千上万次调用）：
+    // - 严禁 rest 参数（...args 每次调用都新建数组 → 持续 GC 压力，作品运行时明显卡顿）。
+    //   用 arguments 定长分派覆盖 0-4 个绑定实参（占全部调用的绝对多数），更长才走
+    //   apply 兜底 —— 常规路径零分配、零中间数组。
+    // - 采纳检查只在 vm 尚未找到时进行（adopt 后 isVmShaped 永不执行，仅剩
+    //   getVm() 一次布尔判断）；isVmShaped 各路本身是 2-4 次属性读，可接受。
+    const hooked = function hooked(this: Function, self2?: unknown): unknown {
+      const orig = self.bindOrig;
+      if (!orig) return undefined;
+      const n = arguments.length;
+      let bound: unknown;
+      if (n <= 1) {
+        bound = orig.call(this, self2);
+      } else if (n === 2) {
+        bound = orig.call(this, self2, arguments[1]);
+      } else if (n === 3) {
+        bound = orig.call(this, self2, arguments[1], arguments[2]);
+      } else if (n === 4) {
+        bound = orig.call(this, self2, arguments[1], arguments[2], arguments[3]);
+      } else {
+        // arguments[0]=thisArg、其余=绑定实参，与 bind(thisArg, ...args) 形参序一致
+        bound = orig.apply(this, arguments as unknown as [unknown, ...unknown[]]);
+      }
+      if (!self.channel.getVm() && self2 !== null && self2 !== undefined && typeof self2 === 'object') {
+        if (self.isVmShaped(self2)) {
+          self.adoptVmCandidate(self2);
+        }
       }
       return bound;
     };
