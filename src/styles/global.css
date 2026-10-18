@@ -1730,16 +1730,13 @@
 /* 工具 / 飞书 / 系统 面板根容器（原组件内 <style> 迁移至此：
    避免 Svelte 在 document-start 向 document.head 注入样式而 document.head 尚为 null） */
 .svp-tools,
-.svp-feishu,
-.svp-sys {
+.svp-feishu {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 8px;
   position: relative;
-}
-/* 系统页底部留白：移除右下角设置按钮后内容贴边，会显得局促 */
-.svp-sys {
-  padding-bottom: 18px;
+  /* 底部留白：最后一个区块（发送栏）不贴面板底边 */
+  padding-bottom: 14px;
 }
 
 /* ===== 设置面板 ===== */
