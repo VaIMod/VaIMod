@@ -24,7 +24,7 @@
   import type { CloudType } from '../core/ccwdata';
   import { ccwDataStore } from '../core/ccwdata';
   import { exportVaIModBundle, importVaIModBundle, applyVaIModBundleLocal, pluginInstallDetail, resolveBundleVariables, detectBundleKind, summarizeBundle, summaryText, WILDCARD } from '../core/bundle';
-  import { trashAdd, trashCount } from '../core/ops-meta';
+  import { trashAdd, trashCount, subscribeOps } from '../core/ops-meta';
   import {
     loadDisplayNames,
     setDisplayName,
@@ -602,6 +602,10 @@
   // 操作元数据刷新节拍：回收站 / 监视器变化后驱动列表重渲染
   let monitorTick = $state(0);
   let trashTick = $state(0);
+  // 回收站变更统一订阅 ops-meta 广播：任意面板（系统页还原/清空、云数据页删除、
+  // 工具页批量删除、配置包导入）改动回收站后，变量页徽标立即同步——
+  // 旧实现只在本组件删除时手动 +1，系统页还原后变量页「回收站 N ›」会滞留旧数。
+  $effect(() => subscribeOps(() => (trashTick = trashTick + 1)));
 
   // 普通变量搜索（按显示名/原始名/目标名模糊匹配）；
   // 「#SVV# 值」前缀切换为按变量值匹配（大小写不敏感，容忍全宽＃，前缀后可不带空格）
@@ -768,7 +772,6 @@
           delete displayNames[nameKey(v)];
           removeDisplayName(nameKey(v));
         }
-        trashTick = trashTick + 1;
         showToast(`「${v.name}」已移入回收站（可一键还原）`, 'ok');
       },
       { alive: () => bridge.getStatus() === BridgeStatus.Connected },

@@ -10,8 +10,9 @@
     markerAdd,
     markerList,
     markerRemove,
+    subscribeOps,
     trashClear,
-    trashCount,
+    trashCountsByScope,
     trashList,
     trashTake,
     type MarkerEntry,
@@ -51,15 +52,18 @@
   let toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
   let markerVer = $state(0);
+  // 快照增删（本页保存/导入/删除、自动初始快照、配置包导入）统一走 ops-meta 广播
+  $effect(() => subscribeOps(() => (markerVer = markerVer + 1)));
   function showToast(text: string, kind: 'ok' | 'err' = 'ok') {
     toast = { text, kind };
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => (toast = null), 2600);
   }
 
-  // 手动刷新（父面板刷新按钮）：从 localStorage 重读快照与回收站，
-  // 让「刷新」在本页也是真刷新而非空转动画。
+  // 回收站 / 快照数据变更统一订阅 ops-meta 广播（本页还原/清空、其它面板删除/导入
+  // 都会广播）→ 列表与徽标即时同步；refresh() 的手动自增保留为显式刷新通道。
   let trashVer = $state(0);
+  $effect(() => subscribeOps(() => (trashVer = trashVer + 1)));
   export function refresh() {
     markerVer = markerVer + 1;
     trashVer = trashVer + 1;
@@ -140,12 +144,27 @@
   function captureSnapshot(): Omit<MarkerEntry, 'id' | 'at' | 'name' | 'lists'> {
     const vars: Record<string, Record<string, { k: 'variable' | 'list'; value: ScratchValue }>> = {};
     const live = bridge.readVmLiveValues();
+    // 同一目标下变量与列表可以同名：快照键若直接用名字，后采集的会覆盖先采集的
+    // （丢数据）。冲突时列表键加 \u0002 前缀区分；还原侧剥前缀还原真实名。
+    // 无冲突时保持纯名键 —— 与旧版导出格式完全兼容。
+    const seenNames = new Set<string>();
+    const dupNames = new Set<string>();
+    for (const v of variables) {
+      if (v.isCloud) continue;
+      const nk = v.targetId + '\u0000' + v.name;
+      if (seenNames.has(nk)) dupNames.add(nk);
+      seenNames.add(nk);
+    }
+    const keyOf = (v: ScratchVaIMod): string => {
+      const dup = dupNames.has(v.targetId + '\u0000' + v.name);
+      return v.kind === 'list' && dup ? '\u0002' + v.name : v.name;
+    };
     for (const v of variables) {
       if (v.isCloud) continue;
       // undefined = 该变量不在 vm 里（安全扩展变量等）→ 与逐条读返回 null 同义
       const raw = live.get(v.targetId + '\u0000' + v.id);
       if (raw === undefined) continue;
-      (vars[v.targetId] ??= {})[v.name] = { k: v.kind, value: raw };
+      (vars[v.targetId] ??= {})[keyOf(v)] = { k: v.kind, value: raw };
     }
     const cloud = {
       p: cloneJson(ccwDataStore.project.toJSON()) as Record<string, unknown>,
@@ -160,7 +179,6 @@
       const snap = captureSnapshot();
       const added = markerAdd({ name, ...snap });
       newMarkName = '';
-      markerVer = markerVer + 1;
       if (markerEntryCount(added) === 0) showToast('当前无可用数据（未连接或项目无变量）', 'err');
       else showToast(`快照「${name}」已保存（共 ${markerEntryCount(added)} 项）`, 'ok');
     });
@@ -197,7 +215,9 @@
         varIndex.set(`${v.targetId}\u0001${v.name}\u0001${v.kind}`, v);
       }
       for (const [targetId, entries] of Object.entries(varsData ?? {})) {
-        for (const [name, e] of Object.entries(entries)) {
+        for (const [entryKey, e] of Object.entries(entries)) {
+          // 采集侧对「同目标下变量与列表同名」的冲突条目加了 \u0002 前缀，这里剥掉
+          const name = entryKey.startsWith('\u0002') ? entryKey.slice(1) : entryKey;
           if (!targetIds.has(targetId)) {
             missed++;
             continue;
@@ -261,14 +281,22 @@
 
   function importMarkerFromText() {
     secureAction('generic', 'marker-import', () => {
+      const text = importText.trim();
+      if (text.length > 2_000_000) {
+        showToast('快照 JSON 过大（上限 2MB）', 'err');
+        return;
+      }
       let data: Partial<MarkerEntry>;
       try {
-        data = JSON.parse(importText) as Partial<MarkerEntry>;
+        data = JSON.parse(text) as Partial<MarkerEntry>;
       } catch {
         showToast('JSON 格式错误', 'err');
         return;
       }
-      const name = data.name?.trim() || `导入 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+      const name =
+        typeof data.name === 'string' && data.name.trim()
+          ? data.name.trim()
+          : `导入 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
       // 结构校验：vars/cloud 必须是普通对象（或缺省），防止手改 JSON 出错后
       // 应用时 Object.entries 拿到字符串/数组把还原流程搞乱。
       const isPlainObj = (x: unknown): x is Record<string, unknown> =>
@@ -287,7 +315,6 @@
         kind,
       });
       importText = '';
-      markerVer = markerVer + 1;
       showToast(`快照「${name}」已导入`, 'ok');
     });
   }
@@ -295,7 +322,6 @@
   function removeMarker(id: string) {
     secureAction('generic', 'marker-del', () => {
       markerRemove(id);
-      markerVer = markerVer + 1;
       showToast('已删除快照', 'ok');
     });
   }
@@ -329,7 +355,6 @@
         /* ignore */
       } finally {
         autoDone = true;
-        markerVer = markerVer + 1;
       }
     });
   });
@@ -348,16 +373,14 @@
   });
   const trashBadge = $derived.by(() => {
     void trashVer;
-    return BUCKETS.map((b) => ({ ...b, n: trashCount(b.scope) }));
+    const counts = trashCountsByScope(); // 一次解析拿全三桶
+    return BUCKETS.map((b) => ({ ...b, n: counts[b.scope] }));
   });
   const allTrashN = $derived.by(() => {
     void trashVer;
-    return BUCKETS.reduce((n, b) => n + trashCount(b.scope), 0);
+    const counts = trashCountsByScope();
+    return counts.vm + counts['cloud:p'] + counts['cloud:u'];
   });
-
-  function bumpTrash() {
-    trashVer = trashVer + 1;
-  }
 
   const bucketLabel = $derived(BUCKETS.find((b) => b.scope === bucket)?.label ?? '');
 
@@ -389,7 +412,6 @@
           }
         }
         trashTake('vm', e.key, e.name);
-        bumpTrash();
         done = true;
         showToast(`变量「${e.name}」已还原`, 'ok');
         return;
@@ -405,7 +427,6 @@
         db.set(e.name, e.value);
         await ccwDataStore.setValue(type, e.name, e.value);
         trashTake(e.scope, e.key, e.name);
-        bumpTrash();
         done = true;
         showToast(`云数据「${e.name}」已还原`, 'ok');
       } catch (err) {
@@ -419,7 +440,7 @@
   async function restoreBucketAll() {
     const list = trashList(bucket);
     if (list.length === 0) {
-      showToast('回收站是空的', 'err');
+      showToast('回收站是空的', 'ok');
       return;
     }
     let okN = 0;
@@ -431,7 +452,6 @@
         /* 单项失败继续 */
       }
     }
-    bumpTrash();
     const failN = list.length - okN;
     showToast(
       failN === 0
@@ -444,7 +464,6 @@
   function purgeTrashEntry(e: TrashEntry) {
     secureAction('generic', 'trash-purge', () => {
       trashTake(e.scope, e.key, e.name);
-      bumpTrash();
       showToast(`「${e.name}」已彻底删除`, 'ok');
     });
   }
@@ -452,7 +471,6 @@
   function clearBucket() {
     secureAction('generic', 'trash-clear', () => {
       const n = trashClear(bucket);
-      bumpTrash();
       showToast(`已清空${bucketLabel}回收站（${n} 项）`, 'ok');
     });
   }
@@ -467,10 +485,7 @@
 
   <!-- 快照还原系统 -->
   <section class="svp-section">
-    <h3 class="svp-section-title">
-      快照标记 · 还原系统
-      {#if allTrashN > 0}<em class="svp-tag-red">{allTrashN} 项待还原</em>{/if}
-    </h3>
+    <h3 class="svp-section-title">快照还原</h3>
     <p class="svp-section-sub">把当前变量/列表 + 作品/用户云数据保存为命名快照，随时一键还原到那一刻</p>
     <div class="svp-field svp-row2">
       <input class="svp-input" type="text" bind:value={newMarkName} placeholder="快照名称" spellcheck="false" use:keyboardGuard />
@@ -504,7 +519,10 @@
 
   <!-- 回收站 -->
   <section class="svp-section">
-    <h3 class="svp-section-title">回收站</h3>
+    <h3 class="svp-section-title">
+      回收站
+      {#if allTrashN > 0}<em class="svp-tag-red">{allTrashN} 项可还原</em>{/if}
+    </h3>
     <div class="svp-seg">
       {#each BUCKETS as b}
         <button

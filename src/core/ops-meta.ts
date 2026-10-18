@@ -6,6 +6,38 @@ import type { ScratchValue } from './types';
 const NS_TRASH = ['vai', 'mod', '_trash'].join('');
 const NS_MARK = ['vai', 'mod', '_marks'].join('');
 
+// ---------- 变更通知（回收站/快照跨页同步） ----------
+// 回收站与快照会被多个面板同时展示（变量页徽标 / 云数据页横幅 / 系统页列表）。
+// 任何一处还原/删除/清空后，其它面板必须立刻感知，否则出现「已还原但变量页
+// 仍显示去回收站恢复」的过期状态。这里是单一事实源：所有写操作完成后广播。
+type OpsListener = () => void;
+const opsListeners = new Set<OpsListener>();
+
+export function subscribeOps(cb: OpsListener): () => void {
+  opsListeners.add(cb);
+  return () => {
+    opsListeners.delete(cb);
+  };
+}
+
+function notifyOps(): void {
+  for (const cb of opsListeners) {
+    try {
+      cb();
+    } catch {
+      /* 单个监听器异常不影响其它监听器 */
+    }
+  }
+}
+
+/**
+ * 手动广播（绕过本模块 API 直接清 localStorage 的场景）：
+ * 设置页「清空本地记忆」整键删除回收站/快照后调用，驱动各面板即时同步。
+ */
+export function emitOpsChanged(): void {
+  notifyOps();
+}
+
 // ---------- 命名空间 JSON 读写 ----------
 function readJson<T>(ns: string): T {
   try {
@@ -65,6 +97,7 @@ export function trashAdd(entry: Omit<TrashEntry, 'at'>): void {
   kept.unshift({ ...entry, at: Date.now() });
   bucket[entry.scope] = kept.slice(0, 60); // 每桶上限 60 条
   writeJson(NS_TRASH, root);
+  notifyOps();
 }
 
 export function trashList(scope: TrashScope): TrashEntry[] {
@@ -81,6 +114,16 @@ export function trashCount(scope?: TrashScope): number {
   return (bucket[scope] ?? []).length;
 }
 
+/** 三桶计数一次解析（面板徽标每轮派生要读全部 scope，逐个 trashCount 会重复 parse） */
+export function trashCountsByScope(): Record<TrashScope, number> {
+  const root = readJson<TrashRoot>(NS_TRASH);
+  const bucket = root[currentOid()];
+  const out: Record<TrashScope, number> = { vm: 0, 'cloud:p': 0, 'cloud:u': 0 };
+  if (!bucket) return out;
+  for (const s of Object.keys(out) as TrashScope[]) out[s] = (bucket[s] ?? []).length;
+  return out;
+}
+
 /** 移除并返回条目（还原 / 彻底删除共用） */
 export function trashTake(scope: TrashScope, key: string, name?: string): TrashEntry | undefined {
   const root = readJson<TrashRoot>(NS_TRASH);
@@ -92,6 +135,7 @@ export function trashTake(scope: TrashScope, key: string, name?: string): TrashE
   if (idx < 0) return undefined;
   const [entry] = list.splice(idx, 1);
   writeJson(NS_TRASH, root);
+  notifyOps();
   return entry;
 }
 
@@ -108,7 +152,10 @@ export function trashClear(scope?: TrashScope): number {
     n = (bucket[scope] ?? []).length;
     delete bucket[scope];
   }
-  writeJson(NS_TRASH, root);
+  if (n > 0) {
+    writeJson(NS_TRASH, root);
+    notifyOps();
+  }
   return n;
 }
 
@@ -143,6 +190,7 @@ export function markerAdd(entry: Omit<MarkerEntry, 'id' | 'at'> & { name: string
   list.unshift(e);
   root[oid] = list.slice(0, MARK_CAP);
   writeJson(NS_MARK, root);
+  notifyOps();
   return e;
 }
 
@@ -153,6 +201,7 @@ export function markerRemove(id: string): void {
   if (!list) return;
   root[oid] = list.filter((m) => m.id !== id);
   writeJson(NS_MARK, root);
+  notifyOps();
 }
 
 /** 读取当前 oid 的所有 marker（用于配置包导出） */
@@ -165,6 +214,7 @@ export function saveAllMarkers(list: MarkerEntry[]): void {
   const root = readJson<MarkRoot>(NS_MARK);
   root[currentOid()] = list.slice(0, MARK_CAP);
   writeJson(NS_MARK, root);
+  notifyOps();
 }
 
 /** 读取当前 oid 的全部回收站条目（跨 scope 合并，按 at 倒序） */
@@ -182,6 +232,7 @@ export function saveAllTrash(scope: TrashScope, list: TrashEntry[]): void {
   const bucket = (root[oid] ??= {});
   bucket[scope] = list.slice(0, 60);
   writeJson(NS_TRASH, root);
+  notifyOps();
 }
 
 // ---------- 通用小工具 ----------

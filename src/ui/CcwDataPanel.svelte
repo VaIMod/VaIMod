@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ccwDataStore, LOCK_PREFIX, type CloudType } from '../core/ccwdata';
   import { cleanDisplay } from '../core';
-  import { cloneJson, trashAdd, trashCount } from '../core/ops-meta';
+  import { cloneJson, trashAdd, subscribeOps, trashCountsByScope } from '../core/ops-meta';
   import { fly } from 'svelte/transition';
   import {
     loadDisplayNames,
@@ -480,9 +480,13 @@
 
   // ===== 删除云数据（先进回收站，系统页可一键还原） =====
   let trashVer = $state(0);
+  // 订阅 ops-meta 广播：系统页还原/清空回收站后，本页「回收站 · N 项」横幅立即同步，
+  // 不再滞留旧数（旧实现只在本页删除时手动 +1）。
+  $effect(() => subscribeOps(() => (trashVer = trashVer + 1)));
   const trashTotal = $derived.by(() => {
     void trashVer;
-    return trashCount('cloud:p') + trashCount('cloud:u');
+    const c = trashCountsByScope();
+    return c['cloud:p'] + c['cloud:u'];
   });
   let deletingName = $state<string | null>(null);
 
@@ -536,7 +540,6 @@
           delete displayNames[key];
           removeDisplayName(key);
         }
-        trashVer = trashVer + 1;
         showToast(`「${name}」已移入回收站`, 'ok');
       } catch (e) {
         showToast(`删除失败：${e instanceof Error ? e.message : e}`, 'err');

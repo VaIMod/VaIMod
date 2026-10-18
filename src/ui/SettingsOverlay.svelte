@@ -14,6 +14,7 @@
   import { pluginRegistry } from '../core/plugin-registry';
   import { clearDisplayNames } from '../core/display-names';
   import { clearAliasConfig } from '../core/alias-config';
+  import { emitOpsChanged } from '../core/ops-meta';
   import PluginManager from './PluginManager.svelte';
   import { scopeCss } from '../core/plugin-css';
   import { fly } from 'svelte/transition';
@@ -483,6 +484,8 @@
       // 同理：本地重命名配置也有模块缓存，必须走 API
       clearAliasConfig();
       localStorage.removeItem(['vai', 'mod', '_grp_exp'].join(''));
+      // 回收站/快照是整键删除：广播一次让系统页/变量页/云数据页的回收站与快照列表即时同步
+      emitOpsChanged();
       clearedPulse = true;
       setTimeout(() => (clearedPulse = false), 800);
     } catch {

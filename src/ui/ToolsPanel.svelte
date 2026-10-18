@@ -86,12 +86,17 @@
     });
   }
 
+  const sameCount = $derived.by(() => {
+    void refreshVer;
+    return sameMatches().length;
+  });
   const samePreview = $derived.by(() => {
     void refreshVer; // 刷新按钮触发重算
-    const arr = sameMatches().slice(0, 6);    if (arr.length === 0) return '';
+    const arr = sameMatches().slice(0, 6);
+    if (arr.length === 0) return '';
     return (
       arr.map((m) => `${cleanDisplay(m.name)}${m.kind === 'list' ? '（列表）' : ''}`).join('、') +
-      (sameMatches().length > 6 ? '…' : '')
+      (sameCount > 6 ? '…' : '')
     );
   });
 
@@ -436,7 +441,7 @@
       <button class="svp-btn svp-btn-red svp-btn-sm" onclick={batchDeleteSame} disabled={!sameName.trim()}>批量删除（回收站）</button>
     </div>
     {#if sameName.trim() && samePreview}
-      <p class="svp-meta">匹配 {sameMatches().length} 项：{samePreview}</p>
+      <p class="svp-meta">匹配 {sameCount} 项：{samePreview}</p>
     {/if}
   </section>
 
@@ -462,7 +467,7 @@
       <textarea
         class="svp-input svp-textarea"
         bind:value={jsonText}
-        placeholder="JSON 对象，如：值对示例；点上方「导出前缀」自动填充"
+        placeholder="JSON 对象；点「导出前缀 → JSON」自动填充"
         rows={5}
         spellcheck="false"
         use:keyboardGuard

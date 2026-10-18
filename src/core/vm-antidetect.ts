@@ -261,6 +261,9 @@ function hookNav(): void {
     defPropIf(nav, 'languages', readReal('languages'), (v) => Array.isArray(v) && v.length === 0, Object.freeze(['zh-CN', 'zh', 'en']))
   )
     bump('nav');
+  // webdriver：无头/自动化环境最常探测的反机器人信号。正常浏览恒为 false/undefined，
+  // 仅真值（自动化驱动注入）时伪装为 false —— 条件式伪装，正常环境零改动。
+  if (defPropIf(nav, 'webdriver', readReal('webdriver'), (v) => v === true, false)) bump('nav');
 }
 
 // ---- ⑤ 屏幕分辨率：VM 常见 <1024x700 才伪装为常见桌面分辨率 ----

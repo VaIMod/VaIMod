@@ -157,7 +157,7 @@ score = (wins + 1) / (tries + 2)        <span class="cm">// Laplace 平滑成功
     <div class="layer rv"><h4>GPU · per-context 确定性</h4><p>同一 WebGL context 两次查询返回<b>同一渲染器</b>——随机化反而露馅，确定性才是伪装。</p></div>
     <div class="layer rv"><h4>Canvas · 零残留</h4><p>导出后<b>还原原像素</b>，读回来的画布与写入的完全一致，不留噪声痕迹。</p></div>
     <div class="layer rv"><h4>音频 · 指纹扰动</h4><p>AudioContext 指纹输出确定性微扰，跨会话稳定。</p></div>
-    <div class="layer rv"><h4>navigator / screen</h4><p>硬件并发、内存、分辨率等高危指纹项条件式覆写。</p></div>
+    <div class="layer rv"><h4>navigator / screen</h4><p>硬件并发、内存、分辨率、<code>webdriver</code> 等高危指纹项条件式覆写——正常环境零改动。</p></div>
     <div class="layer rv"><h4>时区 · 双口径一致</h4><p><code>Intl</code> 与 <code>Date</code> 两套时区口径<b>严格对齐</b>，交叉比对不出破绽。</p></div>
     <div class="layer rv"><h4>行为 · 可见性真值口</h4><p>伪装 visible 的同时，自家巡逻读 <code>trueHidden()</code> 原生真值——伪装绝不门控自己的防线。</p></div>
   </div>
