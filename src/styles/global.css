@@ -1006,13 +1006,13 @@
   }
 }
 
-/* ===== 工具 / 飞书 / 系统 通用 section ===== */
+/* ===== 飞书 通用 section ===== */
 .svp-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 11px 12px;
-  margin: 4px 0 2px;
+  gap: 10px;
+  padding: 13px 14px;
+  margin: 6px 0 4px;
   background: rgba(255, 255, 255, 0.045);
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 10px;
@@ -1338,7 +1338,6 @@
 .svp-seg-btn.svp-seg-active {
   color: #ffffff;
   background: rgba(77, 163, 255, 0.26);
-  box-shadow: inset 0 0 0 1px rgba(77, 163, 255, 0.45);
 }
 .svp-seg-btn em {
   position: absolute;
@@ -1405,7 +1404,7 @@
 .svp-robotlist {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .svp-robot-row {
   display: flex;
@@ -1436,7 +1435,6 @@
 .svp-robot.svp-robot-on {
   background: rgba(77, 163, 255, 0.16);
   border-color: rgba(77, 163, 255, 0.55);
-  box-shadow: inset 3px 0 0 0 var(--svp-primary, #4da3ff);
 }
 .svp-robot-row .svp-robot-edit {
   align-self: center;
@@ -1456,7 +1454,7 @@
 .svp-robot-meta {
   font-size: 11.5px;
   color: #8a9099;
-  /* 完整 token 显示：窄按钮内自动换行，不溢出 */
+  /* 打码 token + 来源：窄按钮内自动换行，不溢出 */
   word-break: break-all;
 }
 /* 行内图标按钮：编辑 / 置顶 / 移除 共用尺寸与交互，只有颜色不同 */
@@ -1513,8 +1511,8 @@
 .svp-uploaded {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   background: rgba(48, 209, 88, 0.08);
   border: 1px solid rgba(48, 209, 88, 0.3);
   border-radius: 8px;
@@ -1525,7 +1523,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-top: 4px;
+  margin-top: 8px;
 }
 
 /* ===== 飞书消息请求拦截（内嵌 UI） ===== */
@@ -1544,7 +1542,7 @@
 .svp-fs-log {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   max-height: 220px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1552,17 +1550,16 @@
 .svp-fs-item {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
-/* 待裁决：左侧亮条 + 边框高亮，一眼看出「有请求在等我」 */
+/* 待裁决：橙色边框高亮，一眼看出「有请求在等我」 */
 .svp-fs-item-pending {
-  background: rgba(255, 159, 10, 0.08);
-  border-color: rgba(255, 159, 10, 0.42);
-  box-shadow: inset 3px 0 0 0 rgba(255, 159, 10, 0.85);
+  background: rgba(255, 159, 10, 0.1);
+  border-color: rgba(255, 159, 10, 0.45);
 }
 .svp-fs-head {
   display: flex;
@@ -1575,7 +1572,7 @@
   font-weight: 600;
   color: #d8dbe0;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  /* 完整 botId（最长约 80 字符）：允许收缩换行，不撑爆行布局 */
+  /* 打码 token（abcd…wxyz）：仍允许收缩换行，不撑爆行布局 */
   flex-shrink: 1;
   min-width: 0;
   word-break: break-all;
@@ -1605,13 +1602,13 @@
 .svp-fs-rules {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
 .svp-fs-rule {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 8px;
+  padding: 6px 10px;
   border-radius: 6px;
   background: rgba(255, 255, 255, 0.03);
 }

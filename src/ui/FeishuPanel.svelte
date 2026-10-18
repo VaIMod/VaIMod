@@ -8,6 +8,7 @@
   import {
     buildLinkCard,
     ingestTokens,
+    maskToken,
     robotAdd,
     robotList,
     robotPin,
@@ -653,7 +654,7 @@
                 title="双击重命名"
               >
                 <span class="svp-robot-name">{cleanDisplay(r.name)}</span>
-                <span class="svp-robot-meta">{r.token} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
+                <span class="svp-robot-meta">{maskToken(r.token)} · {srcLabel[r.src]}{r.kind === 'flow' ? ' · 捷径' : ''}</span>
               </button>
               <button class="svp-robot-icon" onclick={() => startEdit(r)} aria-label="重命名">✎</button>
               <button
@@ -735,7 +736,7 @@
         {#each fsHits as h (h.id)}
           <div class="svp-fs-item" class:svp-fs-item-pending={h.decision === 'pending'}>
             <div class="svp-fs-head">
-              <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : h.botId}</span>
+              <span class="svp-fs-bot">{h.botId === '未知' ? '未知机器人' : maskToken(h.botId)}</span>
               <span class="svp-fs-state" class:svp-fs-state-pending={h.decision === 'pending'}>{FS_STATE_LABEL[h.decision]}</span>
             </div>
             <div class="svp-fs-text">{h.text}</div>
@@ -755,7 +756,7 @@
         <div class="svp-fs-rules">
           {#each fsRulesList as r (r.botId)}
             <div class="svp-fs-rule">
-              <span class="svp-fs-bot">{r.botId}</span>
+              <span class="svp-fs-bot">{maskToken(r.botId)}</span>
               <span class="svp-meta">{r.allow ? '总是允许' : '总是拒绝'}</span>
               <button class="svp-robot-icon svp-robot-del" onclick={() => forgetFsRule(r.botId)} aria-label="忘记该规则">×</button>
             </div>
@@ -818,7 +819,7 @@
           </div>
         </div>
       {/if}
-      <p class="svp-note">文件先上传为直链（ccw OSS → catbox → 0x0.st），再以卡片消息发送。</p>
+      <p class="svp-note">文件先上传为直链，再以卡片消息发送。</p>
     {/if}
 
     <div class="svp-sendbar">
