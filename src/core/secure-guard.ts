@@ -50,6 +50,14 @@ const DIGSIG_OPCODES = [
   'storeKey', 'loadKey', 'deleteKey',
 ];
 
+// YinSecurity 审计阻拦家（拦截外挂 / CheatBlockerExtension，还原样本逐行分析）：
+// 六积木 = 三 Boolean 探针（TM 特征 / 四脚本 DOM 特征 / 七类劫持 toString 探测）
+// + 三命令（showDetail / jump / blockScript 物理拆除 + 全屏红幕）。
+// opcode 名无法混淆（sb3 按 opcode 引用、runtime 按 opcode 分发到同名实例方法），
+// 成套出现即认定：6 取 5（普通扩展不会同时长出 TM/脚本/劫持三探针），
+// 再配合 id 前缀与 formatMessage 键 'YinSecurity.name'（l10n 稳定键，不可改名）双保险。
+const YINSEC_OPCODES = ['hasTM', 'hasScript', 'isHijacked', 'showDetail', 'jump', 'blockScript'];
+
 // 第三方修改器 UI 隐藏选择器特征（命中即整体清除，全面中和敌扩展的 UI 隐藏）
 // 数字签名家（ScratchSign / 变体）的 _mask() 也向 #ui-base 注入 style 做同类隐藏，
 // 其选择器集合与本表高度重合，因此同一套清理器可覆盖两家。
@@ -296,6 +304,26 @@ function detectInstance(x: unknown): boolean {
     }
   }
   if (score >= 3 || sigScore >= 3) return true;
+  // YinSecurity 家族（拦截外挂）：六方法成套（6 取 5）即认定。
+  // 附加两路冗余：id 前缀（'YinSecurity'，含不可打印字符的后缀不影响）与
+  // formatMessage 稳定键 'YinSecurity.name'（constructor/getInfo 源里必然出现）。
+  let yinHit = 0;
+  for (const op of YINSEC_OPCODES) {
+    if (typeof (obj as Record<string, unknown>)[op] === 'function') yinHit++;
+  }
+  if (yinHit >= 5) return true;
+  try {
+    const id = obj.getInfo?.()?.id;
+    if (typeof id === 'string' && id.startsWith('YinSecurity')) return true;
+    if (
+      String((obj as { constructor?: unknown }).constructor).includes('YinSecurity') ||
+      String(obj.getInfo).includes('YinSecurity')
+    ) {
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
   // 兜底：id 命中旧版或数字签名家
   try {
     const id = obj.getInfo?.()?.id;
@@ -310,14 +338,26 @@ function detectDescriptor(d: unknown): boolean {
   const desc = d as { id?: string; blocks?: { opcode?: string }[] };
   if (!desc || typeof desc !== 'object') return false;
   if (desc.id === EXT_ID_LEGACY || desc.id === EXT_ID_DIGSIG) return true;
+  if (typeof desc.id === 'string' && desc.id.startsWith('YinSecurity')) return true;
   const blocks = desc.blocks;
   if (!Array.isArray(blocks)) return false;
   let hit = 0;
   let sigHit = 0;
+  let yinHit = 0;
   for (const b of blocks) {
     if (!b || typeof b.opcode !== 'string') continue;
     if (CHEAT_OPCODES.includes(b.opcode)) hit++;
     if (DIGSIG_OPCODES.includes(b.opcode)) sigHit++;
+    if (YINSEC_OPCODES.includes(b.opcode)) yinHit++;
+  }
+  // YinSecurity 家族：三探针（hasTM/hasScript/isHijacked）成套 + 任一拆除命令即认定
+  if (
+    yinHit >= 4 &&
+    YINSEC_OPCODES.slice(0, 3).every((op) =>
+      blocks.some((b) => b && b.opcode === op),
+    )
+  ) {
+    return true;
   }
   return hit >= 3 || sigHit >= 3;
 }
@@ -395,6 +435,23 @@ function shadowMethod(inst: object, key: string, fn: unknown): void {
 
 function sanitizeInstance(inst: SecureExtensionLike): void {
   try {
+    // −1) YinSecurity 审计阻拦家钝化（还原样本逐行分析后定制的成套替换）：
+    //   · hasTM/hasScript/isHijacked → 恒 false（其全部探测面失效：TM 特征、
+    //     CSRT/CSense/butterAny/角色管理器四脚本 DOM 特征、bind/console/xhr/fetch/
+    //     primitives/redux/fiber 七类劫持探测）；
+    //   · showDetail/jump/blockScript → no-op（详情弹窗、about:blank 跳转、
+    //     物理拆除 + 全屏红幕「检测到违规外挂」全部永不执行）。
+    //   扩展本体保留、积木照常出现在面板里 —— 作者侧视角「扩展在正常工作」，
+    //   实际每次调用都拿不到任何真数据。opcode 即实例方法名（runtime 分发约定），
+    //   混淆版改不了这六个名字；非枚举遮蔽（shadowMethod）→ Object.keys 自检不可见。
+    for (const op of YINSEC_OPCODES) {
+      if (typeof (inst as Record<string, unknown>)[op] !== 'function') continue;
+      shadowMethod(
+        inst,
+        op,
+        op === 'hasTM' || op === 'hasScript' || op === 'isHijacked' ? () => false : () => {},
+      );
+    }
     // 0) 冻结篡改记录字段 `_c`（本族扩展唯一的篡改上报载体：getTamperInfo 直接
     //    返回 JSON.stringify(this._c)，游戏脚本以「非空串 = 有篡改」判定）。
     //    写成「getter 恒 null + setter 静默吞写」后：
@@ -567,7 +624,10 @@ function watchScratchApi(): void {
     } catch {
       /* ignore */
     }
-    if (attempts < 60) setTimeout(tick, 400); // 最长约 24s；其后交给 init(vm) 轮询兜底
+    // 自适应密探：前 20 拍 50ms（盖住「站点定义 Scratch → 扩展同步 register」的窗口，
+    // probe-yinsec 实测 400ms 档会漏掉同任务注册），其后 400ms 慢档共 60 拍；
+    // 再往后交给 init(vm) 轮询兜底。单拍成本 = 一次属性读，密探档零压力。
+    if (attempts < 60) setTimeout(tick, attempts <= 20 ? 50 : 400);
   };
   try {
     const win = globalThis as unknown as Record<string, unknown>;
@@ -1592,6 +1652,24 @@ export function installSecureGuardFront(): void {
   watchScratchApi();
   installStyleWatcher();
   installKeyStoreGuard();
+  neuterTampermonkeyMarker();
+}
+
+// YinSecurity hasTM 探测反制：Tampermonkey 会在 <html> 上留 data-tampermonkey-id
+// 标记属性，其 hasTM 积木一查一个准（第二探测路：window.GM_info/GM 在页面全局
+// 天然不存在，无需处理）。document-start 摘除 + 延迟复查盖住 TM 注入时序的不确定性。
+// 该属性只是 TM 的自标识，摘除不影响任何脚本功能。
+function neuterTampermonkeyMarker(): void {
+  const strip = (): void => {
+    try {
+      const el = document.documentElement;
+      if (el?.hasAttribute('data-tampermonkey-id')) el.removeAttribute('data-tampermonkey-id');
+    } catch {
+      /* ignore */
+    }
+  };
+  strip();
+  for (const d of [0, 100, 500, 2000, 5000, 10000]) setTimeout(strip, d);
 }
 
 // 模块加载即布防（对 @run-at document-start 的最早窗口；installSecureGuardFront 幂等重复调用无害）

@@ -537,6 +537,19 @@ function installOverlayStripper(): void {
             noteHit('overlay');
             continue;
           }
+          // YinSecurity blockScript 红幕反制：其物理拆除后插入全屏红色遮罩
+          // （cssText 含 rgba(229, 57, 53, 0.95) + 文案「检测到违规外挂」）。
+          // 纪律：只读新增节点本身的 cssText（小字符串，O(1)），cssText 命中后才
+          // 读 textContent —— 不做子树扫描，与 100ms 去抖同口径。
+          if (
+            node.style.position === 'fixed' &&
+            node.style.cssText.includes('229, 57, 53') &&
+            (node.textContent || '').includes('检测到违规外挂')
+          ) {
+            node.remove();
+            noteHit('overlay');
+            continue;
+          }
           // 容器内携带（防它把遮罩包在自己的容器里插入）→ 去抖兜底
           if (node.querySelector('.csense-window')) scheduleSweep();
         } catch {

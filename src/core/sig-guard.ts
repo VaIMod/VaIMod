@@ -479,7 +479,8 @@ function watchSignApi(): void {
     } catch {
       /* ignore */
     }
-    if (attempts < 60) setTimeout(tick, 400);
+    // 与 secure-guard 同款自适应密探（前 20 拍 50ms 盖同步注册窗口）
+    if (attempts < 60) setTimeout(tick, attempts <= 20 ? 50 : 400);
   };
   try {
     const win = globalThis as unknown as Record<string, unknown>;

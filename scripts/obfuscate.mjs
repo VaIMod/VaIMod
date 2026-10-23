@@ -28,8 +28,8 @@ const STAGE_A_OPTIONS = {
   // 0.45/0.25 仍覆盖近半数函数 + 全部字符串数组/编码/重命名防还原层，
   // 防静态阅读强度不打折，运行时开销约降一半。
   controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.45,
-  deadCodeInjection: true,
+  controlFlowFlatteningThreshold: 0.15, // P2 调优：CFF 状态机是热路径 per-call 税主因；0.15 仍覆盖大函数/核心逻辑
+  deadCodeInjection: false, // P2 调优：DCI 只膨胀体积+分支数，防还原价值远低于 CFF
   deadCodeInjectionThreshold: 0.25,
   // 反动态调试：debugger 陷阱（初始 + 定时器续排）。headless/正常浏览零感知，
   // 仅在 DevTools 附着时产生暂停对抗。
@@ -52,14 +52,14 @@ const STAGE_A_OPTIONS = {
   splitStrings: true,
   splitStringsChunkLength: 32,
   stringArray: true,
-  stringArrayCallsTransform: true,
-  stringArrayEncoding: ['rc4'],
+  stringArrayCallsTransform: false, // P1 调优：per-call 变换包装是挂载 +1.6s 的主要来源之一
+  stringArrayEncoding: ['base64'], // P1 调优：rc4 每次取串都是对称解密，base64 解码快一个量级；防静态阅读由 splitStrings+escapes+rotate/shuffle/indexShift+CFF 承担
   stringArrayIndexShift: true,
   stringArrayRotate: true,
   stringArrayShuffle: true,
   // 包装层数 3 → 2：每层包装 = 字符串访问多一跳函数调用。解码只在初始化
   // 一次，真正的持续开销在运行期每次取串都过包装链，2 层即可阻断直接求值。
-  stringArrayWrappersCount: 2,
+  stringArrayWrappersCount: 1, // P1 调优：单层包装（配合 indexShift/rotate 仍阻断直接求值）
   stringArrayWrappersType: 'function',
   stringArrayThreshold: 1,
   // 反静态分析：字面量 unicode 转义（grep/正则特征扫射失效）
@@ -206,8 +206,9 @@ export function obfuscateUserscript() {
           // 时刻整体生效（早于面板挂载与 VM 连接），只是从「文档解析前」挪到「load 后」。
           'var __e=eval;' +
             'var __boot=function(){__e(__code);};' +
-            'if(document.readyState==="complete"){setTimeout(__boot,0);}' +
-            'else{var __wr=function(){if(document.readyState==="complete"){setTimeout(__boot,0);}else{setTimeout(__wr,40);}};setTimeout(__wr,40);}',
+            'var __idle=function(f){if(typeof requestIdleCallback==="function"){requestIdleCallback(f,{timeout:2000});}else{setTimeout(f,0);}};' +
+            'if(document.readyState==="complete"){__idle(__boot);}' +
+            'else{var __wr=function(){if(document.readyState==="complete"){__idle(__boot);}else{setTimeout(__wr,40);}};setTimeout(__wr,40);}',
         );
         const loaderObf = javascriptObfuscator.obfuscate(loader, LOADER_OPTIONS).getObfuscatedCode();
 
