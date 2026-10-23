@@ -30,8 +30,7 @@ const DECOY_SELECTORS = [
   '.rd-modal-root-container',
 ];
 
-// window 假 vm 泄漏属性名（通用泄漏形态；先探测占用，命中则不布设避免破坏页面真实全局）
-const VM_DECOY_KEYS = ['__scratchCoreRef__', '__vmLeakBackup__', '_vmCoreMirror_'];
+// window 假 vm 泄漏属性名（【v34 退役】不再布设——保留常量仅为文档化历史威胁模型）
 
 const HEARTBEAT_MS = 8000;
 const STRIKE_RECYCLE_THRESHOLD = 4;
@@ -151,43 +150,14 @@ function plantDecoys(): void {
 }
 
 // ---------- B) 对内陷阱：window 假 vm 泄漏属性（getter/setter 陷阱） ----------
+// 【v34 退役】三类 VM 泄漏键诱饵（__scratchCoreRef__/__vmLeakBackup__/_vmCoreMirror_）
+// 不再布设。实测代价>收益：审计扩展（YinSecurity）的扫描清单恰好逐个
+// getOwnPropertyDescriptor 这三个键——诱饵从「钓攻击者」变成「给审计方递实锤」，
+// 违背「绝对不能被检测到」的一票否决约束。DOM 诱饵保留（display:none + 通用
+// 修改器特征名，不可枚举扫描命中，防销毁职责不变）；真 VM 防泄露由
+// closed shadow + 沙盒桥 + 全局零残留承担（本就不依赖这几枚诱饵）。
 function plantWindowDecoys(): void {
-  const win = globalThis as unknown as Record<string, unknown>;
-  for (const key of VM_DECOY_KEYS) {
-    try {
-      // 页面/其它扩展已占用同名 → 跳过（不破坏宿主真实全局）。
-      // 必须挡**任何**已存在的自有属性，尤其是**访问器**形态：旧判定只挡
-      // 「数据属性且值非 undefined」，页面用 getter 惰性暴露同名全局时会被我们的
-      // 假对象顶掉，而下面 configurable:false 让页面**永远无法恢复** ——
-      // 依赖该 getter 的站点脚本从此拿到空壳，与「不破坏页面真实全局」的目标相反。
-      const existing = Object.getOwnPropertyDescriptor(win, key);
-      if (existing) continue;
-      // 陷阱：读 → 返回"假 vm 泄漏"（空运行时）；写 → 计数并忽略；删 → 静默失败
-      const decoy = {
-        runtime: { targets: [], extensions: new Map<string, unknown>() },
-        targets: [],
-        // 再挂一层容易误导的假数据
-        _getValueFromProject: () => undefined,
-        _setValueToProject: () => Promise.resolve(undefined),
-      };
-      Object.defineProperty(win, key, {
-        configurable: false, // delete 静默失败 → 敌人无法移除陷阱
-        enumerable: true, // 可被 for..in / Object.keys 扫到 → 诱导 scanVMLeak 命中
-        get: () => {
-          // 读取不计数（页面正常遍历 window 也会触发，避免噪音）；
-          // 敌人读到的是假 vm，读多少次都无害 —— 防护在"给假数据"本身。
-          return decoy;
-        },
-        set: () => {
-          strike(); // 尝试覆盖/污染全局引用 = 明确的敌意行为
-          // 拒绝替换，喂假数据也不让属性被污染
-        },
-      });
-      state.windowDecoys++;
-    } catch {
-      /* ignore */
-    }
-  }
+  /* retired: 见上方 v34 退役说明 */
 }
 
 /** 心跳：诱饵存活检查 + 被移除自动重植（DOM 节点可能被敌人 remove 掉） */
@@ -210,14 +180,8 @@ function tick(): void {
     }
     state.domDecoys = decoyNodes.size;
     if (hit) strike();
-    // window 陷阱属性是否仍在（configurable:false 理论删不掉；万一被更强的敌人以 redefine 移除则补种）
-    const win = globalThis as unknown as Record<string, unknown>;
-    let missingWindows = 0;
-    for (const key of VM_DECOY_KEYS) {
-      const d = Object.getOwnPropertyDescriptor(win, key);
-      if (!d || (d.value === undefined && !d.get)) missingWindows++;
-    }
-    if (missingWindows > 0) plantWindowDecoys();
+    // 【v34】window VM 键诱饵已退役（见 plantWindowDecoys 处说明）——
+    // 不再布设、也不再补种；审计扫描下 window 保持与原生页面同形。
   } catch {
     /* ignore */
   }

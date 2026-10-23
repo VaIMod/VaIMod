@@ -577,16 +577,10 @@ function watchScratchApi(): void {
       tick();
       return;
     }
-    // 捕获站点后续对 window.Scratch 的赋值（同步脚本最可能走这条路）；引用存于闭包，不暴露特征属性
-    Object.defineProperty(win, 'Scratch', {
-      configurable: true,
-      enumerable: true,
-      get: () => scratchSlot,
-      set: (v: unknown) => {
-        scratchSlot = v;
-        tryHook();
-      },
-    });
+    // 不预创建 'Scratch' 键：native 环境本无此键，defineProperty 访问器陷阱会被
+    // 检测器 gopd 扫描发现（probe-stealth S1 实锤，与 scratch-vm trapWindowKey 同口径）。
+    // 改用 tick 轮询捕获后续赋值（400ms × 60 次，其后 init(vm) 轮询兜底）。
+    tick();
   } catch {
     /* ignore */
   }
@@ -661,11 +655,33 @@ function installStyleWatcher(): void {
       const root = document.documentElement || document;
       purgeHiddenCss(root);
       if (typeof MutationObserver === 'function') {
+        // 性能纪律（v34）：每个新增元素都对子树跑一次 querySelector('style')
+        // 是加载期 O(n²)（编辑器 mount 数千节点）。直插 STYLE 即时判（一次
+        // textContent 读），容器一律合并进 100ms 去抖的 document 级单趟 ——
+        // purge 语义不变（观察器 subtree 全覆盖，漏网节点必然还在文档里）。
+        let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+        const scheduleSweep = (): void => {
+          if (sweepTimer !== null) return;
+          sweepTimer = setTimeout(() => {
+            sweepTimer = null;
+            try {
+              purgeHiddenCss(document);
+            } catch {
+              /* ignore */
+            }
+          }, 100);
+        };
         const mo = new MutationObserver((muts) => {
           for (const m of muts) {
             for (const node of Array.from(m.addedNodes)) {
               const el = node as Element;
-              if (el.nodeType === 1) queueHiddenCssScan(el);
+              if (el.nodeType !== 1) continue;
+              if (el.tagName === 'STYLE') {
+                const text = el.textContent || '';
+                if (text && HIDE_CSS_MARKERS.some((mk) => text.includes(mk))) el.remove();
+                continue;
+              }
+              scheduleSweep();
             }
           }
         });
@@ -954,6 +970,11 @@ export function protectVariableNames(vm: unknown): void {
 // 敌扩展把 vm.saveProjectSb3 / exportSprite 换成返回空作品的包装（写成 vm 的实例自有
 // 属性，原型方法不受影响）。检测到「实例属性 + 空作品特征」即删除该实例属性，
 // 调用自动回落到原型上的原生实现。只认空作品特征，不动站点/其它插件的正常增强。
+// 已核验过的导出函数（弱集缓存）：2s 巡检热路径下 saveProjectSb3 的 String(fn)
+// 全量源码序列化是无谓开销（MB 级函数体每拍重建字符串）——函数身份稳定，
+// 核验过一次即可跳过；站点换函数（新身份）自然重核。
+const EXPORT_APIS_CHECKED = new WeakSet<object>();
+
 export function restoreExportApis(vm: unknown): void {
   try {
     const v = vm as Record<string, unknown>;
@@ -961,6 +982,8 @@ export function restoreExportApis(vm: unknown): void {
       if (!Object.prototype.hasOwnProperty.call(v, key)) continue;
       const fn = v[key];
       if (typeof fn !== 'function') continue;
+      if (EXPORT_APIS_CHECKED.has(fn)) continue;
+      EXPORT_APIS_CHECKED.add(fn);
       const src = String(fn);
       if (
         src.includes('_generateEmpty') ||

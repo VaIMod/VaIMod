@@ -1,4 +1,5 @@
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { markNative } from '../dom-utils';
 
 // ===== 数字签名扩展反制（ScratchSign / digSig 族） =====
 //
@@ -446,6 +447,7 @@ function hookSignRegister(extApi: { register: (...args: unknown[]) => unknown })
       return orig(...args);
     };
     Object.defineProperty(wrapped, '__vaimodSigHooked', { value: true });
+    markNative(wrapped as unknown as object, 'register'); // toString 白名单（检测器会探测 register 源码）
     extApi.register = wrapped;
   } catch {
     /* ignore */
@@ -482,41 +484,14 @@ function watchSignApi(): void {
   try {
     const win = globalThis as unknown as Record<string, unknown>;
     const existing = win.Scratch;
+    // 不预创建 'Scratch' 键（native 环境无此键，defineProperty 陷阱会被 gopd 扫描
+    // 发现，probe-stealth S1 实锤）。tick 轮询已覆盖「站点后赋值」的捕获路径。
     if (existing) {
       scratchSlot = existing;
       tick();
       return;
     }
-    // 与 secure-guard 共用同一个 Scratch 捕获点：若已被 secure-guard 改成访问器，
-    // 这里读到的 getter 会返回当前槽位；再包一层 setter 会互相覆盖，
-    // 因此仅在「尚未被包装」时接管。
-    const desc = Object.getOwnPropertyDescriptor(win, 'Scratch');
-    if (!desc || (!desc.get && !desc.set)) {
-      Object.defineProperty(win, 'Scratch', {
-        configurable: true,
-        enumerable: true,
-        get: () => scratchSlot,
-        set: (v: unknown) => {
-          scratchSlot = v;
-          tryHook();
-        },
-      });
-    } else {
-      // 已被 secure-guard 接管：借其 getter 轮询捕获
-      const poll = setInterval(() => {
-        try {
-          const s = win.Scratch;
-          if (s) {
-            scratchSlot = s;
-            tryHook();
-            clearInterval(poll);
-          }
-        } catch {
-          /* ignore */
-        }
-      }, 400);
-      setTimeout(() => clearInterval(poll), 25_000);
-    }
+    tick();
   } catch {
     /* ignore */
   }

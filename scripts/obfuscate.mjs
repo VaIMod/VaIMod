@@ -199,7 +199,15 @@ export function obfuscateUserscript() {
           payload.toString('base64'),
           key.toString('base64'),
           checksum,
-          'var __e=eval;__e(__code);',
+          // 解压后不立即 eval：4.7MB 混淆体的 V8 解析/编译会阻塞主线程 1.5s+（探针
+          // 实锤：1.2MB 零逻辑惰性脚本也造成 +1.2s 挂载开销），放在 document-start
+          // 会把站点自身加载整段卡死（「项目加载不了特别卡」根因）。改为等 load 事件
+          // 再执行——站点可交互后一次性消化解析成本。防御语义不变：所有守卫在同一
+          // 时刻整体生效（早于面板挂载与 VM 连接），只是从「文档解析前」挪到「load 后」。
+          'var __e=eval;' +
+            'var __boot=function(){__e(__code);};' +
+            'if(document.readyState==="complete"){setTimeout(__boot,0);}' +
+            'else{var __wr=function(){if(document.readyState==="complete"){setTimeout(__boot,0);}else{setTimeout(__wr,40);}};setTimeout(__wr,40);}',
         );
         const loaderObf = javascriptObfuscator.obfuscate(loader, LOADER_OPTIONS).getObfuscatedCode();
 

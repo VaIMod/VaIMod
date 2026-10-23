@@ -495,6 +495,25 @@ function installNavigationKillSwitch(): void {
  */
 function installOverlayStripper(): void {
   if (overlayMo || typeof MutationObserver === 'undefined') return;
+  // 性能纪律（v34，与 csp-guard 观察器同款）：直插命中即时删（一次 classList 读），
+  // 容器子树 querySelectorAll 是加载期 O(n²) 大户 —— 一律合并进 100ms 去抖的
+  // document 级单趟查询。遮罩晚 100ms 摘除无感知，编辑器挂载的数千次子树扫描全免。
+  let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSweep = (): void => {
+    if (sweepTimer !== null) return;
+    sweepTimer = setTimeout(() => {
+      sweepTimer = null;
+      try {
+        const overlays = document.querySelectorAll<HTMLElement>('.csense-window');
+        for (let i = 0; i < overlays.length; i++) {
+          overlays[i].remove();
+          noteHit('overlay');
+        }
+      } catch {
+        /* ignore */
+      }
+    }, 100);
+  };
   overlayMo = new MutationObserver((muts) => {
     for (const m of muts) {
       if (m.type === 'attributes') {
@@ -513,14 +532,13 @@ function installOverlayStripper(): void {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
         try {
-          // 直接命中或容器内携带（防它把遮罩包在自己的容器里插入）
-          const overlays = node.classList.contains('csense-window')
-            ? [node]
-            : Array.from(node.querySelectorAll<HTMLElement>('.csense-window'));
-          for (const el of overlays) {
-            el.remove();
+          if (node.classList.contains('csense-window')) {
+            node.remove();
             noteHit('overlay');
+            continue;
           }
+          // 容器内携带（防它把遮罩包在自己的容器里插入）→ 去抖兜底
+          if (node.querySelector('.csense-window')) scheduleSweep();
         } catch {
           /* ignore */
         }

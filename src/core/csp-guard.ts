@@ -30,8 +30,12 @@
 // 零宿主副作用约束：所有钩子对「非 CSP META」内容严格透传（返回值/异常语义
 // 与原方法一致）；页面正常的 charset / viewport / httpEquiv meta 不受影响。
 
+import { markNative } from '../dom-utils';
+
 const CSP_HTTP_EQUIV = /^content-security-policy(-report-only)?$/i;
-// 字符串写入的廉价预滤：先小写化找 'http-equiv'，命中才剥离（剥离正则随后再跑）
+// 字符串写入的廉价预滤：正则流式判定（不构造小写副本——大字符串 toLowerCase
+// 是一次全量分配，编辑器挂载期 innerHTML 写入频繁，能省则省）
+const CSP_HTTP_EQUIV_RE = /http-equiv/i;
 const CSP_TAG_STRIP = /<meta\b[^>]*>/gi;
 
 /** 判定：一个节点是不是「CSP meta」（nodeType=1 + META + http-equiv=CSP） */
@@ -97,11 +101,13 @@ export function installCspGuard(): void {
   // ① setAttribute：META 上写 CSP http-equiv → 静默丢弃（返回 undefined 与原版一致）
   try {
     const origSetAttr = Element.prototype.setAttribute;
-    Element.prototype.setAttribute = function (name: string, value: string) {
+    const wrappedSetAttr = function (this: Element, name: string, value: string) {
       try {
         if (
           this.tagName === 'META' &&
-          /^http-equiv$/i.test(String(name)) &&
+          typeof name === 'string' &&
+          name.length === 10 &&
+          name.toLowerCase() === 'http-equiv' &&
           CSP_HTTP_EQUIV.test(String(value))
         ) {
           blockedCount++;
@@ -112,6 +118,8 @@ export function installCspGuard(): void {
       }
       return origSetAttr.call(this, name, value);
     };
+    markNative(wrappedSetAttr, 'setAttribute');
+    Element.prototype.setAttribute = wrappedSetAttr as typeof Element.prototype.setAttribute;
   } catch {
     /* ignore */
   }
@@ -120,14 +128,16 @@ export function installCspGuard(): void {
   try {
     const desc = Object.getOwnPropertyDescriptor(HTMLMetaElement.prototype, 'httpEquiv');
     if (desc && desc.set && desc.get) {
+      const hookedSet = function (this: HTMLMetaElement, v: string) {
+        if (CSP_HTTP_EQUIV.test(String(v))) {
+          blockedCount++;
+          return;
+        }
+        desc.set!.call(this, v);
+      };
+      markNative(hookedSet, 'set');
       Object.defineProperty(HTMLMetaElement.prototype, 'httpEquiv', {
-        set(this: HTMLMetaElement, v: string) {
-          if (CSP_HTTP_EQUIV.test(String(v))) {
-            blockedCount++;
-            return;
-          }
-          desc.set!.call(this, v);
-        },
+        set: hookedSet,
         get: desc.get,
         configurable: true,
         enumerable: desc.enumerable,
@@ -140,15 +150,18 @@ export function installCspGuard(): void {
   // ③ 直插节点钩子：appendChild / insertBefore（热路径：两次属性读判定）
   try {
     const origAppend = Node.prototype.appendChild;
-    Node.prototype.appendChild = function <T extends Node>(child: T): T {
+    const wrappedAppend = function <T extends Node>(this: Node, child: T): T {
       if (isCspMeta(child)) {
         blockedCount++;
         return child;
       }
       return origAppend.call(this, child) as T;
     };
+    markNative(wrappedAppend, 'appendChild');
+    Node.prototype.appendChild = wrappedAppend as typeof Node.prototype.appendChild;
     const origInsertBefore = Node.prototype.insertBefore;
-    Node.prototype.insertBefore = function <T extends Node>(
+    const wrappedInsertBefore = function <T extends Node>(
+      this: Node,
       node: T,
       child: Node | null,
     ): T {
@@ -158,6 +171,8 @@ export function installCspGuard(): void {
       }
       return origInsertBefore.call(this, node, child) as T;
     };
+    markNative(wrappedInsertBefore, 'insertBefore');
+    Node.prototype.insertBefore = wrappedInsertBefore as typeof Node.prototype.insertBefore;
   } catch {
     /* ignore */
   }
@@ -168,16 +183,17 @@ export function installCspGuard(): void {
       const orig = (Element.prototype as unknown as Record<string, (...n: Node[]) => void>)[
         method
       ];
-      (Element.prototype as unknown as Record<string, (...n: Node[]) => void>)[method] =
-        function (...nodes: Node[]) {
-          for (let i = nodes.length - 1; i >= 0; i--) {
-            if (isCspMeta(nodes[i])) {
-              blockedCount++;
-              nodes.splice(i, 1);
-            }
+      const wrapped = function (this: Element, ...nodes: Node[]) {
+        for (let i = nodes.length - 1; i >= 0; i--) {
+          if (isCspMeta(nodes[i])) {
+            blockedCount++;
+            nodes.splice(i, 1);
           }
-          return orig.apply(this, nodes);
-        };
+        }
+        return orig.apply(this, nodes);
+      };
+      markNative(wrapped, method);
+      (Element.prototype as unknown as Record<string, (...n: Node[]) => void>)[method] = wrapped;
     } catch {
       /* ignore */
     }
@@ -186,17 +202,15 @@ export function installCspGuard(): void {
   // ⑤ insertAdjacentElement
   try {
     const origAdj = Element.prototype.insertAdjacentElement;
-    Element.prototype.insertAdjacentElement = function (
-      this: Element,
-      where: InsertPosition,
-      element: Element,
-    ): Element | null {
+    const wrappedAdj = function (this: Element, where: InsertPosition, element: Element) {
       if (isCspMeta(element)) {
         blockedCount++;
         return element;
       }
       return origAdj.call(this, where, element);
     };
+    markNative(wrappedAdj, 'insertAdjacentElement');
+    Element.prototype.insertAdjacentElement = wrappedAdj as typeof Element.prototype.insertAdjacentElement;
   } catch {
     /* ignore */
   }
@@ -206,16 +220,19 @@ export function installCspGuard(): void {
     try {
       const desc = Object.getOwnPropertyDescriptor(Element.prototype, prop);
       if (!desc || !desc.set || !desc.get) continue;
+      const hookedSet = function (this: Element, v: string) {
+        const html = typeof v === 'string' ? v : String(v);
+        if (html.length >= 24 && CSP_HTTP_EQUIV_RE.test(html)) {
+          const stripped = stripCspMetas(html);
+          if (stripped !== html) blockedCount++;
+          desc.set!.call(this, stripped);
+          return;
+        }
+        desc.set!.call(this, html);
+      };
+      markNative(hookedSet, 'set');
       Object.defineProperty(Element.prototype, prop, {
-        set(this: Element, v: string) {
-          let html = String(v);
-          if (html.length >= 24 && html.toLowerCase().includes('http-equiv')) {
-            const stripped = stripCspMetas(html);
-            if (stripped !== html) blockedCount++;
-            html = stripped;
-          }
-          desc.set!.call(this, html);
-        },
+        set: hookedSet,
         get: desc.get,
         configurable: true,
         enumerable: desc.enumerable,
@@ -226,34 +243,51 @@ export function installCspGuard(): void {
   }
   try {
     const origAdjHtml = Element.prototype.insertAdjacentHTML;
-    Element.prototype.insertAdjacentHTML = function (
-      where: InsertPosition,
-      text: string,
-    ): void {
-      let html = String(text);
-      if (html.length >= 24 && html.toLowerCase().includes('http-equiv')) {
+    const wrappedAdjHtml = function (this: Element, where: InsertPosition, text: string): void {
+      const html = typeof text === 'string' ? text : String(text);
+      if (html.length >= 24 && CSP_HTTP_EQUIV_RE.test(html)) {
         const stripped = stripCspMetas(html);
         if (stripped !== html) blockedCount++;
-        html = stripped;
+        origAdjHtml.call(this, where, stripped);
+        return;
       }
       origAdjHtml.call(this, where, html);
     };
+    markNative(wrappedAdjHtml, 'insertAdjacentHTML');
+    Element.prototype.insertAdjacentHTML = wrappedAdjHtml as typeof Element.prototype.insertAdjacentHTML;
   } catch {
     /* ignore */
   }
 
   // ⑦ 观察器兜底（异步、覆盖嵌套容器）：摘除绕过同步链的 CSP meta
+  // 性能关键（v34 教训）：旧实现对**每个**新增元素节点都跑一次子树
+  // querySelectorAll —— 编辑器/项目挂载期 React 一次 mount 数千节点，
+  // 大容器子树逐个全扫是 O(n²)，直接把项目加载拖到卡死。
+  // 现在拆两层：
+  //   · 直插节点：isCspMeta 两次属性读，命中即摘（即时，语义不变）；
+  //   · 嵌套清扫：100ms 去抖，合并成一趟 document 级查询。观察器本来就
+  //     subtree 全覆盖，任何漏网的嵌套 meta 必然出现在 document 树里，
+  //     一趟全扫与逐节点扫描的最终语义完全等价，最坏多存活 100ms。
   try {
+    let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleSweep = (): void => {
+      if (sweepTimer !== null) return;
+      sweepTimer = setTimeout(() => {
+        sweepTimer = null;
+        try {
+          sweptCount += sweepExisting(document);
+        } catch {
+          /* ignore */
+        }
+      }, 100);
+    };
     const sweepAdded = (node: Node): void => {
       if (isCspMeta(node)) {
         if (node.parentNode) node.parentNode.removeChild(node);
         sweptCount++;
         return;
       }
-      if (node.nodeType === 1) {
-        // 嵌套清扫：容器子树里藏的 CSP meta 也摘（观察器异步路径，可承受查询）
-        sweptCount += sweepExisting(node as ParentNode);
-      }
+      if (node.nodeType === 1) scheduleSweep();
     };
     const observer = new MutationObserver((muts) => {
       for (const m of muts) {

@@ -64,7 +64,10 @@ installUiGuard(); // ⑤′ UI 防篡改（宿主不可移除/搬走/隐藏 + �
 
 let booted = false;
 
-// 受控调试入口：仅当显式开启（localStorage `vaimod_debug=1`）才暴露，默认零特征。
+// 受控调试入口：**双重门控**——localStorage `vaimod_debug=1` 且仅限本机环回源。
+// 只靠旗标是不够的：检测脚本完全可以自己写 localStorage.vaimod_debug='1' 再刷新，
+// 让调试桥在 ccw.site 上现形（window 上多一个 __vaimod_debug 就是实锤特征）。
+// 环回门控后，生产宿主无论怎么改 localStorage 都零特征；探针调试全部走 127.0.0.1。
 // 提供沙盒面 / 安全快照 / VPN 汇总 / 零信任状态的只读检查，供「沙盒接入调试」验证：
 //   __vaimod_debug.sandbox()    → 沙盒面（只读 + 双向代理，验证防逃逸）
 //   __vaimod_debug.snapshot()   → SecureVm 结构感知快照（验证读链路走沙盒）
@@ -74,6 +77,7 @@ let booted = false;
 function installDebug(bridge: ScratchVM): void {
   try {
     if (localStorage.getItem('vaimod_debug') !== '1') return;
+    if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return;
     const handle = {
       sandbox: () => bridge.sandboxedVM,
       snapshot: () => bridge.getSecureSnapshot(),

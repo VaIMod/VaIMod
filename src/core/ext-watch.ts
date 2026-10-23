@@ -1,3 +1,4 @@
+import { markNative } from '../dom-utils';
 import { trueHidden } from './page-visibility';
 
 // ===== 扩展注册咽喉 + vm 常驻扫描（两套反制共用的补漏层） =====
@@ -156,6 +157,9 @@ export function hookExtensionManager(vm: unknown, onAfter: () => void): void {
       } catch {
         /* ignore */
       }
+      // toString 伪装（审计扩展 YinSecurity 实测会 fn.toString 探测 hook）：
+      // 不伪装的话 register/load 的源码直接暴露包装器本体
+      markNative(wrapped, key);
       Object.defineProperty(target, key, {
         ...desc,
         value: wrapped,

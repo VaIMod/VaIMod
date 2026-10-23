@@ -15,6 +15,7 @@ import {
   getProtectedHosts,
   isProtectedHost,
   isProtected,
+  markNative,
   trueElementsFromPoint,
 } from '../dom-utils';
 import { trueHidden, trueVisible } from './page-visibility';
@@ -238,6 +239,9 @@ function wrapNative<T extends AnyFn>(orig: T, impl: (orig: T) => T): T {
   } catch {
     /* ignore */
   }
+  // toString 伪装（YinSecurity 对 set/方法源码逐一探测）：不进白名单的包装层
+  // 会以混淆源码形态暴露（probe-stealth S2 实锤），必须与 csp-guard 同口径。
+  markNative(wrapped as unknown as object, (orig as { name?: string }).name || '');
   return wrapped as unknown as T;
 }
 
@@ -357,21 +361,23 @@ function installStructureGuard(): void {
   const setter = innerHtmlDesc?.set;
   if (typeof setter === 'function') {
     try {
+      const guardedInnerSet = function (this: Element, value: string) {
+        const html = String(value ?? '');
+        // 宿主自己不许被 innerHTML 覆盖（那会连 closed shadow 一起丢掉）
+        if (isProtectedHost(this)) {
+          reportTamper();
+          return;
+        }
+        const res = setter.call(this, html);
+        reattachDetachedHosts();
+        return res;
+      };
+      markNative(guardedInnerSet as unknown as object, 'set');
       Object.defineProperty(Element.prototype, 'innerHTML', {
         configurable: true,
         enumerable: innerHtmlDesc?.enumerable ?? false,
         get: innerHtmlDesc?.get,
-        set(this: Element, value: string) {
-          const html = String(value ?? '');
-          // 宿主自己不许被 innerHTML 覆盖（那会连 closed shadow 一起丢掉）
-          if (isProtectedHost(this)) {
-            reportTamper();
-            return;
-          }
-          const res = setter.call(this, html);
-          reattachDetachedHosts();
-          return res;
-        },
+        set: guardedInnerSet,
       });
     } catch {
       /* ignore */
@@ -382,17 +388,19 @@ function installStructureGuard(): void {
   const outerSetter = outerHtmlDesc?.set;
   if (typeof outerSetter === 'function') {
     try {
+      const guardedOuterSet = function (this: Element, value: string) {
+        if (isProtectedHost(this)) {
+          reportTamper();
+          return;
+        }
+        return outerSetter.call(this, String(value ?? ''));
+      };
+      markNative(guardedOuterSet as unknown as object, 'set');
       Object.defineProperty(Element.prototype, 'outerHTML', {
         configurable: true,
         enumerable: outerHtmlDesc?.enumerable ?? false,
         get: outerHtmlDesc?.get,
-        set(this: Element, value: string) {
-          if (isProtectedHost(this)) {
-            reportTamper();
-            return;
-          }
-          return outerSetter.call(this, String(value ?? ''));
-        },
+        set: guardedOuterSet,
       });
     } catch {
       /* ignore */

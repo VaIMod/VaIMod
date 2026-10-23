@@ -814,12 +814,15 @@ export class ScratchVM {
     // 站点赋值瞬间即捕获（快于任何轮询周期一个节拍以上）
     this.installVmSetterTraps();
     // 不设超时：持续等待直到真正发现 vm（用户要求「直到获取到 vm 才隐藏」）。
-    // 前 2 秒快速轮询（100ms），配合多通道优先级发现（redux/fiber/window/
-    // eureka/iframe/globals + bind 事件兜底），之后降为 300ms——
-    // 网络/环境差时也能尽快拿到 vm。
+    // 分档退避（v34 性能治理实测：恒速轮询是「作品加载特别卡」的最大单一来源，
+    // 一项 +1.2s/3.5s 窗口）：VM 发现靠事件驱动通道（setter 陷阱/bind 劫持）
+    // 兜底后，轮询只是保底——晚到几拍毫无代价，CPU 却省出给页面加载。
+    //   0-2s: 100ms（站点正常路径，vm 几秒内就位）
+    //   2-15s: 300ms（慢网络/大项目）
+    //   15-60s: 1s（长加载）
+    //   60s+: 3s（非编辑器页面长驻——纯烧 CPU 毫无收益）
     const startedAt = Date.now();
     const hookAt = startedAt + ScratchVM.BIND_HOOK_DELAY_MS;
-    const fastUntil = startedAt + 2000;
     let bindTried = false;
     for (;;) {
       this.discoverTries++;
@@ -831,9 +834,22 @@ export class ScratchVM {
         bindTried = true;
         this.installBindHook();
       }
-      await sleep(Date.now() < fastUntil ? 100 : 300);
+      const elapsed = Date.now() - startedAt;
+      const gap = elapsed < 2000 ? 100 : elapsed < 15000 ? 300 : elapsed < 60000 ? 1000 : 3000;
+      await sleep(gap);
     }
   }
+
+  // 重通道限频（v34）：fiber（DOM 五策略走查）/ globalscan（300 键全扫）/ iframe
+  // 是单拍成本大户——发现循环 100ms 节拍下每拍全跑就是持续烧 CPU（实测挂载增量
+  // 1.5s+ 的主要构成）。限到 ≥1s 一次：轻通道（redux / window.vm 读 / eureka）
+  // 每拍照跑，重通道保底延迟 ≤1s 完全可接受（事件驱动通道 + bind 劫持兜底先到）。
+  private static readonly HEAVY_CHANNELS: ReadonlySet<VmChannelId> = new Set([
+    'fiber',
+    'globalscan',
+    'iframe',
+  ]);
+  private lastHeavyScanAt = 0;
 
   private discoverVM(): unknown {
     // 通道优先级基线：redux store → React fiber → window.vm（三全局）
@@ -844,10 +860,16 @@ export class ScratchVM {
     // 时旧通道连续扑空 → 分数衰减 → 新优胜通道自动上位，无需任何手动指定。
     const cycleStart = Date.now();
     const order = this.rankChannels();
+    const now = Date.now();
+    const heavyAllowed = now - this.lastHeavyScanAt >= 1000;
     for (const id of order) {
+      if (ScratchVM.HEAVY_CHANNELS.has(id)) {
+        if (!heavyAllowed) continue;
+      }
       const t0 = Date.now();
       const vm = this.runChannel(id);
       this.markChannelTried(id);
+      if (ScratchVM.HEAVY_CHANNELS.has(id)) this.lastHeavyScanAt = Date.now();
       if (isVMLike(vm)) {
         this.markChannelWin(id, Date.now() - t0);
         return vm;
@@ -956,15 +978,21 @@ export class ScratchVM {
       try {
         const w = window as unknown as Record<string, unknown>;
         const desc = Object.getOwnPropertyDescriptor(w, key);
+        // 【隐身纪律 v34】只在键**已存在**时才上访问器包装——绝不为捕获而预创建
+        // window 键。原版对不存在的 vm/_vm 也 defineProperty，等于在 window 上
+        // 多出两个原生页面没有的自有键：审计扩展（YinSecurity 实测）一次
+        // getOwnPropertyDescriptor(win,'vm') 就能实锤「页面被改过」。
+        // 迟到赋值（window.vm = vm）由发现循环通道③轮询 + bind 劫持兜底捕获，
+        // 晚到一拍毫无代价，特征却是永久暴露面。
+        if (!desc) return;
         // 不可配置：无法重定义，放弃陷阱（轮询通道仍覆盖）
-        if (desc && desc.configurable === false) return;
-        let cur: unknown = desc && 'value' in desc ? desc.value : undefined;
+        if (desc.configurable === false) return;
+        const cur: unknown = 'value' in desc ? desc.value : undefined;
         Object.defineProperty(w, key, {
           configurable: true,
-          enumerable: desc ? desc.enumerable : false,
+          enumerable: desc.enumerable,
           get: () => cur,
           set: (nv: unknown) => {
-            cur = nv;
             try {
               // 未连接时才采纳（已连接场景由看门狗统一管理，避免误切换通道）
               if (!self.channel.getVm() && nv && typeof nv === 'object') {
@@ -982,19 +1010,22 @@ export class ScratchVM {
     };
     trapWindowKey('vm');
     trapWindowKey('_vm');
-    // Scratch.vm 嵌套一层：Scratch 对象已存在且 vm 属性可配置时同样上陷阱
+    // Scratch.vm 嵌套一层：仅当 Scratch 对象已存在**且 vm 属性已在**时上陷阱
+    // （同款隐身纪律：不在宿主对象上预创建键；Scratch.vm 迟到赋值由通道③轮询覆盖）
     try {
       const s = (window as unknown as { Scratch?: unknown }).Scratch;
       if (s && typeof s === 'object') {
         const sd = Object.getOwnPropertyDescriptor(s as object, 'vm');
-        if (!sd || sd.configurable !== false) {
-          let cur2: unknown = sd && 'value' in sd ? sd.value : undefined;
+        if (!sd || sd.configurable === false) {
+          // 无既有属性（不预创建）或不可配置 → 放弃，轮询兜底
+          /* ignore */
+        } else {
+          const cur2: unknown = 'value' in sd ? sd.value : undefined;
           Object.defineProperty(s as object, 'vm', {
             configurable: true,
-            enumerable: sd ? sd.enumerable : true,
+            enumerable: sd.enumerable,
             get: () => cur2,
             set: (nv: unknown) => {
-              cur2 = nv;
               try {
                 if (!self.channel.getVm() && nv && typeof nv === 'object' && isVMLike(nv)) {
                   self.adoptVmCandidate(nv);
