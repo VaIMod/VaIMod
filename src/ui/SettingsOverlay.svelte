@@ -446,7 +446,7 @@
       .join('\n');
   });
 
-  // 运行时注入（绝不用 Svelte <style> 块）：编译器会把组件 <style> 提取成编译期静态
+  // 运行时注入（不用 Svelte <style> 块）：编译器会把组件 <style> 提取成编译期静态
   // CSS，动态表达式进去就是死文本 → 规则全丢；且那份 CSS 会被注入 document.head，
   // 既进不了 shadow root（样式作用不到面板）又白白泄露到页面。
   let plugCssAnchor: HTMLElement | undefined = $state();

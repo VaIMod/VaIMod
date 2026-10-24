@@ -134,7 +134,7 @@ function splitRules(src: string): Array<[string, string]> {
 
 /**
  * 把 css 里的每条选择器都加上 `scopeSel` 前缀（递归处理含规则的 at-rule）。
- * 注意：返回结果已含前缀，调用方**绝不能再包一层 `#scopeId{…}`**
+ * 注意：返回结果已含前缀，调用方**不能再包一层 `#scopeId{…}`**
  * —— 会变成 CSS 嵌套规则（`#scopeId{#scopeId .go{…}}`），解析失败全丢。
  */
 export function scopeCss(css: string, scopeSel: string): string {

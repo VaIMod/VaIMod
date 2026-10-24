@@ -12,7 +12,7 @@
 //   ③ 遮罩阻断：createElement + appendChild + innerHTML 注入 div.csense-window 盖住页面
 // userscript 用户（含 VaIMod）被其通用启发式误伤的概率极高。
 //
-// 反制三板斧（与检测面一一对应，被动、窄口径、绝不破坏站点功能）：
+// 反制三板斧（与检测面一一对应，被动、窄口径、不破坏站点功能）：
 //   1) 拦截检测：fetch / XHR / sendBeacon 命中 CSense 专属端点 → 本地合成假成功，
 //      请求不出网；检测面本身由既有能力压成全负（closed shadow、toString 白名单、
 //      品牌键无交集、不注册 extension）——探测不到就不上报，上报了也出不去。
@@ -49,6 +49,7 @@
 // 全部为增量，原三板斧（fetch/XHR/beacon 拦截、跳转咽喉、遮罩清除）逻辑不变。
 
 import { markNative } from '../dom-utils';
+import { onDomMutations } from './dom-watch';
 import { trueHidden, trueVisible } from './page-visibility';
 
 const REPORT_RE = /https?:\/\/dcynsppfvlkdtbaleefw\.supabase\.co\/rest\/v1\/csense_detections/i;
@@ -102,7 +103,8 @@ let origXhrSend: typeof XMLHttpRequest.prototype.send | null = null;
 let origBeacon: ((url: string | URL, data?: BodyInit | null) => boolean) | null = null;
 let origOpen: typeof window.open | null = null;
 let navListenerInstalled = false;
-let overlayMo: MutationObserver | null = null;
+// 共享观察器的退订句柄（观察器本体由 dom-watch 统一持有）
+let overlayOff: (() => void) | null = null;
 let scanTimer = 0;
 
 /** V2 增量：原始（未包装）引用，仅用于判定「我们的拦截器是否被还原成原生」 */
@@ -485,16 +487,21 @@ function installNavigationKillSwitch(): void {
 
 /**
  * childList+class 属性观察器挂 documentElement 与 body（顶层插入两种目标全覆盖）。
- * 铁律：对 UI 根的即时纠正必须挂属性观察器，不能只靠巡检——遮罩从插入到
+ * 约定：对 UI 根的即时纠正必须挂属性观察器，不能只靠巡检——遮罩从插入到
  * 巡检周期之间有最长数秒的可见窗口，观察器把这个窗口压到 0。
  * V3 实测（动态插桩确认）：遮罩的 className 是「先插入 DOM、后赋值」——
  * childList-only 观察器在插入瞬间看不到 csense-window，必然漏检；必须同时盯
  * class 属性变化，赋类那一刻命中即删。
  * 选择器窄口径：只删 className 含 csense-window 的节点，其余任何节点零接触
- * （官方弹窗里的「CSense 拦截器」纯文本不是 className，绝不误伤）。
+ * （官方弹窗里的「CSense 拦截器」纯文本不是 className，不误伤）。
  */
+// 观察器回调是逐节点热路径：选择器/类名提为模块常量（混淆后只解码一次）
+const OVERLAY_CLASS = 'csense-window';
+const OVERLAY_SELECTOR = '.csense-window';
+const MUT_TYPE_ATTRS = 'attributes';
+
 function installOverlayStripper(): void {
-  if (overlayMo || typeof MutationObserver === 'undefined') return;
+  if (overlayOff || typeof MutationObserver === 'undefined') return;
   // 性能纪律（v34，与 csp-guard 观察器同款）：直插命中即时删（一次 classList 读），
   // 容器子树 querySelectorAll 是加载期 O(n²) 大户 —— 一律合并进 100ms 去抖的
   // document 级单趟查询。遮罩晚 100ms 摘除无感知，编辑器挂载的数千次子树扫描全免。
@@ -512,7 +519,7 @@ function installOverlayStripper(): void {
     sweepTimer = setTimeout(() => {
       sweepTimer = null;
       try {
-        const overlays = document.querySelectorAll<HTMLElement>('.csense-window');
+        const overlays = document.querySelectorAll<HTMLElement>(OVERLAY_SELECTOR);
         for (let i = 0; i < overlays.length; i++) {
           overlays[i].remove();
           noteHit('overlay');
@@ -522,13 +529,14 @@ function installOverlayStripper(): void {
       }
     }, 100);
   };
-  overlayMo = new MutationObserver((muts) => {
+  // 共享观察器：与其它守卫共用一套 MutationRecord
+  overlayOff = onDomMutations((muts) => {
     for (const m of muts) {
-      if (m.type === 'attributes') {
+      if (m.type === MUT_TYPE_ATTRS) {
         // 「先插入、后赋 className」路径：赋类那一刻命中即删
         try {
           const t = m.target as HTMLElement | null;
-          if (t && t.parentNode && t.classList.contains('csense-window')) {
+          if (t && t.parentNode && t.classList.contains(OVERLAY_CLASS)) {
             t.remove();
             noteHit('overlay');
           }
@@ -540,7 +548,7 @@ function installOverlayStripper(): void {
       for (const node of m.addedNodes) {
         if (!(node instanceof HTMLElement)) continue;
         try {
-          if (node.classList.contains('csense-window')) {
+          if (node.classList.contains(OVERLAY_CLASS)) {
             node.remove();
             noteHit('overlay');
             continue;
@@ -558,41 +566,18 @@ function installOverlayStripper(): void {
             noteHit('overlay');
             continue;
           }
-          // 容器内携带（防它把遮罩包在自己的容器里插入）→ 去抖兜底
-          if (node.querySelector('.csense-window')) scheduleSweep();
+          // 容器内携带（防它把遮罩包在自己的容器里插入）→ 去抖兜底。
+          // 只有带子节点的容器才需要子树查询：叶子节点（编辑器挂载的绝大多数）
+          // 直接跳过，省掉每节点一次 querySelector（O(n) 子树遍历）。
+          if (node.firstChild && node.querySelector(OVERLAY_SELECTOR)) scheduleSweep();
         } catch {
           /* ignore */
         }
       }
     }
   });
-  try {
-    overlayMo.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
-  } catch {
-    /* ignore */
-  }
-  // document-start 时 body 可能还没解析出来，就绪后补挂
-  if (document.body) {
-    try {
-      overlayMo.observe(document.body, { childList: true });
-    } catch {
-      /* ignore */
-    }
-  } else {
-    document.addEventListener(
-      'DOMContentLoaded',
-      () => {
-        if (overlayMo && document.body) {
-          try {
-            overlayMo.observe(document.body, { childList: true });
-          } catch {
-            /* ignore */
-          }
-        }
-      },
-      { once: true },
-    );
-  }
+  /* 观察范围由共享观察器统一提供（documentElement + subtree，
+     已覆盖 body 的子节点变化，无需再单独 observe body） */
 }
 
 // ───── ⑦ VA 加固（Void Apex 手法移植） ─────
@@ -1009,9 +994,9 @@ export function uninstallCsenseGuard(): void {
   // 本体运行期不会卸载；assign/replace 无钩点，无需还原）
   if (origOpen && window.open !== origOpen) window.open = origOpen;
   navListenerInstalled = false; // 允许卸载后重装时重新挂 Navigation API 咽喉
-  if (overlayMo) {
-    overlayMo.disconnect();
-    overlayMo = null;
+  if (overlayOff) {
+    overlayOff();
+    overlayOff = null;
   }
   // ⑦ 段（VA 加固）不回滚：均为幂等的只读 getter / 前置加固，无副作用；
   // 且 setter 已改变的宿主再还原意义有限，故仅在测试路径下清账本防止重复记账。

@@ -10,7 +10,7 @@
 //   属性）→ 挂到它所在的那个原型上，实例查不到自有属性、vm.loadProject 又恰好等于
 //   原型链第一个同名方法 → 判定恒为「未篡改」。
 //
-// ⛔ 但「一律挂原型」是错的（实锤回归：probe-pirate 10/15，捕获计数恒 0）：
+// 但「一律挂原型」是错的：
 //   若站点把 loadProject 定义成 **实例自有属性**（探针假 vm 桩就是这么写的，
 //   真机也存在自行赋值覆盖的场景），原型上的包装会被实例自有属性永久遮蔽 →
 //   包装形同不存在。所以安装位置必须跟随 findNative 找到的 owner：
@@ -18,20 +18,21 @@
 //                     不是我们引入的痕迹，不存在「新增可检测特征」问题）
 //     owner 在原型链 → 挂该原型（digSig 判定保持「未篡改」）
 //
-// 与 Cave 事故铁律的边界：包装始终是纯旁路透传（先记录入参，再用原参数调用原生实现），
+// 与 Cave 事故约定的边界：包装始终是纯旁路透传（先记录入参，再用原参数调用原生实现），
 // 不改 window.vm 形状、不拒写、不吞站点赋值。
 //
 // 伪装三件套与旧实现一致：非枚举安装 / name 保持 / toString 返回原函数源码。
 // 另有第四件：登记进 dom-utils 的已伪装集合（挡 Function.prototype.toString.call 这条旁路）。
 
 import { markNative } from '../dom-utils';
+import { clearProjectLoading, markProjectLoading } from './load-accel';
 
 type LoadProjectFn = (...args: unknown[]) => unknown;
 type Tap = (input: unknown) => void;
 
-// 去重走模块级 WeakSet——绝不在 VM 的 loadProject 包装函数上留自有标记属性
+// 去重走模块级 WeakSet——不在 VM 的 loadProject 包装函数上留自有标记属性
 // （`__vaimodLpTap` 曾 defineProperty 在 vm.loadProject 包装上，检测器对 VM 方法
-// 做 getOwnPropertyNames 就能实锤「VM 被改过」，v38 已移除）。
+// 做 getOwnPropertyNames 就能确认「VM 被改过」，v38 已移除）。
 const tapMarked = new WeakSet<object>();
 
 /** owner 对象 → 该层承载的 tap 集合（原型与实例共用一张表，键是 owner 本身） */
@@ -125,7 +126,23 @@ export function installLoadProjectTap(vm: object, tap: Tap): boolean {
         /* 捕获失败不影响加载本身 */
       }
     }
-    return orig.apply(this, [input, ...rest]);
+    // 作品加载窗口：反序列化期间重型周期任务让路（加速用）
+    markProjectLoading();
+    try {
+      const r = orig.apply(this, [input, ...rest]);
+      if (r && typeof (r as Promise<unknown>).then === 'function') {
+        (r as Promise<unknown>).then(
+          () => clearProjectLoading(),
+          () => clearProjectLoading(),
+        );
+        return r;
+      }
+      clearProjectLoading();
+      return r;
+    } catch (e) {
+      clearProjectLoading();
+      throw e;
+    }
   };
   disguise(wrapped, orig);
 

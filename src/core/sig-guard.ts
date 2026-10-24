@@ -1,4 +1,5 @@
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { onDomMutations } from './dom-watch';
 import { markNative } from '../dom-utils';
 
 // ===== 数字签名扩展反制（ScratchSign / digSig 族） =====
@@ -210,14 +211,7 @@ function installMaskWatcher(): void {
   const start = (): void => {
     purgeMaskStyle();
     try {
-      if (typeof MutationObserver !== 'function') return;
-      const mo = new MutationObserver(() => schedulePurgeMaskStyle());
-      mo.observe(document.documentElement || document, {
-        childList: true,
-        subtree: true,
-        attributes: true,
-        attributeFilter: ['style'],
-      });
+      onDomMutations(() => schedulePurgeMaskStyle());
     } catch {
       /* ignore */
     }
@@ -422,9 +416,9 @@ export function getSigGuard(): SigGuard {
 }
 
 // ---------- register 拦截 ----------
-// 去重走模块级 WeakSet——绝不在宿主的 register 函数上留自有标记属性
+// 去重走模块级 WeakSet——不在宿主的 register 函数上留自有标记属性
 // （`__vaimodSigHooked` 曾直接 defineProperty 在站点 Scratch.extensions.register
-// 上，检测器 getOwnPropertyNames(register) 一遍就实锤「脚本存在」，v38 已移除）。
+// 上，检测器 getOwnPropertyNames(register) 一遍就确认「脚本存在」，v38 已移除）。
 const hookedRegisters = new WeakSet<object>();
 
 function hookSignRegister(extApi: { register: (...args: unknown[]) => unknown }): void {
@@ -490,8 +484,7 @@ function watchSignApi(): void {
   try {
     const win = globalThis as unknown as Record<string, unknown>;
     const existing = win.Scratch;
-    // 不预创建 'Scratch' 键（native 环境无此键，defineProperty 陷阱会被 gopd 扫描
-    // 发现，probe-stealth S1 实锤）。tick 轮询已覆盖「站点后赋值」的捕获路径。
+    // 不预创建 'Scratch' 键。tick 轮询已覆盖「站点后赋值」的捕获路径。
     if (existing) {
       scratchSlot = existing;
       tick();

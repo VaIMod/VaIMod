@@ -7,7 +7,7 @@
 // loadProject 装捕获包装（与 bridge 版完全一致的伪装三件套），把初始作品也收进
 // 环形缓冲；桥接层构造后停轮询并收割存量、转发增量。
 //
-// 与 Cave 事故铁律的边界：这里不做「伪装 loadProject / 拒载」——包装是纯旁路
+// 与 Cave 事故约定的边界：这里不做「伪装 loadProject / 拒载」——包装是纯旁路
 // 透传（记录入参后原样调用原函数），window.vm 属性形状零改动，站点行为不受影响。
 // 安装位置由 lp-guard 统一决定：挂 vm 的直接原型。若挂在实例上（哪怕 defineProperty
 // 非枚举），数字签名家的 _checkEnv 会用 hasOwnProperty 判成「loadProject 被篡改」

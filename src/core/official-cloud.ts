@@ -115,7 +115,7 @@ export function hookOfficialCloudApi(): void {
     // ② XHR 观察（open 记录 url/method，send 时带 body 捕获）
     // 【v38 隐身】元数据走模块级 WeakMap——`_vurl/_vmethod` 曾以自有属性钉在
     // 每个 XHR 实例上（原型级钩子 = 全站所有 XHR 都带标记），检测器 new 一个
-    // XHR 跑一次 open 再 getOwnPropertyNames 就实锤（probe-leakdeep L-xhr 实测）。
+    // XHR 跑一次 open 再 getOwnPropertyNames 就确认。
     const xhrMeta = new WeakMap<XMLHttpRequest, { url: unknown; method: string }>();
     const XHRProto = XMLHttpRequest.prototype as unknown as Record<string, unknown>;
     const origOpen = XHRProto.open as typeof XMLHttpRequest.prototype.open;

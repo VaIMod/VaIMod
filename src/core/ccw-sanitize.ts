@@ -229,6 +229,16 @@ export function startSanitizeLoop(getVMRef: () => unknown): void {
 // ---------------- DOM 注入拦截（网络层覆盖不到的面） ----------------
 
 let createElementPatched = false;
+/** 标签名是否为 script（大小写不敏感，不分配临时字符串） */
+const SCRIPT_TAG_CODES = [115, 99, 114, 105, 112, 116]; // s c r i p t
+function isScriptTagName(tag: unknown): boolean {
+  if (typeof tag !== 'string' || tag.length !== 6) return false;
+  for (let i = 0; i < 6; i++) {
+    if ((tag.charCodeAt(i) | 0x20) !== SCRIPT_TAG_CODES[i]) return false;
+  }
+  return true;
+}
+
 /** script src 陷阱：可疑域名的脚本注入改写为 about:blank（CSRT patchCreateElement 同款） */
 export function patchCreateElement(): void {
   if (createElementPatched) return;
@@ -239,7 +249,10 @@ export function patchCreateElement(): void {
   const wrapped = function (this: Document, tagName: string): HTMLElement {
     const el = orig.apply(this, arguments as unknown as [string]);
     try {
-      if (String(tagName).toLowerCase() === 'script') {
+      // 快路径：编辑器挂载期 createElement 调用量极大（每个节点一次），
+      // 这里用「长度 + 逐位小写比较」替代 String().toLowerCase()——
+      // 后者每次调用分配两个临时字符串。
+      if (isScriptTagName(tagName)) {
         const desc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
         if (desc && desc.set && desc.get) {
           const setSrc = desc.set;

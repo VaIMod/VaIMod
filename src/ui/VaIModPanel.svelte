@@ -95,7 +95,7 @@
     return pluginRegistry.list().filter((p) => p.def.type !== 'patch');
   });
   // 作品能力面（ctx.project）：bridge 背书的窄面——导出/捕获。
-  // 铁律：插件拿不到 vm/bridge 本体，只暴露这组受控方法。
+  // 约定：插件拿不到 vm/bridge 本体，只暴露这组受控方法。
   const projectApi: PluginProjectApi = {
     exportSb3: () => bridge.exportProjectSb3(),
     exportSprite: (targetId) => bridge.exportSpriteSb3(targetId),
@@ -195,7 +195,7 @@
   });
 
   // Header 设置齿轮常驻右上角（所有 Tab、任何连接状态下都可见）——
-  // 这里是设置的唯一入口，绝不能条件隐藏。
+  // 这里是设置的唯一入口，不能条件隐藏。
   // 初始 activeTab 直接取第一个可见 Tab——vars 被隐藏时不至于默认加载一个看不见的页
   let activeTab = $state<TabId>(bootSettings.tabs.find((t) => t.enabled)?.id ?? 'vars');
   // 当前可见 Tab 的第一个（默认加载用）
@@ -851,7 +851,7 @@
     // 下限钳制 MIN_PANEL_H：等待 vm / 空内容等自然高度很小时的兜底，
     // 面板不会缩到不可读/图标被压；上限 maxH 防超出视口
     const target = Math.max(MIN_PANEL_H, Math.min(naturalH, maxH));
-    // 注意：宽度自适应绝不在这里调用——RO 高度循环里写 width 会让内容
+    // 注意：宽度自适应不在这里调用——RO 高度循环里写 width 会让内容
     // 折行数变化 → 内容高度再变 → RO 再触发，高度/宽度互相激荡成持续
     // 微振荡（面板永不稳定，覆盖层内点击 actionability 全部超时）。
     // 宽度只在 Tab 集合变化时由专门 effect 驱动（见 scheduleFitWidth）。
@@ -865,7 +865,7 @@
   }
 
   // 文本自然宽测量：canvas 字体度量，零 DOM、零布局。
-  // ⛔ 不能用 tab.scrollWidth 当「自然宽」——.svp-tab{flex:1} 会把每个 Tab 拉伸填满整行，
+  // 不能用 tab.scrollWidth 当「自然宽」——.svp-tab{flex:1} 会把每个 Tab 拉伸填满整行，
   //    此时 scrollWidth === 被拉伸后的宽度，于是 natural 恒等于「面板宽度 + 常量」，
   //    autoFitWidth 每次都会判定「还不够宽」再写一个更大的值 → **永不收敛的棘轮**：
   //    每改一次 Tab 集合（切显隐、装卸插件、恢复默认设置）面板就永久加宽几 px。
@@ -885,7 +885,7 @@
 
   // 宽度自适应：面板宽度 ≥ 标签栏自然宽度（按字体度量算，标签多时自动撑宽）。
   // 用户手动定宽后完全尊重用户（userSized）；右缘按视口收口防溢出。
-  // 仅由「Tab 集合变化」驱动，绝不进内容 RO 高度循环（防高度/宽度振荡）。
+  // 仅由「Tab 集合变化」驱动，不进内容 RO 高度循环（防高度/宽度振荡）。
   function autoFitWidth(panel: HTMLElement) {
     if (userSized || minimized || dragging) return;
     if (isNarrow()) return;
@@ -916,7 +916,7 @@
     // 可用伸展空间要按**锚定侧**算，否则右停靠面板（默认 right:18px）永远撑不宽：
     //   · 右停靠 → 宽度增加向左伸展，可用空间 = 面板右缘到视口左边（rect.right - 8）
     //   · 左停靠 → 宽度增加向右伸展，可用空间 = 面板左缘到视口右边（innerWidth - rect.left - 8）
-    // ⛔ 曾经的写法只算「向右的空间」，而右停靠面板的 rect.left 就在自己左边 →
+    // 曾经的写法只算「向右的空间」，而右停靠面板的 rect.left 就在自己左边 →
     //    room ≈ 当前宽度 → want 恒等于当前宽度 → 判「已够宽」直接 return，
     //    表现为「装了一堆插件后标签栏被挤爆，面板死也不撑宽」。
     // 判定锚定侧：内联 left 为空/auto 时由 CSS 的 right 定位（右停靠）。
@@ -1146,7 +1146,7 @@
     const move = (ev: MouseEvent) => {
       // 拖拽**过程中**就把落点钳进视口（与悬浮球一致，4px 边距）。
       // 若只在 mouseup 时钳制：贴边拖出去再松手，面板会在松手那一帧被弹回边缘
-      // ——「落位跳变」（probe-paneldrag 断言 vx 与末帧视觉位置一致）。
+      // ——「落位跳变」。
       // 位移仍走 transform：clamp 只改目标值，不改每帧的合成层写法。
       const box = clampToViewport(ev.clientX - offX, ev.clientY - offY, rect.width, rect.height);
       dx = box.left - baseX;
@@ -1303,9 +1303,9 @@
    * 插件侧据此决定是否执行 code（见 runPluginBoot 的契约）。
    *
    * timeoutMs <= 0 = 不限制：一直轮询真实桥接状态，连接成功 resolve(true)，
-   * 桥接 Error resolve(false)——绝不按计时器判死（「一直显示等待获取vm」是
+   * 桥接 Error resolve(false)——不按计时器判死（「一直显示等待获取vm」是
    * 产品语义）。代价：插件在永不连接的页面上卸载时，轮询会存活到页面关闭
-   * （一次 150ms 的状态读取，可忽略）；换取的是慢加载作品绝不被误杀。
+   * （一次 150ms 的状态读取，可忽略）；换取的是慢加载作品不被误杀。
    */
   function waitVm(timeoutMs: number): Promise<boolean> {
     if (bridge.getStatus() === BridgeStatus.Connected) return Promise.resolve(true);
@@ -1351,7 +1351,7 @@
     // 原来这里是 forceRefresh() + getVariables() 两连击：前者内部已重建并 emit 过整份列表，
     // 后者又建一遍（6000 变量实测 20ms + 18ms）。切页是本面板最重的同步路径，合并成一次。
     // 返回 null 语义 = 本轮没有可下发的新列表（vm 未就绪）→ 保留现有列表，
-    // 绝不能用空数组覆盖（那比显示上一次数据更糟）。
+    // 不能用空数组覆盖（那比显示上一次数据更糟）。
     const fresh = bridge.forceRefreshList();
     if (fresh) variables = decodeVariables(fresh);
     if (activeTab === 'feishu') feishuPanel?.refresh();
@@ -1639,7 +1639,7 @@
         : '';
       const plugTip = sum.plugins > 0 ? `\n（含 ${sum.plugins} 个插件：将自动解析安装，已存在的相同插件跳过）` : '';
       // 「仅插件包」（设置页导出全部插件）：只装插件，其余字段是空占位，
-      // 绝不能拿它去覆盖变量 / 别名 / 云数据 / 快照 / 回收站 / 设置。
+      // 不能拿它去覆盖变量 / 别名 / 云数据 / 快照 / 回收站 / 设置。
       if (bundle.pluginsOnly === true) {
         if (
           !confirm(

@@ -180,7 +180,7 @@ function patchGetter(
     try {
       real = origGet.call(host); // this 必须是实例
     } catch {
-      return false; // 取不到真实值 → 放弃本次 patch（宁缺毋滥，绝不 undefined 化）
+      return false; // 取不到真实值 → 放弃本次 patch（宁缺毋滥，不 undefined 化）
     }
   } else {
     try {
@@ -408,7 +408,7 @@ function installAudioPatches(): void {
     const data = gcdOrig.call(this, channel);
     if (!live.cfg.audio || !data || data.length < 64) return data;
     // 每 buffer 探测一次「返回值是否与底层共享」：
-    //  - 共享（写入即播放）→ 直接返回原数组，绝不加噪（保护程序化合成/播放）；
+    //  - 共享（写入即播放）→ 直接返回原数组，不加噪（保护程序化合成/播放）；
     //  - 独立副本（纯读取型指纹）→ 返回微噪副本，破坏音频指纹。
     let known = audioSharedCache.get(this);
     if (known === undefined) {

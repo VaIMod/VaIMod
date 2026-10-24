@@ -68,7 +68,8 @@ export class CcwDataStore {
   private origPSet: ((n: string, v: unknown) => Promise<unknown>) | null = null;
   private origUGet: ((n: string) => Promise<unknown>) | null = null;
   private origUSet: ((n: string, v: unknown) => Promise<unknown>) | null = null;
-  private lockTickerTimer: ReturnType<typeof setTimeout> | undefined;
+  /** 每条锁一条守护循环：key = `type::name` → 定时器句柄 */
+  private lockLoops = new Map<string, ReturnType<typeof setTimeout>>();
 
   /** 目标名是否处于全局锁定 */
   isLocked(type: CloudType, name: string): boolean {
@@ -147,6 +148,7 @@ export class CcwDataStore {
   async unlockValue(type: CloudType, name: string): Promise<void> {
     if (isLockMeta(name)) return; // 锁标记无意义，解锁直接忽略
     this.locks[type].delete(name);
+    this.stopLockLoop(type, name); // 停掉这条锁的守护循环
     const origSet = type === 'project' ? this.origPSet : this.origUSet;
     if (origSet) {
       try {
@@ -184,64 +186,73 @@ export class CcwDataStore {
   }
 
   private tryStartTicker(): void {
-    if (this.lockTickerTimer) return;
-    const hasAny = this.locks.project.size > 0 || this.locks.user.size > 0;
-    if (!hasAny) return;
-    const tick = async (): Promise<void> => {
-      this.lockTickerTimer = undefined;
-      if (this.locks.project.size === 0 && this.locks.user.size === 0) return;
-      try {
-        await this.tickLocks();
-      } catch {
-        /* ignore */
-      }
-      if (this.locks.project.size > 0 || this.locks.user.size > 0) {
-        this.lockTickerTimer = setTimeout(() => void tick(), 4000);
-      }
-    };
-    this.lockTickerTimer = setTimeout(() => void tick(), 2000);
+    // 每个锁定条目各跑一条自己的循环：锁定即起、解锁即停，互不影响。
+    for (const type of ['project', 'user'] as CloudType[]) {
+      for (const name of [...this.locks[type].keys()]) this.startLockLoop(type, name);
+    }
   }
 
-  private async tickLocks(): Promise<void> {
-    const types: CloudType[] = ['project', 'user'];
-    for (const type of types) {
-      const map = this.locks[type];
-      if (map.size === 0) continue;
-      const origGet = type === 'project' ? this.origPGet : this.origUGet;
-      const origSet = type === 'project' ? this.origPSet : this.origUSet;
-      const db = type === 'project' ? this.project : this.user;
-      if (!origGet || !origSet) continue;
-      let changed = false;
-      for (const [name, lock] of [...map.entries()]) {
-        try {
-          // ① 未确认的 marker 持续重试写入，直到云端持久生效
-          if (!lock.confirmed) {
-            await origSet(lockMetaOf(name), LOCK_ON);
-            const back = await origGet(lockMetaOf(name));
-            if (back === LOCK_ON) {
-              lock.confirmed = true;
-            } else {
-              continue; // 服务端暂不可用，下轮再试
-            }
-          }
-          // ② 远端已解锁（marker 不再是 '1'）→ 本地跟随释放
-          const metaNow = await origGet(lockMetaOf(name));
-          if (metaNow !== LOCK_ON) {
-            map.delete(name);
-            changed = true;
-            continue;
-          }
-          // ③ 钉回：服务器值 ≠ 锁定值 → 盖回（防作品/他人篡改）
-          const serverVal = await origGet(name);
-          if (serverVal !== lock.value) {
-            await origSet(name, lock.value);
-            db.set(name, lock.value);
-          }
-        } catch {
-          /* 单条失败不中断其余 */
-        }
+  private loopKey(type: CloudType, name: string): string {
+    return `${type}::${name}`;
+  }
+
+  /** 单条锁的守护循环：持续把云端值盖回锁定值，直到该条目被解锁 */
+  private startLockLoop(type: CloudType, name: string): void {
+    const key = this.loopKey(type, name);
+    if (this.lockLoops.has(key)) return;
+    const run = async (): Promise<void> => {
+      this.lockLoops.delete(key);
+      const lock = this.locks[type].get(name);
+      if (!lock) return; // 已解锁 → 循环终止
+      try {
+        await this.pinLockedValue(type, name, lock);
+      } catch {
+        /* 单次失败不终止循环 */
       }
-      if (changed) this.notifyChanged();
+      if (this.locks[type].has(name)) {
+        this.lockLoops.set(key, setTimeout(() => void run(), 1500));
+      }
+    };
+    this.lockLoops.set(key, setTimeout(() => void run(), 300));
+  }
+
+  /** 停止某条锁的守护循环（解锁时调用） */
+  private stopLockLoop(type: CloudType, name: string): void {
+    const key = this.loopKey(type, name);
+    const timer = this.lockLoops.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.lockLoops.delete(key);
+    }
+  }
+
+  /** 一条锁的一次钉值：marker 补写 + 远端解锁跟随 + 值盖回 */
+  private async pinLockedValue(type: CloudType, name: string, lock: LockInfo): Promise<void> {
+    const origGet = type === 'project' ? this.origPGet : this.origUGet;
+    const origSet = type === 'project' ? this.origPSet : this.origUSet;
+    const db = type === 'project' ? this.project : this.user;
+    if (!origGet || !origSet) return;
+    // ① marker 未确认 → 持续补写，直到云端持久生效
+    if (!lock.confirmed) {
+      await origSet(lockMetaOf(name), LOCK_ON);
+      const back = await origGet(lockMetaOf(name));
+      if (back !== LOCK_ON) return; // 服务端暂不可用，下轮再试
+      lock.confirmed = true;
+    }
+    // ② 远端已解锁 → 本地跟随释放，循环到此终止
+    const metaNow = await origGet(lockMetaOf(name));
+    if (metaNow !== LOCK_ON) {
+      this.locks[type].delete(name);
+      this.stopLockLoop(type, name);
+      this.notifyChanged();
+      return;
+    }
+    // ③ 钉回：云端值 ≠ 锁定值 → 盖回（防作品/他人篡改）
+    const serverVal = await origGet(name);
+    if (serverVal !== lock.value) {
+      await origSet(name, lock.value);
+      db.set(name, lock.value);
+      this.notifyChanged();
     }
   }
 
@@ -390,7 +401,7 @@ export class CcwDataStore {
 
     // 读取作品云数据：先回源，写入本地镜像；若本地镜像被改过则回写
     const wrapGetP = async function (this: any, name: string) {
-      // 锁标记自身是 VaIMod 的内部簿记，绝不写入本地镜像 / 进入面板
+      // 锁标记自身是 VaIMod 的内部簿记，不写入本地镜像 / 进入面板
       if (isLockMeta(name)) return origGetP(name);
       const lock = self.locks.project.get(name);
       if (lock) {
@@ -419,7 +430,7 @@ export class CcwDataStore {
     };
     // 读取用户云数据
     const wrapGetU = async function (this: any, name: string) {
-      // 锁标记自身是 VaIMod 的内部簿记，绝不写入本地镜像 / 进入面板
+      // 锁标记自身是 VaIMod 的内部簿记，不写入本地镜像 / 进入面板
       if (isLockMeta(name)) return origGetU(name);
       const lock = self.locks.user.get(name);
       if (lock) {

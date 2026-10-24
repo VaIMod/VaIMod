@@ -258,7 +258,7 @@ function wrapNative<T extends AnyFn>(orig: T, impl: (orig: T) => T): T {
     /* ignore */
   }
   // toString 伪装（YinSecurity 对 set/方法源码逐一探测）：不进白名单的包装层
-  // 会以混淆源码形态暴露（probe-stealth S2 实锤），必须与 csp-guard 同口径。
+  // 会以混淆源码形态暴露，必须与 csp-guard 同口径。
   markNative(wrapped as unknown as object, (orig as { name?: string }).name || '');
   return wrapped as unknown as T;
 }

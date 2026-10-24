@@ -36,7 +36,7 @@ const HEARTBEAT_MS = 8000;
 const STRIKE_RECYCLE_THRESHOLD = 4;
 const RECYCLE_COOLDOWN_MS = 20000;
 
-// 内网诱饵节点：样式完全不可见，绝不打扰真实用户（display:none + 离屏 + 无指针事件）
+// 内网诱饵节点：样式完全不可见，不打扰真实用户（display:none + 离屏 + 无指针事件）
 const DECOY_CSS =
   'position:fixed;left:-9999px;top:-9999px;width:0;height:0;overflow:hidden;' +
   'opacity:0;pointer-events:none;z-index:-2147483647;';
@@ -152,8 +152,8 @@ function plantDecoys(): void {
 // ---------- B) 对内陷阱：window 假 vm 泄漏属性（getter/setter 陷阱） ----------
 // 【v34 退役】三类 VM 泄漏键诱饵（__scratchCoreRef__/__vmLeakBackup__/_vmCoreMirror_）
 // 不再布设。实测代价>收益：审计扩展（YinSecurity）的扫描清单恰好逐个
-// getOwnPropertyDescriptor 这三个键——诱饵从「钓攻击者」变成「给审计方递实锤」，
-// 违背「绝对不能被检测到」的一票否决约束。DOM 诱饵保留（display:none + 通用
+// getOwnPropertyDescriptor 这三个键——诱饵从「钓攻击者」变成「给审计方递确认」，
+// 违背「不能被检测到」的一票否决约束。DOM 诱饵保留（display:none + 通用
 // 修改器特征名，不可枚举扫描命中，防销毁职责不变）；真 VM 防泄露由
 // closed shadow + 沙盒桥 + 全局零残留承担（本就不依赖这几枚诱饵）。
 function plantWindowDecoys(): void {

@@ -1,5 +1,7 @@
 import type { ScratchVariable, ScratchValue } from './types';
+import { onDomMutations } from './dom-watch';
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { installExtSanitize, neutralizeInstance, sanitizeRuntime } from './ext-sanitize';
 import { getStealthRoots, markNative } from '../dom-utils';
 
 // ===== 通用反作弊扩展反制引擎（原 Killeriest 专用 → 多版本自适应） =====
@@ -61,6 +63,9 @@ const YINSEC_OPCODES = ['hasTM', 'hasScript', 'isHijacked', 'showDetail', 'jump'
 // 第三方修改器 UI 隐藏选择器特征（命中即整体清除，全面中和敌扩展的 UI 隐藏）
 // 数字签名家（ScratchSign / 变体）的 _mask() 也向 #ui-base 注入 style 做同类隐藏，
 // 其选择器集合与本表高度重合，因此同一套清理器可覆盖两家。
+const STYLE_TAG_SELECTOR = 'style';
+const STYLE_TAG_NAME = 'STYLE';
+
 const HIDE_CSS_MARKERS = [
   '.rd-modal-root-container', '.csense-window', '#vervesynckit', '#vervesynckit-ui',
   '#vervesynckit-message', '#scratch-variable-panel', '#spd-open', '#spd-toolbar',
@@ -435,6 +440,10 @@ function shadowMethod(inst: object, key: string, fn: unknown): void {
 
 function sanitizeInstance(inst: SecureExtensionLike): void {
   try {
+    // −2) 通用行为级反制层（不限家族）：检测类布尔 reporter 恒 false、
+    //     销毁/跳转类 command no-op —— 对任意走检测/摧毁/跳转路线的扩展生效，
+    //     由 ext-sanitize 按 opcode 形态 + 描述语义 + 函数源码三重分类。
+    neutralizeInstance(inst as unknown as Parameters<typeof neutralizeInstance>[0]);
     // −1) YinSecurity 审计阻拦家钝化（还原样本逐行分析后定制的成套替换）：
     //   · hasTM/hasScript/isHijacked → 恒 false（其全部探测面失效：TM 特征、
     //     CSRT/CSense/butterAny/角色管理器四脚本 DOM 特征、bind/console/xhr/fetch/
@@ -486,7 +495,7 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
     //     · _halt              runtime.stopAll() + while(true) 死循环（本族最凶）
     //     · _enforce / _runAntiAnalysis  触发 _halt 的判定入口
     //     · _mask              注入 #ui-base 隐藏第三方修改器 UI
-    //     · _onProjectLoaded   把每个 target 的变量名置空 → 破坏作品数据（本次头号目标）
+    //     · _onProjectLoaded   把每个 target 的变量名置空 → 破坏作品数据（重点目标）
     const decoyFns = [
       '_decoyCheck',
       '_setupDecoyGuard',
@@ -589,6 +598,14 @@ function hookRegister(extApi: { register: (...args: unknown[]) => unknown }): vo
               /* ignore */
             }
           }
+          // 通用行为级反制：无论是否命中家族识别，每个注册对象都过一遍
+          // 泛化分类（检测类布尔恒 false / 销毁跳转类 command no-op）。
+          // neutralizeInstance 由 WeakSet 幂等，良性扩展零副作用。
+          try {
+            neutralizeInstance(arg as unknown as Parameters<typeof neutralizeInstance>[0]);
+          } catch {
+            /* ignore */
+          }
         }
       } catch {
         /* ignore */
@@ -624,8 +641,7 @@ function watchScratchApi(): void {
     } catch {
       /* ignore */
     }
-    // 自适应密探：前 20 拍 50ms（盖住「站点定义 Scratch → 扩展同步 register」的窗口，
-    // probe-yinsec 实测 400ms 档会漏掉同任务注册），其后 400ms 慢档共 60 拍；
+    // 自适应密探：前 20 拍 50ms，其后 400ms 慢档共 60 拍；
     // 再往后交给 init(vm) 轮询兜底。单拍成本 = 一次属性读，密探档零压力。
     if (attempts < 60) setTimeout(tick, attempts <= 20 ? 50 : 400);
   };
@@ -638,7 +654,7 @@ function watchScratchApi(): void {
       return;
     }
     // 不预创建 'Scratch' 键：native 环境本无此键，defineProperty 访问器陷阱会被
-    // 检测器 gopd 扫描发现（probe-stealth S1 实锤，与 scratch-vm trapWindowKey 同口径）。
+    // 检测器 gopd 扫描发现。
     // 改用 tick 轮询捕获后续赋值（400ms × 60 次，其后 init(vm) 轮询兜底）。
     tick();
   } catch {
@@ -651,7 +667,7 @@ function watchScratchApi(): void {
 let styleWatcherInstalled = false;
 function purgeHiddenCss(node: ParentNode): void {
   try {
-    const styles = node.querySelectorAll('style');
+    const styles = node.querySelectorAll(STYLE_TAG_SELECTOR);
     for (const st of Array.from(styles)) {
       const text = (st.textContent || '');
       if (HIDE_CSS_MARKERS.some((mk) => text.includes(mk))) {
@@ -739,21 +755,26 @@ function installStyleWatcher(): void {
             }
           }, 100);
         };
-        const mo = new MutationObserver((muts) => {
+        onDomMutations((muts) => {
+          // 批级调度：数千节点一次挂载时，逐节点排清扫定时器会放大成数千次
+          // 定时器判定；一批只排一次，语义不变（清扫本身是文档级单趟）。
+          let needSweep = false;
           for (const m of muts) {
-            for (const node of Array.from(m.addedNodes)) {
-              const el = node as Element;
+            if (m.type !== 'childList') continue;
+            const added = m.addedNodes;
+            for (let i = 0; i < added.length; i++) {
+              const el = added[i] as Element;
               if (el.nodeType !== 1) continue;
-              if (el.tagName === 'STYLE') {
+              if (el.tagName === STYLE_TAG_NAME) {
                 const text = el.textContent || '';
                 if (text && HIDE_CSS_MARKERS.some((mk) => text.includes(mk))) el.remove();
                 continue;
               }
-              scheduleSweep();
+              needSweep = true;
             }
           }
+          if (needSweep) scheduleSweep();
         });
-        mo.observe(document.documentElement || document, { childList: true, subtree: true });
       }
     } catch {
       /* ignore */
@@ -900,7 +921,7 @@ let lastHiddenSweep = -Infinity;
 // 敌扩展（digSig._onProjectLoaded、安全变量 _A）把 target 变量的 name 直接置空来
 // 破坏作品的变量显示与作品运行。Scratch 的变量表以 id 关联对象，name 只是显示名，
 // 因此「拦住空写 + 留一份 id→原名快照」既能阻止清空，也能把已经清空的恢复回来。
-// 铁律（历史事故）：只拒「空值」，合法改名一律放行 —— 站点自身的 renameVariable
+// 约定（历史事故）：只拒「空值」，合法改名一律放行 —— 站点自身的 renameVariable
 // 必须继续可用，任何「拒写访问器」式的粗暴拦截都会让作品跑不起来。
 const NAME_SLOTS = new WeakMap<object, { real: string }>();
 const NAME_SNAPSHOT = new Map<string, string>();
@@ -1094,7 +1115,7 @@ function isEmptySecret(v: unknown): boolean {
   if (Array.isArray(v)) return v.length === 0;
   if (typeof v === 'object') {
     // 只有「普通对象且自有键为 0」才算空。CryptoKey（structured-clone 后仍是对象，
-    // 但没有可枚举自有键）绝不能误判为空，否则会把合法密钥写入也改掉。
+    // 但没有可枚举自有键）不能误判为空，否则会把合法密钥写入也改掉。
     let proto: object | null;
     try {
       proto = Object.getPrototypeOf(v) as object | null;
@@ -1368,6 +1389,8 @@ export class SecureGuard {
     this.tickInstalled = true;
     onVmTick((vm) => {
       this.hookStartHats(vm);
+      // 通用扩展反制：全量枚举已加载扩展实例净化 + primitives 层锁（幂等）
+      sanitizeRuntime(vm);
       // 常驻巡检：变量名（防迟到清空）/ 导出包装 / UI 隐藏三项一起复检。
       // 变量名的即时拦截靠 setter 守卫，这里的 2s 巡检只作兜底恢复。
       protectVariableNames(vm);
@@ -1661,6 +1684,8 @@ export function installSecureGuardFront(): void {
   installStyleWatcher();
   installKeyStoreGuard();
   neuterTampermonkeyMarker();
+  // 通用扩展积木反制层：vm 巡检里做 extGet 式全量枚举 + primitives 层锁
+  installExtSanitize();
 }
 
 // YinSecurity hasTM 探测反制：Tampermonkey 会在 <html> 上留 data-tampermonkey-id

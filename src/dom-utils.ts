@@ -190,7 +190,7 @@ function startAttrRotation(host: HTMLElement): void {
 
 function randomizeHostCss(css: string): string {
   // 随机化「离屏偏移」与方向，降低 shadow 宿主被静态特征识别的概率。
-  // ⛔ z-index 不再降级随机：宿主层级必须恒为最高（用户明确要求「任何情况下都在最顶层」），
+  // z-index 不再降级随机：宿主层级必须恒为最高（用户明确要求「任何情况下都在最顶层」），
   // 降级到 2147400000 会被页面/其它扩展的 max 层级覆盖 → UI 被盖住看不见。
   const sign = Math.random() < 0.5 ? -1 : 1;
   const off = sign * (9990 + ((Math.random() * 60) | 0));

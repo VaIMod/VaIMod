@@ -8,11 +8,11 @@
 // 标记方式用 WeakSet：不落任何可枚举属性，页面既探测不到也无法伪造
 // （`Object.getOwnPropertyNames(xhr)` / `JSON.stringify` 都看不见）。
 //
-// ⛔ 网络防火墙**不在本体内**：它是可分发的插件（`docs/plugin-net-firewall.js`），
+// 网络防火墙**不在本体内**：它是可分发的插件（`docs/plugin-net-firewall.js`），
 //    不导入就完全没有这个功能。本体这里只提供「我是谁」的标记能力，
 //    通过 `ctx.net.isInternalXhr` 与 `ctx.net.markNative` 交给插件使用。
 //
-// ⛔ 这里绝不安装任何网络钩子、也不持久化任何东西 —— 只是两个纯函数 + 一个 WeakSet。
+// 这里不安装任何网络钩子、也不持久化任何东西 —— 只是两个纯函数 + 一个 WeakSet。
 
 const internalXhr = new WeakSet<object>();
 

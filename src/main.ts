@@ -18,6 +18,7 @@ import { installCcwSanitize, startSanitizeLoop } from './core/ccw-sanitize';
 import { installUiGuard, uiGuardReport } from './core/ui-guard';
 import { installVmHardening, registerVmTamperCheck, vmHardeningReport } from './core/vm-hardening';
 import { installVmAntidetect, trueHidden, vmAntiStatus } from './core/vm-antidetect';
+import { installLoadAccel, isProjectLoading } from './core/load-accel';
 import { isLoadProjectTapped } from './core/lp-guard';
 import { earlyWrapped } from './core/capture-early';
 import {
@@ -66,7 +67,7 @@ let booted = false;
 
 // 受控调试入口：**双重门控**——localStorage `vaimod_debug=1` 且仅限本机环回源。
 // 只靠旗标是不够的：检测脚本完全可以自己写 localStorage.vaimod_debug='1' 再刷新，
-// 让调试桥在 ccw.site 上现形（window 上多一个 __vaimod_debug 就是实锤特征）。
+// 让调试桥在 ccw.site 上现形（window 上多一个 __vaimod_debug 就是确认特征）。
 // 环回门控后，生产宿主无论怎么改 localStorage 都零特征；探针调试全部走 127.0.0.1。
 // 提供沙盒面 / 安全快照 / VPN 汇总 / 零信任状态的只读检查，供「沙盒接入调试」验证：
 //   __vaimod_debug.sandbox()    → 沙盒面（只读 + 双向代理，验证防逃逸）
@@ -248,6 +249,8 @@ function boot(): void {
   const { root } = createStealthHost(globalCss + '\n' + VEIL_CSS);
   // ⑤ 遮罩 + 加密 Cookie 守卫（被移除/篡改自动重建）—— 遮罩 VPN 独立管辖实例
   installVeilGuard(root);
+  // 作品加载加速：资产域预连接（DNS/TCP/TLS 提前握手）
+  installLoadAccel();
 
   // ⑥ UI 异步挂载：安全守卫（上方，同步、最先）与页面关键解析互不阻塞，
   //    Svelte 初始化 + 首帧渲染放到空闲调度，站点加载期间不被 VaIMod 拖慢。
@@ -264,6 +267,8 @@ function boot(): void {
     let vpTick: number | null = null;
     const vpnPatrol = (): void => {
       try {
+        // 作品正在加载：让路（反序列化是主线程最重的单笔工作）
+        if (isProjectLoading()) return;
         // 零信任：隔离态 → 自动重连（connect 会重新颁发 SDP 凭证解除隔离）
         if (ztna.isolatedState) {
           bridge.connect().catch(() => {});

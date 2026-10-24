@@ -162,12 +162,12 @@
 
 
   // 作用域 id 跟随插件定义（插件被同 id 升级替换时跟着变，强制重建样式）
-  // 注意：scopeCss 已给每条选择器加 #scopeId 前缀，这里绝不能再包一层
+  // 注意：scopeCss 已给每条选择器加 #scopeId 前缀，这里不能再包一层
   // `#scopeId{...}`——会变成 CSS 嵌套规则（#scopeId{#scopeId .go{…}}），解析失败全丢。
   const scopeId = $derived(`vmp-${plugin.def.id}`);
   const scopedCss = $derived(scopeCss(plugin.def.css, `#${scopeId}`));
 
-  // 插件样式注入：绝不能用 Svelte <style> 块（编译器把组件 <style> 提取为
+  // 插件样式注入：不能用 Svelte <style> 块（编译器把组件 <style> 提取为
   // 编译期静态 CSS，动态表达式进去是死文本 → 规则全丢；且会注入 document.head
   // 泄露到页面）。改为运行时手动 <style> 元素挂在 .svp-plugin-host 内
   // （Shadow DOM 内部不泄露），随组件销毁 / css 变更重建。

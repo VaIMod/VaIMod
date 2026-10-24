@@ -123,7 +123,7 @@ function mode(): FeishuInterceptMode {
 
 /**
  * 命中日志裁剪：超过上限时从最旧的一端淘汰**已决策**的条目。
- * 挂起（pending）中的条目绝不能被挤出——它一旦不在日志里，面板就渲染不出
+ * 挂起（pending）中的条目不能被挤出——它一旦不在日志里，面板就渲染不出
  * 允许/拒绝按钮，而它的 resolver 还挂在 resolvers 里，请求只能干等超时。
  */
 function trimHits(): void {
@@ -364,7 +364,7 @@ export function installFeishuGuard(): void {
   const NativeXHR = window.XMLHttpRequest;
   nativeXhrCtor = NativeXHR;
   // 元数据走模块级 WeakMap——`__vaimod_fs_method/url` 曾以**可枚举**自有属性钉在
-  // 每个 XHR 实例上，检测器 new 一个 XHR 跑一次 open 再 Object.keys 就实锤
+  // 每个 XHR 实例上，检测器 new 一个 XHR 跑一次 open 再 Object.keys 就确认
   // 「脚本存在」，v38 已移除。挂钩的 open/send 也改为不可枚举自有属性，
   // 把实例级特征压到 getOwnPropertyNames 才可见的最小面。
   const xhrMeta = new WeakMap<XMLHttpRequest, { method: string; url: string }>();

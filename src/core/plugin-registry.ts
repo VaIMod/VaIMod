@@ -670,7 +670,7 @@ export function runPluginBoot(
     try {
       if (a.waitVm) {
         // timeoutMs 一律传 0 = 不限制：等待由真实桥接状态驱动（连接成功 or 出错），
-        // 绝不按计时器判死——「一直显示等待获取vm」是产品语义（用户明确要求）。
+        // 不按计时器判死——「一直显示等待获取vm」是产品语义（用户明确要求）。
         const ok = deps.waitVm ? await deps.waitVm(0) : false;
         if (!ok) {
           throw new Error('无法获取 VM（桥接出错，可在面板里重试连接）');
@@ -882,7 +882,7 @@ function runOnePatch(p: InstalledPlugin, host: PatchHost): void {
     },
     // 网络类插件的基础设施：本体只提供两件**跨边界必需**的东西。
     //
-    // ⛔ 本体不内置任何网络钩子、不认识「防火墙规则」这类业务概念 ——
+    // 本体不内置任何网络钩子、不认识「防火墙规则」这类业务概念 ——
     //    网络策略（观察/拦截/放行）完全由插件自己决定、自己的 store 自己存。
     //    参考实现：docs/plugin-net-firewall.js
     net: {

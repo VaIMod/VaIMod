@@ -249,7 +249,7 @@ export class ScratchVM {
       this.setStatus(BridgeStatus.Connected, '已获取vm');
       this.secureGuard.init(vm);
       // 数字签名扩展反制：实例净化 + 双注册咽喉 + 变量名保护。
-      // 注意：绝不做 vm.loadProject 实例级伪装（会吞掉站点对 loadProject 的合法
+      // 注意：不做 vm.loadProject 实例级伪装（会吞掉站点对 loadProject 的合法
       // 赋值导致 Cave 等无法运行，见 sig-guard.ts 头部注释）。
       getSigGuard().init(vm);
       const sg = getSigGuard();
@@ -810,7 +810,7 @@ export class ScratchVM {
   }
 
   private async waitForVM(): Promise<unknown> {
-    // 【v38】第 8 通道（赋值陷阱）已退役——访问器形态差分是检测实锤面，
+    // 【v38】第 8 通道（赋值陷阱）已退役——访问器形态差分是检测确认面，
     // 捕获全部由下方发现循环承担（轻通道每拍都读 window.vm/_vm/Scratch.vm）
     this.installVmSetterTraps();
     // 不设超时：持续等待直到真正发现 vm（用户要求「直到获取到 vm 才隐藏」）。
@@ -967,7 +967,7 @@ export class ScratchVM {
    * 【隐身纪律 v38】第 8 通道（window.vm/_vm/Scratch.vm 访问器陷阱）**整体退役**：
    * 把已存在的键重定义为 get/set 访问器有两个不可接受的暴露面——
    * ① 站点数据属性（`window.vm = vm`）被换成访问器后，gopd(win,'vm') 的
-   *    descriptor 形态与原生页差分实锤「页面被改过」（YinSecurity 全套 gopd 扫描）；
+   *    descriptor 形态与原生页差分确认「页面被改过」（YinSecurity 全套 gopd 扫描）；
    * ② 站点已有访问器时，旧实现用 `get: () => cur`（cur=undefined）**覆盖站点原
    *    getter**——既破坏宿主功能又自断捕获。
    * 捕获完全由发现循环（redux/fiber/轮询/bind 劫持）承担：通道③轻通道每拍都扫

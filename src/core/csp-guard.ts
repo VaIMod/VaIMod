@@ -31,10 +31,15 @@
 // 与原方法一致）；页面正常的 charset / viewport / httpEquiv meta 不受影响。
 
 import { markNative } from '../dom-utils';
+import { onDomMutations } from './dom-watch';
 import { moveHookState } from './move-hook-state';
 import { uiMoveBlocked } from './ui-guard';
+import { isProtectedHost } from '../dom-utils';
 
 const CSP_HTTP_EQUIV = /^content-security-policy(-report-only)?$/i;
+// 逐节点判定路径上的字符串：模块级常量，混淆后只在初始化解码一次
+const TAG_META = 'META';
+const ATTR_HTTP_EQUIV = 'http-equiv';
 // 字符串写入的廉价预滤：正则流式判定（不构造小写副本——大字符串 toLowerCase
 // 是一次全量分配，编辑器挂载期 innerHTML 写入频繁，能省则省）
 const CSP_HTTP_EQUIV_RE = /http-equiv/i;
@@ -45,8 +50,8 @@ function isCspMeta(node: unknown): boolean {
   try {
     if (!node || (node as { nodeType?: unknown }).nodeType !== 1) return false;
     const el = node as Element;
-    if (el.tagName !== 'META') return false;
-    return CSP_HTTP_EQUIV.test(el.getAttribute('http-equiv') || '');
+    if (el.tagName !== TAG_META) return false;
+    return CSP_HTTP_EQUIV.test(el.getAttribute(ATTR_HTTP_EQUIV) || '');
   } catch {
     return false;
   }
@@ -158,12 +163,22 @@ export function installCspGuard(): void {
   // （main.ts 启动序列保证）；csp 未装成功时 cspMerged 保持 false，ui 回退自包。
   try {
     const origAppend = Node.prototype.appendChild;
+    // 热路径内联：编辑器挂载期 appendChild 调用量极大（每个节点一次）。
+    // 原实现每次要走 isCspMeta → uiMoveBlocked → isProtectedHost → isProtectedFast
+    // 四层嵌套调用，混淆后每次调用都不便宜。这里把判定摊平：
+    // 两次属性读 + 一次集合查即可放行，异常分支才调深层函数。
     const wrappedAppend = function <T extends Node>(this: Node, child: T): T {
-      if (isCspMeta(child)) {
-        blockedCount++;
-        return child;
+      if (child.nodeType === 1) {
+        const el = child as unknown as Element;
+        if (el.tagName === TAG_META) {
+          if (isCspMeta(child)) {
+            blockedCount++;
+            return child;
+          }
+        } else if (isProtectedHost(child) && uiMoveBlocked(child, this)) {
+          return child;
+        }
       }
-      if (uiMoveBlocked(child, this)) return child;
       return origAppend.call(this, child) as T;
     };
     markNative(wrappedAppend, 'appendChild');
@@ -174,11 +189,17 @@ export function installCspGuard(): void {
       node: T,
       child: Node | null,
     ): T {
-      if (isCspMeta(node)) {
-        blockedCount++;
-        return node;
+      if (node.nodeType === 1) {
+        const el = node as unknown as Element;
+        if (el.tagName === TAG_META) {
+          if (isCspMeta(node)) {
+            blockedCount++;
+            return node;
+          }
+        } else if (isProtectedHost(node) && uiMoveBlocked(node, this)) {
+          return node;
+        }
       }
-      if (uiMoveBlocked(node, this)) return node;
       return origInsertBefore.call(this, node, child) as T;
     };
     markNative(wrappedInsertBefore, 'insertBefore');
@@ -303,36 +324,32 @@ export function installCspGuard(): void {
         }
       }, 100);
     };
-    const sweepAdded = (node: Node): void => {
+    // 返回 true 表示「本次有元素新增，需要排一次文档级清扫」
+    const sweepAdded = (node: Node): boolean => {
       if (isCspMeta(node)) {
         if (node.parentNode) node.parentNode.removeChild(node);
         sweptCount++;
-        return;
+        return false;
       }
-      if (node.nodeType === 1) scheduleSweep();
+      return node.nodeType === 1;
     };
-    const observer = new MutationObserver((muts) => {
+    // 共享观察器：与其它守卫共用一套 MutationRecord（原本各挂一个，
+    // 编辑器一次挂载数千节点时浏览器要生成四套记录）
+    onDomMutations((muts) => {
+      // 清扫调度批级化：编辑器一次挂载数千节点，逐节点排定时器会放大成
+      // 数千次 setTimeout 判定（混淆后每次判定都不便宜）。一批只排一次。
+      let needSweep = false;
       for (const m of muts) {
+        if (m.type !== 'childList') continue;
         const added = m.addedNodes;
-        for (let i = 0; i < added.length; i++) sweepAdded(added[i]);
+        for (let i = 0; i < added.length; i++) {
+          if (sweepAdded(added[i])) needSweep = true;
+        }
       }
+      if (needSweep) scheduleSweep();
     });
-    const start = (): void => {
-      const root = document.documentElement || document;
-      observer.observe(root, { childList: true, subtree: true });
-    };
-    if (document.documentElement) {
-      // ⑧ 安装时清扫（后装守卫清先到的注入）
-      sweptCount += sweepExisting(document);
-      start();
-    } else {
-      // document-start 极早期：文档结构未就绪，观察器等 DOM 有了再挂
-      //（不轮询：用一次 readystatechange，页面脚本也还没跑到）
-      document.addEventListener('readystatechange', () => {
-        sweptCount += sweepExisting(document);
-        start();
-      }, { once: true });
-    }
+    // 安装时清扫（后装守卫清先到的注入）
+    sweptCount += sweepExisting(document);
   } catch {
     /* ignore */
   }

@@ -28,7 +28,8 @@ const STAGE_A_OPTIONS = {
   // 0.45/0.25 仍覆盖近半数函数 + 全部字符串数组/编码/重命名防还原层，
   // 防静态阅读强度不打折，运行时开销约降一半。
   controlFlowFlattening: true,
-  controlFlowFlatteningThreshold: 0.15, // P2 调优：CFF 状态机是热路径 per-call 税主因；0.15 仍覆盖大函数/核心逻辑
+  controlFlowFlatteningThreshold: 0.4, // 实测 0.6 档反而慢 60%（更多函数进入字符串/表达式变换链），0.4 为拐点 // 热路径包装函数体量小，0.4 档只展平复杂函数（核心逻辑仍覆盖），
+  // 小包装免于状态机税：DOM 钩子每次调用省掉一层 switch 调度
   deadCodeInjection: false, // P2 调优：DCI 只膨胀体积+分支数，防还原价值远低于 CFF
   deadCodeInjectionThreshold: 0.25,
   // 反动态调试：debugger 陷阱（初始 + 定时器续排）。headless/正常浏览零感知，
@@ -37,7 +38,7 @@ const STAGE_A_OPTIONS = {
   debugProtectionInterval: 4000,
   disableConsoleOutput: false,
   identifierNamesGenerator: 'hexadecimal',
-  numbersToExpressions: true,
+  numbersToExpressions: false, // 数字常量不再表达式化：热路径里的每次数字字面量都省一次运算
   // 反 AST / 反反混淆：全局名重命名 + 对象键表达式化，破坏跨文件符号对照
   renameGlobals: true,
   transformObjectKeys: true,
@@ -64,6 +65,9 @@ const STAGE_A_OPTIONS = {
   stringArrayThreshold: 1,
   // 反静态分析：字面量 unicode 转义（grep/正则特征扫射失效）
   unicodeEscapeSequence: true,
+  // 固定随机种子：产物可复现（此前每次构建种子随机，CFF 是否命中热路径看运气，
+  // 同一份代码在不同构建间挂载耗时能差 1.4 倍）。固定后性能基线稳定可测。
+  seed: 20261024,
 };
 
 // 二分排查开关：VAIMOD_OBF_NO="debugProtection,transformObjectKeys" 剔除指定选项
