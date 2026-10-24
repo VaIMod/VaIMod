@@ -152,7 +152,15 @@ export function obfuscateUserscript() {
         if (!body.trim()) continue;
 
         // 第一层：强力混淆（控制流扁平化 + 死代码注入 + rc4 字符串矩阵 + 自守卫）
-        const stageA = javascriptObfuscator.obfuscate(body, STAGE_A_OPTIONS).getObfuscatedCode();
+        // 【v38 隐身】外面包一层 IIFE：生产 execLine 是间接 eval（全局作用域），
+        // 第一层产物若带顶层 var/function 声明（混淆器 _0x* 命名 + __svelte 等
+        // 模块级变量），会全部漏成 window 自有键——审计扩展枚举 window 一遍
+        // 就实锤「页面进了混淆脚本」（probe-leakdeep L1 实测 _0x1711 等 5 键）。
+        // IIFE 后全局零残留；代码对 window 的有意挂载不受影响。
+        const stageA =
+          '!function(){' +
+          javascriptObfuscator.obfuscate(body, STAGE_A_OPTIONS).getObfuscatedCode() +
+          '}();';
 
         // 第二层：GZIP level 9
         const gz = gzipSync(Buffer.from(stageA, 'utf8'), { level: 9 });
@@ -206,7 +214,7 @@ export function obfuscateUserscript() {
           // 时刻整体生效（早于面板挂载与 VM 连接），只是从「文档解析前」挪到「load 后」。
           'var __e=eval;' +
             'var __boot=function(){__e(__code);};' +
-            'var __idle=function(f){if(typeof requestIdleCallback==="function"){requestIdleCallback(f,{timeout:2000});}else{setTimeout(f,0);}};' +
+            'var __idle=function(f){if(typeof requestIdleCallback==="function"){requestIdleCallback(f,{timeout:5000});}else{setTimeout(f,0);}};' +
             'if(document.readyState==="complete"){__idle(__boot);}' +
             'else{var __wr=function(){if(document.readyState==="complete"){__idle(__boot);}else{setTimeout(__wr,40);}};setTimeout(__wr,40);}',
         );

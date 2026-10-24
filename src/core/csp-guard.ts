@@ -31,6 +31,8 @@
 // 与原方法一致）；页面正常的 charset / viewport / httpEquiv meta 不受影响。
 
 import { markNative } from '../dom-utils';
+import { moveHookState } from './move-hook-state';
+import { uiMoveBlocked } from './ui-guard';
 
 const CSP_HTTP_EQUIV = /^content-security-policy(-report-only)?$/i;
 // 字符串写入的廉价预滤：正则流式判定（不构造小写副本——大字符串 toLowerCase
@@ -147,7 +149,13 @@ export function installCspGuard(): void {
     /* ignore */
   }
 
-  // ③ 直插节点钩子：appendChild / insertBefore（热路径：两次属性读判定）
+  // ③ 直插节点钩子：appendChild / insertBefore
+  // 单层合并包装（v38 性能治理）：原来 csp 与 ui-guard 各包一层，每次 DOM 调用
+  // 两层闭包（混淆产物实测 ~0.27ms/层，编辑器 mount 数千节点直接翻倍）。
+  // 现在这一层同时内联 ui 的宿主搬运检查（uiMoveBlocked），ui-guard 依
+  // moveHookState.cspMerged 跳过自己的二次包装——语义等价（两判定都是 O(1)
+  // 属性读），调用层数减半。约定 installCspGuard 必须先于 installUiGuard
+  // （main.ts 启动序列保证）；csp 未装成功时 cspMerged 保持 false，ui 回退自包。
   try {
     const origAppend = Node.prototype.appendChild;
     const wrappedAppend = function <T extends Node>(this: Node, child: T): T {
@@ -155,6 +163,7 @@ export function installCspGuard(): void {
         blockedCount++;
         return child;
       }
+      if (uiMoveBlocked(child, this)) return child;
       return origAppend.call(this, child) as T;
     };
     markNative(wrappedAppend, 'appendChild');
@@ -169,10 +178,12 @@ export function installCspGuard(): void {
         blockedCount++;
         return node;
       }
+      if (uiMoveBlocked(node, this)) return node;
       return origInsertBefore.call(this, node, child) as T;
     };
     markNative(wrappedInsertBefore, 'insertBefore');
     Node.prototype.insertBefore = wrappedInsertBefore as typeof Node.prototype.insertBefore;
+    moveHookState.cspMerged = true;
   } catch {
     /* ignore */
   }
@@ -269,9 +280,20 @@ export function installCspGuard(): void {
   //     subtree 全覆盖，任何漏网的嵌套 meta 必然出现在 document 树里，
   //     一趟全扫与逐节点扫描的最终语义完全等价，最坏多存活 100ms。
   try {
+    // 真去抖 + 1s 上限（v38 性能治理）：旧实现是「首触发后 100ms 必跑」的节流，
+    // 挂载 churn 期间（React 数千节点分批 mount）每 100ms 白跑一趟 document 级
+    // querySelectorAll。现在 churn 期间顺延、最多压 1000ms 必跑一次——
+    // 直插摘除仍是即时路径，嵌套 meta 最坏多存活 1.1s，安全语义不丢。
     let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+    let firstPending = 0;
     const scheduleSweep = (): void => {
-      if (sweepTimer !== null) return;
+      const now = performance.now();
+      if (sweepTimer !== null) {
+        if (now - firstPending < 1000) clearTimeout(sweepTimer);
+        else return; // 已到 1s 上限，让在手定时器照常触发
+      } else {
+        firstPending = now;
+      }
       sweepTimer = setTimeout(() => {
         sweepTimer = null;
         try {

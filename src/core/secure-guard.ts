@@ -720,8 +720,16 @@ function installStyleWatcher(): void {
         // textContent 读），容器一律合并进 100ms 去抖的 document 级单趟 ——
         // purge 语义不变（观察器 subtree 全覆盖，漏网节点必然还在文档里）。
         let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+        let firstPending = 0;
         const scheduleSweep = (): void => {
-          if (sweepTimer !== null) return;
+          // 真去抖 + 1s 上限（v38，与 csp-guard 同款）：churn 期间顺延、最多压 1000ms 必跑
+          const now = performance.now();
+          if (sweepTimer !== null) {
+            if (now - firstPending < 1000) clearTimeout(sweepTimer);
+            else return;
+          } else {
+            firstPending = now;
+          }
           sweepTimer = setTimeout(() => {
             sweepTimer = null;
             try {

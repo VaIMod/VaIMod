@@ -113,6 +113,10 @@ export function hookOfficialCloudApi(): void {
     }
 
     // ② XHR 观察（open 记录 url/method，send 时带 body 捕获）
+    // 【v38 隐身】元数据走模块级 WeakMap——`_vurl/_vmethod` 曾以自有属性钉在
+    // 每个 XHR 实例上（原型级钩子 = 全站所有 XHR 都带标记），检测器 new 一个
+    // XHR 跑一次 open 再 getOwnPropertyNames 就实锤（probe-leakdeep L-xhr 实测）。
+    const xhrMeta = new WeakMap<XMLHttpRequest, { url: unknown; method: string }>();
     const XHRProto = XMLHttpRequest.prototype as unknown as Record<string, unknown>;
     const origOpen = XHRProto.open as typeof XMLHttpRequest.prototype.open;
     if (typeof origOpen === 'function') {
@@ -124,8 +128,7 @@ export function hookOfficialCloudApi(): void {
         ...rest: unknown[]
       ) {
         try {
-          (this as unknown as Record<string, unknown>)._vurl = url;
-          (this as unknown as Record<string, unknown>)._vmethod = method;
+          xhrMeta.set(this, { url, method });
           if (typeof url === 'string') tryCapture(url, method, null);
         } catch {
           /* ignore */
@@ -140,13 +143,9 @@ export function hookOfficialCloudApi(): void {
         const origSendFn = origSend as (body?: unknown) => ReturnType<typeof origSend>;
         const wrappedSend = function (this: XMLHttpRequest, body?: Document | BodyInit | null) {
           try {
-            const meta = this as unknown as Record<string, unknown>;
-            if (typeof meta._vurl === 'string' && typeof meta._vmethod === 'string') {
-              tryCapture(
-                meta._vurl,
-                meta._vmethod as string,
-                typeof body === 'string' ? body : null,
-              );
+            const meta = xhrMeta.get(this);
+            if (meta && typeof meta.url === 'string') {
+              tryCapture(meta.url, meta.method, typeof body === 'string' ? body : null);
             }
           } catch {
             /* ignore */

@@ -26,11 +26,13 @@
 
 import { markNative } from '../dom-utils';
 
-const TAP_MARK = '__vaimodLpTap';
-
-type TapHost = { [TAP_MARK]?: boolean };
 type LoadProjectFn = (...args: unknown[]) => unknown;
 type Tap = (input: unknown) => void;
+
+// 去重走模块级 WeakSet——绝不在 VM 的 loadProject 包装函数上留自有标记属性
+// （`__vaimodLpTap` 曾 defineProperty 在 vm.loadProject 包装上，检测器对 VM 方法
+// 做 getOwnPropertyNames 就能实锤「VM 被改过」，v38 已移除）。
+const tapMarked = new WeakSet<object>();
 
 /** owner 对象 → 该层承载的 tap 集合（原型与实例共用一张表，键是 owner 本身） */
 const ownerTaps = new WeakMap<object, Set<Tap>>();
@@ -38,11 +40,7 @@ const ownerTaps = new WeakMap<object, Set<Tap>>();
 const ownerInstalled = new WeakSet<object>();
 
 function disguise(wrapped: unknown, orig: LoadProjectFn): void {
-  try {
-    Object.defineProperty(wrapped as object, TAP_MARK, { value: true, configurable: true, enumerable: false });
-  } catch {
-    /* ignore */
-  }
+  tapMarked.add(wrapped as object);
   try {
     Object.defineProperty(wrapped, 'name', { value: orig.name, configurable: true });
   } catch {
@@ -64,7 +62,7 @@ function disguise(wrapped: unknown, orig: LoadProjectFn): void {
 }
 
 function isOurWrap(fn: unknown): boolean {
-  return typeof fn === 'function' && (fn as TapHost)[TAP_MARK] === true;
+  return typeof fn === 'function' && tapMarked.has(fn as object);
 }
 
 interface NativeSlot {

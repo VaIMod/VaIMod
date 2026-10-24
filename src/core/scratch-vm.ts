@@ -110,7 +110,7 @@ export class ScratchVM {
   private bindHookTried = false;
 
   // ---- VM 劫持安全加固（防检查/防删除/防修改 + 看门狗自愈） ----
-  // window.vm / window._vm / Scratch.vm 赋值陷阱是否已装（事件驱动第 8 通道）
+  // 第 8 通道（window.vm/_vm/Scratch.vm 赋值陷阱）v38 已退役，占位防通道号漂移
   private vmTrapsInstalled = false;
   // vm 引用健康看门狗定时器（连接后每 3s 验证，失效自动重建通道）
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -810,8 +810,8 @@ export class ScratchVM {
   }
 
   private async waitForVM(): Promise<unknown> {
-    // 事件驱动钩子先行：window.vm / _vm / Scratch.vm 赋值陷阱在轮询前就位，
-    // 站点赋值瞬间即捕获（快于任何轮询周期一个节拍以上）
+    // 【v38】第 8 通道（赋值陷阱）已退役——访问器形态差分是检测实锤面，
+    // 捕获全部由下方发现循环承担（轻通道每拍都读 window.vm/_vm/Scratch.vm）
     this.installVmSetterTraps();
     // 不设超时：持续等待直到真正发现 vm（用户要求「直到获取到 vm 才隐藏」）。
     // 分档退避（v34 性能治理实测：恒速轮询是「作品加载特别卡」的最大单一来源，
@@ -964,82 +964,18 @@ export class ScratchVM {
   }
 
   /**
-   * 事件驱动 VM 捕获通道（第 8 通道）：对 window.vm / window._vm / Scratch.vm
-   * 上 defineProperty 赋值陷阱。站点脚本赋值瞬间即判定形状并捕获——
-   * 相比轮询，早一个完整节拍；陷阱属性非枚举、赋值语义原样转发，
-   * 行为与普通属性无差别（防检查：descriptor 形态差异是已知最小痕迹，
-   * 换取事件驱动捕获，且轮询通道仍全程兜底，陷阱被移除不影响可用性）。
+   * 【隐身纪律 v38】第 8 通道（window.vm/_vm/Scratch.vm 访问器陷阱）**整体退役**：
+   * 把已存在的键重定义为 get/set 访问器有两个不可接受的暴露面——
+   * ① 站点数据属性（`window.vm = vm`）被换成访问器后，gopd(win,'vm') 的
+   *    descriptor 形态与原生页差分实锤「页面被改过」（YinSecurity 全套 gopd 扫描）；
+   * ② 站点已有访问器时，旧实现用 `get: () => cur`（cur=undefined）**覆盖站点原
+   *    getter**——既破坏宿主功能又自断捕获。
+   * 捕获完全由发现循环（redux/fiber/轮询/bind 劫持）承担：通道③轻通道每拍都扫
+   * window.vm，晚到一拍（≤400ms 慢档）毫无代价，特征却是永久暴露面。
    */
   private installVmSetterTraps(): void {
     if (this.vmTrapsInstalled) return;
     this.vmTrapsInstalled = true;
-    const self = this;
-    const trapWindowKey = (key: string): void => {
-      try {
-        const w = window as unknown as Record<string, unknown>;
-        const desc = Object.getOwnPropertyDescriptor(w, key);
-        // 【隐身纪律 v34】只在键**已存在**时才上访问器包装——绝不为捕获而预创建
-        // window 键。原版对不存在的 vm/_vm 也 defineProperty，等于在 window 上
-        // 多出两个原生页面没有的自有键：审计扩展（YinSecurity 实测）一次
-        // getOwnPropertyDescriptor(win,'vm') 就能实锤「页面被改过」。
-        // 迟到赋值（window.vm = vm）由发现循环通道③轮询 + bind 劫持兜底捕获，
-        // 晚到一拍毫无代价，特征却是永久暴露面。
-        if (!desc) return;
-        // 不可配置：无法重定义，放弃陷阱（轮询通道仍覆盖）
-        if (desc.configurable === false) return;
-        const cur: unknown = 'value' in desc ? desc.value : undefined;
-        Object.defineProperty(w, key, {
-          configurable: true,
-          enumerable: desc.enumerable,
-          get: () => cur,
-          set: (nv: unknown) => {
-            try {
-              // 未连接时才采纳（已连接场景由看门狗统一管理，避免误切换通道）
-              if (!self.channel.getVm() && nv && typeof nv === 'object') {
-                if (isVMLike(nv)) self.adoptVmCandidate(nv);
-                else if (self.isVmShaped(nv)) self.adoptVmCandidate(nv);
-              }
-            } catch {
-              /* ignore */
-            }
-          },
-        });
-      } catch {
-        /* ignore */
-      }
-    };
-    trapWindowKey('vm');
-    trapWindowKey('_vm');
-    // Scratch.vm 嵌套一层：仅当 Scratch 对象已存在**且 vm 属性已在**时上陷阱
-    // （同款隐身纪律：不在宿主对象上预创建键；Scratch.vm 迟到赋值由通道③轮询覆盖）
-    try {
-      const s = (window as unknown as { Scratch?: unknown }).Scratch;
-      if (s && typeof s === 'object') {
-        const sd = Object.getOwnPropertyDescriptor(s as object, 'vm');
-        if (!sd || sd.configurable === false) {
-          // 无既有属性（不预创建）或不可配置 → 放弃，轮询兜底
-          /* ignore */
-        } else {
-          const cur2: unknown = 'value' in sd ? sd.value : undefined;
-          Object.defineProperty(s as object, 'vm', {
-            configurable: true,
-            enumerable: sd.enumerable,
-            get: () => cur2,
-            set: (nv: unknown) => {
-              try {
-                if (!self.channel.getVm() && nv && typeof nv === 'object' && isVMLike(nv)) {
-                  self.adoptVmCandidate(nv);
-                }
-              } catch {
-                /* ignore */
-              }
-            },
-          });
-        }
-      }
-    } catch {
-      /* ignore */
-    }
   }
 
   /** vm 引用是否健康（isVMLike + runtime.targets 可达）——看门狗/加固巡检共用 */

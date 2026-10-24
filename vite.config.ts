@@ -79,9 +79,43 @@ function exactUserscriptHeader() {
   };
 }
 
+// Svelte 运行时的 window.__svelte 全局隔离（v38 隐身）：
+// svelte 内部模板 uid 计数器 / 版本披露 / hydratable store 都写 window.__svelte
+// —— VaIMod 面板（Svelte app）一挂载，window 就多出这个自有键。
+// CCW 宿主是 React 系，原生页面没有 __svelte，检测器枚举 window 一遍即知
+// 「页面里跑了 Svelte 脚本」（probe-leakdeep L1 实测）。构建期把这三处替换进
+// 模块局部作用域，全局零残留，运行时语义不变。
+function svelteGlobalIsolation() {
+  return {
+    name: 'vaimod-svelte-global-isolation',
+    apply: 'build' as const,
+    enforce: 'pre' as const,
+    transform(code: string, id: string) {
+      if (!id.includes('svelte') || !code.includes('__svelte')) return null;
+      let out = code;
+      // template.js uid 计数器：模块局部变量替代 window 全局
+      if (out.includes('(window.__svelte ??= {}).uid ??= 1;')) {
+        out = out
+          .replace('(window.__svelte ??= {}).uid ??= 1;', '0;')
+          .replace('window.__svelte.uid++', '__vaimodSvelteUid++');
+        out = 'var __vaimodSvelteUid = 1;\n' + out;
+      }
+      // disclose-version.js：版本披露是纯副作用（调试器提示用），直接去全局化
+      out = out.replace(
+        '((window.__svelte ??= {}).v ??= new Set()).add(PUBLIC_VERSION);',
+        'void 0;',
+      );
+      // hydratable.js：SSR 水合 store，客户端不水合，store 恒 undefined 语义等价
+      out = out.replace('const store = window.__svelte?.h;', 'const store = void 0;');
+      return out === code ? null : { code: out, map: null };
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
     svelte(),
+    svelteGlobalIsolation(), // 作用于 node_modules/svelte 的 JS 源模块（build transform 阶段，先于 esbuild 压缩）
     monkey({
       entry: 'src/main.ts',
       userscript: {

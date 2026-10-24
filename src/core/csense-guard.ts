@@ -499,8 +499,16 @@ function installOverlayStripper(): void {
   // 容器子树 querySelectorAll 是加载期 O(n²) 大户 —— 一律合并进 100ms 去抖的
   // document 级单趟查询。遮罩晚 100ms 摘除无感知，编辑器挂载的数千次子树扫描全免。
   let sweepTimer: ReturnType<typeof setTimeout> | null = null;
+  let firstPending = 0;
   const scheduleSweep = (): void => {
-    if (sweepTimer !== null) return;
+    // 真去抖 + 1s 上限（v38，与 csp-guard 同款）：churn 期间顺延、最多压 1000ms 必跑
+    const now = performance.now();
+    if (sweepTimer !== null) {
+      if (now - firstPending < 1000) clearTimeout(sweepTimer);
+      else return;
+    } else {
+      firstPending = now;
+    }
     sweepTimer = setTimeout(() => {
       sweepTimer = null;
       try {

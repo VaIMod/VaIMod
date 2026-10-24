@@ -19,6 +19,7 @@ import {
   trueElementsFromPoint,
 } from '../dom-utils';
 import { trueHidden, trueVisible } from './page-visibility';
+import { moveHookState } from './move-hook-state';
 
 /** 视口最大层级（宿主恒在此层） */
 const TOP_Z = 2147483647;
@@ -63,6 +64,23 @@ function allHosts(): HTMLElement[] {
     /* ignore */
   }
   return out;
+}
+
+/**
+ * 宿主搬运检查（appendChild/insertBefore 热路径单行判定）。
+ * 【v38 合并】由 csp-guard 的单层直插包装内联调用——原来 ui-guard 自己包装
+ * appendChild/insertBefore 时内联的同一段逻辑抽出来共用，语义逐字一致：
+ * 宿主已挂载且被搬到别的已连接父节点下 = 篡改，报告并拒绝该次插入。
+ */
+export function uiMoveBlocked(node: Node, parent: Node): boolean {
+  if (isProtectedHost(node)) {
+    const p = node.parentNode;
+    if (p && p.isConnected && p !== parent) {
+      reportTamper();
+      return true;
+    }
+  }
+  return false;
 }
 
 function reportTamper(): void {
@@ -290,7 +308,11 @@ function installStructureGuard(): void {
   }
 
   // ② 不允许把已挂载的宿主搬到别处（首次插入 parent 为空，放行）
+  // 【v38 合并】csp-guard 的单层直插包装已内联本检查（moveHookState.cspMerged
+  // 为 true 时），这里跳过二次包装——appendChild/insertBefore 每次调用的包装层
+  // 从两层减到一层。csp 未装成功（cspMerged=false）时照旧自包，语义不丢。
   const guardMove = (name: 'appendChild' | 'insertBefore'): void => {
+    if (moveHookState.cspMerged) return;
     if (typeof NP[name] !== 'function') return;
     NP[name] = wrapNative(NP[name], (orig) =>
       function (this: Node, node: Node, ...rest: unknown[]) {

@@ -422,9 +422,15 @@ export function getSigGuard(): SigGuard {
 }
 
 // ---------- register 拦截 ----------
+// 去重走模块级 WeakSet——绝不在宿主的 register 函数上留自有标记属性
+// （`__vaimodSigHooked` 曾直接 defineProperty 在站点 Scratch.extensions.register
+// 上，检测器 getOwnPropertyNames(register) 一遍就实锤「脚本存在」，v38 已移除）。
+const hookedRegisters = new WeakSet<object>();
+
 function hookSignRegister(extApi: { register: (...args: unknown[]) => unknown }): void {
   try {
-    if ((extApi.register as { __vaimodSigHooked?: boolean }).__vaimodSigHooked) return;
+    if (hookedRegisters.has(extApi)) return;
+    hookedRegisters.add(extApi);
     const orig = extApi.register.bind(extApi);
     const wrapped = (...args: unknown[]) => {
       try {
@@ -446,11 +452,10 @@ function hookSignRegister(extApi: { register: (...args: unknown[]) => unknown })
       }
       return orig(...args);
     };
-    Object.defineProperty(wrapped, '__vaimodSigHooked', { value: true });
     markNative(wrapped as unknown as object, 'register'); // toString 白名单（检测器会探测 register 源码）
     extApi.register = wrapped;
   } catch {
-    /* ignore */
+    hookedRegisters.delete(extApi); // 包装失败 → 撤标记，下次还能再试
   }
 }
 

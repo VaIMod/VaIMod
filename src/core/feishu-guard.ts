@@ -363,26 +363,32 @@ export function installFeishuGuard(): void {
   // 叠在 csense 钩子之上（feishu open → csense open → native），两层互不遮蔽。
   const NativeXHR = window.XMLHttpRequest;
   nativeXhrCtor = NativeXHR;
-  type FsXhr = XMLHttpRequest & { __vaimod_fs_method?: string; __vaimod_fs_url?: string };
+  // 元数据走模块级 WeakMap——`__vaimod_fs_method/url` 曾以**可枚举**自有属性钉在
+  // 每个 XHR 实例上，检测器 new 一个 XHR 跑一次 open 再 Object.keys 就实锤
+  // 「脚本存在」，v38 已移除。挂钩的 open/send 也改为不可枚举自有属性，
+  // 把实例级特征压到 getOwnPropertyNames 才可见的最小面。
+  const xhrMeta = new WeakMap<XMLHttpRequest, { method: string; url: string }>();
 
   const HookedXHR = function (): XMLHttpRequest {
-    const xhr = new NativeXHR() as FsXhr;
+    const xhr = new NativeXHR();
     const originalOpen = xhr.open;
     const originalSend = xhr.send;
 
-    xhr.open = function (method: string, url: string | URL, ...rest: unknown[]) {
-      xhr.__vaimod_fs_method = String(method || 'GET');
-      xhr.__vaimod_fs_url = String(url);
-      return (originalOpen as (this: FsXhr, m: string, u: string | URL, ...r: unknown[]) => void).apply(
+    const hookedOpen = function (this: XMLHttpRequest, method: string, url: string | URL, ...rest: unknown[]) {
+      try {
+        xhrMeta.set(xhr, { method: String(method || 'GET'), url: String(url) });
+      } catch {
+        /* ignore */
+      }
+      return (originalOpen as (this: XMLHttpRequest, m: string, u: string | URL, ...r: unknown[]) => void).apply(
         xhr,
         [method, url, ...rest],
       );
     } as typeof xhr.open;
 
-    xhr.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
-      const url = xhr.__vaimod_fs_url;
-      const method = xhr.__vaimod_fs_method || 'GET';
-      const decision = url ? decide(url, method, body ?? null, 'xhr') : null;
+    const hookedSend = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+      const meta = xhrMeta.get(xhr);
+      const decision = meta ? decide(meta.url, meta.method, body ?? null, 'xhr') : null;
       if (!decision) {
         return (originalSend as (...a: unknown[]) => void).apply(xhr, [body as never]);
       }
@@ -411,6 +417,13 @@ export function installFeishuGuard(): void {
       });
       return undefined as never;
     } as typeof xhr.send;
+
+    try {
+      Object.defineProperty(xhr, 'open', { value: hookedOpen, writable: true, configurable: true, enumerable: false });
+      Object.defineProperty(xhr, 'send', { value: hookedSend, writable: true, configurable: true, enumerable: false });
+    } catch {
+      return xhr; // 实例挂钩失败 → 退回原生实例（原型层 csense 钩子仍然生效）
+    }
 
     return xhr;
   } as unknown as typeof XMLHttpRequest;

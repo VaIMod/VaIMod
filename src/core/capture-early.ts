@@ -25,6 +25,7 @@ export interface EarlyCaptureEntry {
 
 const EARLY_CAP = 8;
 const POLL_MS = 25;
+const POLL_BACKOFF_MS = 100;
 const POLL_MAX_MS = 10_000;
 
 let seq = 0;
@@ -95,21 +96,35 @@ function scanOnce(): boolean {
   return false;
 }
 
-/** document-start 调用：开装早期盯梢。vm 已在则立即包，否则 25ms 轮询等待。 */
+/** document-start 调用：开装早期盯梢。vm 已在则立即包，否则退避轮询等待。 */
 export function installEarlyCaptureWatch(): void {
   if (stopped || pollTimer) return;
   if (scanOnce()) return;
   const startedAt = Date.now();
-  pollTimer = setInterval(() => {
-    if (scanOnce() || Date.now() - startedAt > POLL_MAX_MS) stopEarlyCapturePoll();
-  }, POLL_MS);
+  // 退避节拍（v38 性能治理）：恒频 25ms × 10s 在挂载 churn 期是定时器饥饿大户
+  // （40 次唤醒/秒）。改为 25ms 只保前 2s 的极速窗口（站点正常路径 vm 秒级就位），
+  // 之后 100ms——晚 75ms 收获毫无代价，churn 期唤醒数砍 4 倍。
+  const scheduleNext = (delay: number): void => {
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      if (stopped) return;
+      if (scanOnce()) return;
+      const elapsed = Date.now() - startedAt;
+      if (elapsed > POLL_MAX_MS) {
+        stopEarlyCapturePoll();
+        return;
+      }
+      scheduleNext(elapsed < 2000 ? POLL_MS : POLL_BACKOFF_MS);
+    }, delay) as unknown as ReturnType<typeof setInterval>;
+  };
+  scheduleNext(POLL_MS);
 }
 
 /** 桥接层构造后调用：停轮询（此后包装统一归 bridge 的 tick 补挂管，防双包装）。 */
 export function stopEarlyCapturePoll(): void {
   stopped = true;
   if (pollTimer) {
-    clearInterval(pollTimer);
+    clearTimeout(pollTimer as unknown as ReturnType<typeof setTimeout>);
     pollTimer = null;
   }
 }
