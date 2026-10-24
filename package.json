@@ -13,7 +13,12 @@
     "verify:artifact:raw": "node scripts/verify-artifact-behavior.mjs --raw dist-debug/VaIMod.user.js",
     "probe:guard": "node scripts/probe-guard-chain.mjs",
     "probe:ext": "node scripts/probe-ext-registry.mjs",
-    "probe:perf": "node scripts/probe-ext-perf.mjs"
+    "probe:perf": "node scripts/probe-ext-perf.mjs",
+    "probe:hardlock": "node scripts/probe-hardlock.mjs",
+    "probe:hardlock:ab": "node scripts/probe-hardlock-ab.mjs",
+    "probe:sideeffect": "node scripts/probe-hardlock-sideeffect.mjs",
+    "probe:antitamper": "node scripts/probe-antitamper.mjs",
+    "probe:upload": "node scripts/probe-feishu-upload.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.3",

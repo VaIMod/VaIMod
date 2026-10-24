@@ -39,6 +39,7 @@
 import { onVmTick } from './ext-watch';
 import { isProjectLoading } from './load-accel';
 import { enumerateExtensions, classifyBlockType, type ExtBlockInfo, type ExtEntry } from './ext-registry';
+import { hardLockExtensionPrimitive, installExtHardlock, ALIAS_SUFFIXES } from './ext-hardlock';
 import { markFakeSource, nativeToStringOf } from '../dom-utils';
 
 type InstLike = Record<string, unknown> & { getInfo?: () => { id?: string; blocks?: unknown[] } | undefined };
@@ -48,7 +49,13 @@ type InstLike = Record<string, unknown> & { getInfo?: () => { id?: string; block
  *    （如 A 的 jump 是命令、B 的 jump 是 reporter），全局单表会互相污染。
  *  PASSED = 判定为放行（记录下来避免每拍重复取函数源码）。 */
 const PASSED = null;
-const extClass = new Map<string, Map<string, 'bool' | 'cmd' | null>>();
+/**
+ * 已分类的扩展 → 分类表。
+ * ★ 表与**实例身份**绑定（方法 9 的配套）：
+ *   同一个 extId 若换了新实例（敌扩展卸载后重注册 / 平台重载扩展），
+ *   旧表可能已经名不副实（漏判新敌块 / 误判新良块）→ 换实例即整表重算。
+ */
+const extClass = new Map<string, { inst: object | null; table: Map<string, 'bool' | 'cmd' | null> }>();
 /** 已净化过的实例（幂等，WeakSet 自动回收）——每拍枚举靠它做到近零成本 */
 const sanitizedInsts = new WeakSet<object>();
 /** _primitives 原件（角色管理器式 WeakMap 侧表） */
@@ -241,6 +248,10 @@ function lockPrimitives(vm: object, prefix: string, opcode: string, cls: 'bool' 
   } catch {
     /* ignore */
   }
+  // 硬锁对抗层：把"写入即中和"升级为"不可被夺回的中和"（敌扩展七层防御的反制）。
+  // 敌方的描述符锁定 / Proxy 陷阱 / 看门狗夺回全部由 ext-hardlock 应对；
+  // 此处的普通赋值仅作兜底（硬锁内部同样会写一次）。
+  hardLockExtensionPrimitive(vm, prefix, opcode, cls);
   try {
     prims[key] = wrapped;
   } catch {
@@ -264,6 +275,26 @@ function shadowMethod(inst: object, key: string, fn: unknown): void {
   } catch {
     try {
       (inst as Record<string, unknown>)[key] = fn;
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * 遮蔽实例方法，并连带遮蔽**别名方法**（方法 5 的实例侧）。
+ *
+ * 敌扩展可能同时提供 `<opcode>__disabled` 别名方法（把真身藏在别名下）；
+ * 只遮蔽主名 → 别名仍可被调用 → 中和被绕过。
+ */
+function shadowWithAlias(inst: object, op: string, fn: unknown): void {
+  shadowMethod(inst, op, fn);
+  for (const suffix of ALIAS_SUFFIXES) {
+    const alias = `${op}${suffix}`;
+    try {
+      if (typeof (inst as Record<string, unknown>)[alias] === 'function') {
+        shadowMethod(inst, alias, fn);
+      }
     } catch {
       /* ignore */
     }
@@ -335,7 +366,7 @@ export function neutralizeInstance(inst: InstLike, blocks?: ExtBlockInfo[]): num
       const src = fnSource(inst[op]);
       const cls = classifyBlock(op, b, src);
       if (!cls) continue;
-      shadowMethod(inst, op, cls === 'bool' ? returnFalse : returnUndefined);
+      shadowWithAlias(inst, op, cls === 'bool' ? returnFalse : returnUndefined);
       hit++;
     }
   }
@@ -351,10 +382,30 @@ export function neutralizeInstance(inst: InstLike, blocks?: ExtBlockInfo[]): num
     // 已有元信息判定优先，避免与上面的结论冲突
     if (meta && meta.some((b) => b.opcode === k)) continue;
     const cls = leak && !destr ? 'bool' : 'cmd';
-    shadowMethod(inst, k, cls === 'bool' ? returnFalse : returnUndefined);
+    shadowWithAlias(inst, k, cls === 'bool' ? returnFalse : returnUndefined);
     hit++;
   }
   return hit;
+}
+
+/**
+ * 取（必要时重建）某扩展实例的分类表。
+ *
+ * 实例换了 → 整表作废重算（方法 9：防止敌扩展卸载后以同 id 重注册来绕过管控）。
+ */
+function tableOf(extId: string, inst: InstLike | undefined): Map<string, 'bool' | 'cmd' | null> {
+  const cur = extClass.get(extId);
+  const instObj = inst && typeof inst === 'object' ? (inst as object) : null;
+  if (!cur) {
+    const table = new Map<string, 'bool' | 'cmd' | null>();
+    extClass.set(extId, { inst: instObj, table });
+    return table;
+  }
+  if (cur.inst !== instObj) {
+    cur.inst = instObj;
+    cur.table.clear();
+  }
+  return cur.table;
 }
 
 /**
@@ -368,11 +419,7 @@ export function neutralizeInstance(inst: InstLike, blocks?: ExtBlockInfo[]): num
  *   实测 60 扩展 × 30 积木规模下单拍 0.52ms（占 2s 周期 0.026%）。
  */
 function classifyExtension(extId: string, inst: InstLike, blocks: ExtBlockInfo[]): Map<string, 'bool' | 'cmd' | null> {
-  let table = extClass.get(extId);
-  if (!table) {
-    table = new Map();
-    extClass.set(extId, table);
-  }
+  const table = tableOf(extId, inst);
   // 增量：只处理尚未判定过的积木
   const fresh: ExtBlockInfo[] = [];
   for (const b of blocks) {
@@ -447,6 +494,8 @@ let installed = false;
 export function installExtSanitize(): void {
   if (installed) return;
   installed = true;
+  // 七层防御对抗层：装硬锁看门狗（与下面的净化巡检同拍运行）
+  installExtHardlock();
   onVmTick((vm) => sanitizeRuntime(vm));
 }
 
@@ -490,16 +539,12 @@ export function disableExtensionBlocks(vm: object, extId: string, inst: InstLike
     }
   }
   if (!meta || !meta.length) return 0;
-  let table = extClass.get(extId);
-  if (!table) {
-    table = new Map();
-    extClass.set(extId, table);
-  }
+  const table = tableOf(extId, inst);
   let n = 0;
   for (const b of meta) {
     const op = b.opcode;
     const cls = classifyBlockType(b.blockType) === 'cmd' ? 'cmd' : 'bool';
-    shadowMethod(inst, op, cls === 'bool' ? returnFalse : returnUndefined);
+    shadowWithAlias(inst, op, cls === 'bool' ? returnFalse : returnUndefined);
     table.set(op, cls);
     lockPrimitives(vm, extId, op, cls);
     n++;

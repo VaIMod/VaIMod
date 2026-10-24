@@ -3,10 +3,12 @@
 // - 机器人地址归一化：接受完整 webhook URL / 捷径 URL / 纯 token，统一为可发状态；
 // - 机器人登记表持久化 + 自动捕获（变量/列表内容，含云变量）→ 作品里可能多个 ID；
 // - 发送：文本 / @全员 / @指定 / 图片(image_key) / 卡片 / 捷径 JSON 透传；
-// - 图片与任意文件：先上传拿直链（ccw OSS 主用 → catbox.moe → 0x0.st 降级），
-//   再以「卡片链接 / 文本直链」发出（webhook 无法上传媒体，此为无凭证下的最优路径）。
+// - 图片与任意文件：先上传拿直链（ccw 官方对象存储 PostObject 主用 →
+//   站点 OSS 实例 → catbox / 0x0.st 兜底），再以「卡片链接 / 文本直链」发出
+//   （webhook 无法上传媒体，此为无凭证下的最优路径）。
 
 import { FEISHU_BYPASS } from './feishu-guard';
+import { uploadToCcw } from './ccw-upload';
 
 export interface FeishuRobot {
   id: string; // 唯一登记 id（自动捕获时为 token）
@@ -312,9 +314,11 @@ export function buildTextCard(title: string, text: string): unknown {
 }
 
 // ---------- 直链上传（图片/任意文件） ----------
-// 主通道改为 ccw 站点自带的 OSS（`window.oss.put`，见「文件上传工具」同款接法）：
-// tmpfiles.org 已停止服务，catbox/0x0.st 仅作降级。
-export type UploadHost = 'ccw' | 'catbox' | '0x0';
+// 主通道：ccw 官方对象存储 PostObject 协议（见 core/ccw-upload.ts，
+//   已对站点产物逐行逆向确认：取策略 → COS 表单直传 → resourceUrl 即直链）。
+// 旧的三条外部图床通道（catbox / 0x0.st / tmpfiles）实测在浏览器端全部不可用
+//   （网络不可达 / 503 / CORS 预检 400），保留仅为兜底，不作主用。
+export type UploadHost = 'ccw' | 'ccw-oss' | 'catbox' | '0x0';
 
 export interface UploadOutcome {
   ok: boolean;
@@ -403,11 +407,29 @@ async function uploadCcw(file: File): Promise<string> {
   throw new Error(`ccw OSS: ${lastErr.slice(0, 80) || '全部前缀均被拒绝'}`);
 }
 
+/** 兜底通道的单次请求超时（外部图床经常挂住，不能让面板一直转） */
+const FALLBACK_TIMEOUT_MS = 8000;
+
+/** 生成超时信号；宿主不支持 AbortSignal.timeout 时退化为无超时 */
+function timeoutSignal(ms: number): AbortSignal | undefined {
+  try {
+    const s = (AbortSignal as { timeout?: (n: number) => AbortSignal }).timeout;
+    if (typeof s === 'function') return s(ms);
+  } catch {
+    /* ignore */
+  }
+  return undefined;
+}
+
 async function uploadCatbox(file: File): Promise<string> {
   const form = new FormData();
   form.append('reqtype', 'fileupload');
   form.append('fileToUpload', file, file.name);
-  const res = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: form });
+  const res = await fetch('https://catbox.moe/user/api.php', {
+    method: 'POST',
+    body: form,
+    signal: timeoutSignal(FALLBACK_TIMEOUT_MS),
+  });
   const text = (await res.text()).trim();
   if (!res.ok || !/^https?:\/\//.test(text)) throw new Error(`catbox: ${text.slice(0, 80) || res.status}`);
   return text;
@@ -416,17 +438,61 @@ async function uploadCatbox(file: File): Promise<string> {
 async function upload0x0(file: File): Promise<string> {
   const form = new FormData();
   form.append('file', file, file.name);
-  const res = await fetch('https://0x0.st', { method: 'POST', body: form });
+  const res = await fetch('https://0x0.st', {
+    method: 'POST',
+    body: form,
+    signal: timeoutSignal(FALLBACK_TIMEOUT_MS),
+  });
   const text = (await res.text()).trim();
   if (!res.ok || !/^https?:\/\//.test(text)) throw new Error(`0x0.st: ${text.slice(0, 80) || res.status}`);
   return text;
 }
 
-/** 上传任意文件到直链；ccw OSS 主用，catbox / 0x0.st 降级。失败返回错误信息 */
+/** 上传通道的中文名（面板提示用） */
+export function uploadHostLabel(host: UploadHost | undefined): string {
+  switch (host) {
+    case 'ccw':
+      return 'ccw 云存储';
+    case 'ccw-oss':
+      return 'ccw OSS';
+    case 'catbox':
+      return 'catbox';
+    case '0x0':
+      return '0x0.st';
+    default:
+      return '直链';
+  }
+}
+
+/**
+ * 上传任意文件到直链。
+ *
+ * 通道顺序：ccw 官方 PostObject（主）→ ccw 站点 OSS 实例（次，页面未注入时跳过）
+ *          → catbox → 0x0.st（三条外部图床实测浏览器端不可用，仅兜底）。
+ * 失败时按「未登录 / 网络不可达 / 服务端拒绝」分别给出可读原因。
+ */
 export async function uploadToLink(file: File): Promise<UploadOutcome> {
   if (file.size > 180 * 1024 * 1024) return { ok: false, error: '文件过大（上限 180MB）' };
+
+  // 主通道：ccw 官方对象存储
+  const main = await uploadToCcw(file);
+  if (main.ok && main.url) return { ok: true, url: main.url, host: 'ccw' };
+  const mainErr = main.error ?? '未知错误';
+  // 未登录 / 网络不可达 → 外部图床同样帮不上忙，直接报明确原因
+  if (main.needLogin || main.offline) {
+    return { ok: false, error: main.needLogin ? `上传失败：${mainErr}` : `上传失败：${mainErr}` };
+  }
+
+  // 次通道：站点注入的 OSS 实例（部分页面才有）
+  try {
+    const url = await uploadCcw(file);
+    return { ok: true, url, host: 'ccw-oss' };
+  } catch {
+    /* ignore */
+  }
+
+  // 兜底：外部图床
   const attempts: Array<[UploadHost, (f: File) => Promise<string>]> = [
-    ['ccw', uploadCcw],
     ['catbox', uploadCatbox],
     ['0x0', upload0x0],
   ];
@@ -439,7 +505,7 @@ export async function uploadToLink(file: File): Promise<UploadOutcome> {
       lastErr = err instanceof Error ? err.message : String(err);
     }
   }
-  return { ok: false, error: `直链上传失败：${lastErr.slice(0, 120)}` };
+  return { ok: false, error: `直链上传失败：${mainErr}；备用通道：${lastErr.slice(0, 100)}` };
 }
 
 /** 读本地文件为 DataURL（小图预览 / 备用发送） */

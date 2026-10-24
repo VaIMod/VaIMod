@@ -38,8 +38,9 @@ Thumbs.db
 .vite
 
 # 探针脚本的临时编译产物（scripts/probe-*.mjs 每次运行都会重建）
-/.probe-tmp/
-
+# 各探针用各自的子目录名（.probe-tmp-hardlock / -side / -antitamper / -upload …）
+/.probe-tmp*/
+/
 # Local scratch backups（历史备份目录，名字里的旧品牌是既成事实，不改）
 .vaimod_old_backup/
 .valmod_old_backup/

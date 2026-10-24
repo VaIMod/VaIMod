@@ -8,6 +8,7 @@ import {
   sanitizeRuntime,
 } from './ext-sanitize';
 import { enumerateInstances } from './ext-registry';
+import { installExtAntitamper } from './ext-antitamper';
 import { getStealthRoots, markNative } from '../dom-utils';
 
 // ===== 通用反作弊扩展反制引擎（原 Killeriest 专用 → 多版本自适应） =====
@@ -1695,6 +1696,9 @@ export function installSecureGuardFront(): void {
   neuterTampermonkeyMarker();
   // 通用扩展积木反制层：vm 巡检里做 extGet 式全量枚举 + primitives 层锁
   installExtSanitize();
+  // 防篡改升级层：别名 opcode（方法 5）/ 实例改名自愈（方法 10）/
+  //   runtime 关键方法保障（方法 6）/ Blockly 层兜底（方法 8）/ 卸载残留释放（方法 9）
+  installExtAntitamper();
   // 独立 vm 探测：不依赖 UI 桥接（用户不点「连接」也要让反制层有 vm 可巡检）
   startVmProbe();
 }

@@ -2,7 +2,7 @@
   // ===== 飞书：机器人管理 + 消息发送 + 消息请求拦截 =====
   // 通道为飞书群自定义机器人 webhook 直发（不触碰开放平台凭证）。
   // 机器人来源：拦截捕获 / 变量扫描 / 手动添加；发送：文本、@、图片、卡片、任意 JSON；
-  // 文件先上传取直链（ccw OSS → catbox → 0x0.st）再以卡片发出。
+  // 文件先上传取直链（ccw 官方对象存储 → 站点 OSS → catbox/0x0 兜底）再以卡片发出。
   import type { ScratchVaIMod } from '../core';
   import { cleanDisplay } from '../core';
   import {
@@ -21,6 +21,7 @@
     sendRawJson,
     sendText,
     subscribeRobots,
+    uploadHostLabel,
     uploadToLink,
     type FeishuRobot,
     type SendResult,
@@ -450,7 +451,7 @@
       }
       uploadUrl = out.url;
       uploadName = file.name;
-      showToast(`已上传（${out.host}）→ ${out.url.slice(0, 46)}…`, 'ok');
+      showToast(`已上传（${uploadHostLabel(out.host)}）→ ${out.url.slice(0, 46)}…`, 'ok');
     } catch (err) {
       showToast(`上传失败：${err instanceof Error ? err.message : err}`, 'err');
     } finally {

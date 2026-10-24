@@ -126,6 +126,18 @@ function makeFakeVM() {
   const benign = makeBenignInstance();
 
   const prims = {};
+  const resetCount = { n: 0 };
+  const stageBlocks = {
+    _blocks: {
+      // 正常块
+      goodBlock: { opcode: `${BENIGN_ID}_add`, next: null },
+      // 被「脚本编辑器 pro.js」改名的块（方法 10 的对象）
+      renamedBlock: { opcode: `${BENIGN_ID}_add__disabled`, next: null },
+    },
+    resetCache() {
+      resetCount.n++;
+    },
+  };
   const runtime = {
     _primitives: prims,
     _blockInfo: [
@@ -150,7 +162,16 @@ function makeFakeVM() {
     getOpcodeFunction(op) {
       return this._primitives[op];
     },
-    targets: [],
+    targets: [{ id: 'stage', blocks: stageBlocks }],
+    paused: false,
+    startHats(hat) {
+      return [`ran:${hat}`];
+    },
+    greenFlag() {
+      return 'green';
+    },
+    setTargetOrder() {},
+    setSpriteLayer() {},
   };
   // 实例真身：runtime.ext_${id}
   runtime[`ext_${YIN_ID}`] = yin;
@@ -166,6 +187,8 @@ function makeFakeVM() {
     };
   }
   prims[`${BENIGN_ID}_add`] = (a, b) => a + b;
+  // 敌扩展按「方法 5」注册别名键（规避按精确键的中和）
+  prims[`${YIN_ID}_hasTM__disabled`] = () => true;
 
   // VM 外层：isVMLike 口径（setVariableValue/getVariableValue + runtime.targets）
   const vmOuter = {
@@ -198,7 +221,148 @@ function makeFakeVM() {
     loadExtensionIdSync() {},
   };
 
-  return { runtime, extensionManager, vmOuter, yin, benign };
+  return { runtime, extensionManager, vmOuter, yin, benign, stageBlocks, resetCount };
+}
+
+// ─────────────────── 3.5 敌方七层防御（复刻《七层防御完整总结》） ───────────────────
+
+/**
+ * 把敌方的七层自我保护装到 runtime 上：
+ *   L1 键描述符锁定 / L2 Proxy 陷阱 / L3 锁 runtime 方法 /
+ *   L4 250ms 看门狗夺回 / L5 Blockly 影子注入 / L6 锁卸载方法
+ *
+ * 真实场景：敌扩展先加载并自保，我方反制随后到来 —— 必须仍然有效。
+ */
+function installEnemySevenLayers(runtime, extensionManager, prims) {
+  const report = { fired: 0, won: 0 };
+  const alwaysOne = function () {
+    return 1;
+  };
+
+  // L1 键描述符锁定
+  for (const key of Object.keys(prims)) {
+    if (!key.startsWith(`${YIN_ID}_`)) continue;
+    try {
+      Object.defineProperty(prims, key, {
+        value: prims[key],
+        writable: false,
+        configurable: false,
+        enumerable: true,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // L2 Proxy 陷阱
+  const enemyProxy = new Proxy(prims, {
+    set(t, k, v) {
+      if (String(k).startsWith(`${YIN_ID}_`)) return true;
+      return Reflect.set(t, k, v);
+    },
+    defineProperty(t, k, d) {
+      if (String(k).startsWith(`${YIN_ID}_`)) return true;
+      try {
+        return Reflect.defineProperty(t, k, d);
+      } catch {
+        return false;
+      }
+    },
+    deleteProperty(t, k) {
+      if (String(k).startsWith(`${YIN_ID}_`)) return true;
+      return Reflect.deleteProperty(t, k);
+    },
+  });
+  try {
+    Object.defineProperty(runtime, '_primitives', {
+      value: enemyProxy,
+      writable: false,
+      configurable: false,
+      enumerable: true,
+    });
+  } catch {
+    /* ignore */
+  }
+
+  // L3 锁 runtime 关键方法
+  for (const name of ['startHats', 'setTargetOrder', 'setSpriteLayer']) {
+    if (typeof runtime[name] !== 'function') continue;
+    try {
+      Object.defineProperty(runtime, name, {
+        value: runtime[name],
+        writable: false,
+        configurable: false,
+        enumerable: false,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+  // L3' 另一种锁法：不可写但**可配置** → 平台自己装包装会失败，但可被修复
+  if (typeof runtime.greenFlag === 'function') {
+    try {
+      Object.defineProperty(runtime, 'greenFlag', {
+        value: runtime.greenFlag,
+        writable: false,
+        configurable: true,
+        enumerable: false,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // L6 锁卸载方法
+  for (const name of ['unloadExtension', 'deleteExtension', 'removeExtension']) {
+    if (typeof extensionManager[name] !== 'function') continue;
+    try {
+      Object.defineProperty(extensionManager, name, {
+        value: function () {
+          return false;
+        },
+        writable: false,
+        configurable: false,
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // L5 Blockly 影子注入
+  const blocklyBlocks = {};
+  globalThis.Blockly = { Blocks: blocklyBlocks };
+  for (const key of Object.keys(prims)) {
+    if (!key.startsWith(`${YIN_ID}_`)) continue;
+    blocklyBlocks[key] = { func: prims[key] };
+  }
+
+  // L4 250ms 看门狗夺回
+  const watchdog = setInterval(() => {
+    report.fired++;
+    const p = runtime._primitives;
+    if (!p) return;
+    for (const key of Object.keys(prims)) {
+      if (!key.startsWith(`${YIN_ID}_`)) continue;
+      if (p[key] === alwaysOne) continue;
+      try {
+        Object.defineProperty(p, key, {
+          value: alwaysOne,
+          writable: false,
+          configurable: false,
+          enumerable: true,
+        });
+        report.won++;
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const key of Object.keys(blocklyBlocks)) {
+      const def = blocklyBlocks[key];
+      if (def && typeof def.func === 'function') def.func = alwaysOne;
+    }
+  }, 250);
+
+  return { report, watchdog, blocklyBlocks };
 }
 
 // ─────────────────── 4. 宿主环境（jsdom 真实 DOM） ───────────────────
@@ -336,12 +500,15 @@ async function main() {
   console.log(`阶段: ${stage === 'decoded' ? '混淆产物（已解码第一层）' : '原始产物'}`);
   console.log(`大小: ${(code.length / 1024).toFixed(1)} KB\n`);
 
-  const { runtime, extensionManager, vmOuter, yin, benign } = makeFakeVM();
+  const { runtime, extensionManager, vmOuter, yin, benign, stageBlocks, resetCount } = makeFakeVM();
   const stubs = installStubs();
 
   // 平台形态：window.Scratch.vm / window.Scratch.extensionManager
   globalThis.Scratch = { vm: vmOuter, extensionManager };
   globalThis.vm = vmOuter;
+
+  // 敌方七层防御**在产物执行之前**装好（最坏情况：敌扩展先加载并全力自保）
+  const enemy = installEnemySevenLayers(runtime, extensionManager, runtime._primitives);
 
   console.log('在 jsdom 环境执行产物...');
   let execError = null;
@@ -354,6 +521,8 @@ async function main() {
 
   // 巡检 ticker 是 2s 一拍（被压缩到 25ms）→ 给足窗口让它跑几轮
   await new Promise((r) => setTimeout(r, 800));
+  // 敌方看门狗 250ms 一拍 → 再跑 1.5s 让它多轮夺回，验证自愈能力
+  await new Promise((r) => setTimeout(r, 1500));
 
   const checks = [];
   const add = (name, ok, detail) => checks.push({ name, ok, detail });
@@ -440,6 +609,65 @@ async function main() {
     execError === null,
     execError ? (execError instanceof Error ? execError.message : String(execError)) : '无',
   );
+
+  // ⑧ 敌方七层防御场景：看门狗反复夺回后仍恒 false / no-op
+  const e1 = getPrim('hasTM');
+  const e2 = getPrim('isHijacked');
+  add(
+    '七层防御下布尔探针仍恒 false',
+    e1 === false && e2 === false,
+    `hasTM=${e1} isHijacked=${e2} 敌看门狗 fired=${enemy.report.fired} 夺回成功=${enemy.report.won}`,
+  );
+
+  // ⑨ 敌方看门狗夺回全部失败（我方护栏拒写）
+  add(
+    '敌方看门狗夺回全部失败',
+    enemy.report.won === 0,
+    `夺回成功=${enemy.report.won} / 触发=${enemy.report.fired}`,
+  );
+
+  // ⑩ 敌方 Blockly 影子注入不影响 VM 分发
+  const afterShadow = getPrim('hasTM');
+  add('敌方 Blockly 影子注入不影响分发', afterShadow === false, `hasTM=${afterShadow}`);
+
+  // ⑪ 方法 5：敌注册的 __disabled 别名键同样被中和
+  const aliasFn = runtime.getOpcodeFunction(`${YIN_ID}_hasTM__disabled`);
+  let aliasOut = '<缺失>';
+  try {
+    aliasOut = typeof aliasFn === 'function' ? aliasFn() : aliasFn;
+  } catch {
+    aliasOut = '抛错';
+  }
+  add('方法 5：别名 opcode 同样被中和', aliasOut === false, `别名调用=${aliasOut}（真身会返回 true）`);
+
+  // ⑫ 方法 10：被改名的积木实例 opcode 已还原
+  const renamedOpcode = stageBlocks._blocks.renamedBlock?.opcode;
+  add(
+    '方法 10：被改名的积木实例已还原',
+    renamedOpcode === `${BENIGN_ID}_add`,
+    `还原后=${renamedOpcode} resetCache=${resetCount.n}`,
+  );
+
+  // ⑬ 方法 6：敌锁死的 runtime 方法被修复回可写（平台自身包装才装得上）
+  const gfDesc = Object.getOwnPropertyDescriptor(runtime, 'greenFlag');
+  add(
+    '方法 6：runtime 关键方法被修复回可写',
+    !!gfDesc && gfDesc.writable === true,
+    `greenFlag writable=${gfDesc?.writable}`,
+  );
+
+  // ⑭ 敌锁成不可配置的 runtime 方法：不崩、不乱改
+  let m14ok = false;
+  let m14detail = '';
+  try {
+    const stoDesc = Object.getOwnPropertyDescriptor(runtime, 'setTargetOrder');
+    runtime.setTargetOrder(1);
+    m14ok = !!stoDesc && stoDesc.configurable === false && typeof runtime.setTargetOrder === 'function';
+    m14detail = `configurable=${stoDesc?.configurable} 仍可调用`;
+  } catch (e) {
+    m14detail = `抛错:${e instanceof Error ? e.message : String(e)}`;
+  }
+  add('方法 6：不可配置的锁不导致崩溃', m14ok, m14detail);
 
   let pass = 0;
   for (const c of checks) {
