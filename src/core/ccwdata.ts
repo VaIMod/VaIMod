@@ -382,6 +382,17 @@ export class CcwDataStore {
     consider(runtime.extensionManager);
     consider(runtime._extensions);
     consider(runtime.extensions);
+    // 真实 CCW VM 里 runtime.extensions 不存在 —— 云扩展实例真身是
+    // runtime.ext_${id}（compilerRegisterExtension 写入）。旧实现漏了这条路径，
+    // 云数据通道在真实平台上可能抓不到扩展实例。
+    try {
+      for (const key of Object.keys(runtime)) {
+        if (!key.startsWith('ext_')) continue;
+        if (consider(runtime[key])) return;
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   private capture(ext: any): void {

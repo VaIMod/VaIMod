@@ -105,9 +105,25 @@ export function onVmTick(cb: (vm: object) => void): void {
 }
 
 /**
- * 包住 extensionManager 的 register/load/install 族方法（幂等，按原型去重）。
+ * extensionManager 上「可能产出扩展实例」的方法名匹配。
+ *
+ * 真实 CCW VM 的扩展加载链路（逐行核对平台 vendor chunk）：
+ *   ?ext= 参数 → window.tempExt → injectExtensions → extensionManager.injectExtension(id, Class)
+ *     → builtinExtensions[id] = () => Class
+ *   → loadExtensionIdSync(id) → registerExtension(id, Class)
+ *     → _registerInternalExtension → compilerRegisterExtension(id, instance)
+ *     → runtime.ext_${id} = instance   ← 实例真身
+ *
+ * 旧正则 `/register|load|install/i` **漏掉了 `injectExtension`** ——
+ * 而它正是「外部注入扩展」路径的第一站（敌扩展多经此进入）。
+ * 补上 inject/injectExtension 覆盖该入口。
+ */
+const EM_HOOK_METHOD_RE = /register|load|install|inject/i;
+
+/**
+ * 包住 extensionManager 的 register/load/install/inject 族方法（幂等，按原型去重）。
  * onAfter 在每次调用后触发（同步立即 + Promise 决议后各一次），
- * 调用方在里面重扫 runtime.extensions 并 adopt 新出现的敌意实例。
+ * 调用方在里面重扫真实枚举面并 adopt 新出现的敌意实例。
  */
 export function hookExtensionManager(vm: unknown, onAfter: () => void): void {
   try {
@@ -128,7 +144,7 @@ export function hookExtensionManager(vm: unknown, onAfter: () => void): void {
     const callbacks = new Set<() => void>([onAfter]);
     hookedProtos.set(target, callbacks);
     for (const key of Object.getOwnPropertyNames(target)) {
-      if (!/register|load|install/i.test(key)) continue;
+      if (!EM_HOOK_METHOD_RE.test(key)) continue;
       const desc = Object.getOwnPropertyDescriptor(target, key);
       const fn = desc?.value;
       if (typeof fn !== 'function') continue;

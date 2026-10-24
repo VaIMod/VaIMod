@@ -1,7 +1,13 @@
 import type { ScratchVariable, ScratchValue } from './types';
 import { onDomMutations } from './dom-watch';
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
-import { installExtSanitize, neutralizeInstance, sanitizeRuntime } from './ext-sanitize';
+import {
+  installExtSanitize,
+  lockExtensionPrimitive,
+  neutralizeInstance,
+  sanitizeRuntime,
+} from './ext-sanitize';
+import { enumerateInstances } from './ext-registry';
 import { getStealthRoots, markNative } from '../dom-utils';
 
 // ===== 通用反作弊扩展反制引擎（原 Killeriest 专用 → 多版本自适应） =====
@@ -438,11 +444,11 @@ function shadowMethod(inst: object, key: string, fn: unknown): void {
   }
 }
 
-function sanitizeInstance(inst: SecureExtensionLike): void {
+function sanitizeInstance(inst: SecureExtensionLike, vm?: unknown, extId?: string): void {
   try {
     // −2) 通用行为级反制层（不限家族）：检测类布尔 reporter 恒 false、
     //     销毁/跳转类 command no-op —— 对任意走检测/摧毁/跳转路线的扩展生效，
-    //     由 ext-sanitize 按 opcode 形态 + 描述语义 + 函数源码三重分类。
+    //     由 ext-sanitize 按平台归一化 blockType + opcode 形态 + 描述语义 + 函数源码分类。
     neutralizeInstance(inst as unknown as Parameters<typeof neutralizeInstance>[0]);
     // −1) YinSecurity 审计阻拦家钝化（还原样本逐行分析后定制的成套替换）：
     //   · hasTM/hasScript/isHijacked → 恒 false（其全部探测面失效：TM 特征、
@@ -453,13 +459,16 @@ function sanitizeInstance(inst: SecureExtensionLike): void {
     //   扩展本体保留、积木照常出现在面板里 —— 作者侧视角「扩展在正常工作」，
     //   实际每次调用都拿不到任何真数据。opcode 即实例方法名（runtime 分发约定），
     //   混淆版改不了这六个名字；非枚举遮蔽（shadowMethod）→ Object.keys 自检不可见。
+    //   ★ 关键：实例层遮蔽只是第一道，runtime 实际分发走的是
+    //     runtime._primitives[`${extId}_${opcode}`] —— 那一层不锁，
+    //     积木仍会执行跳转/摧毁。故此处同时锁 primitives 层（真实键格式）。
     for (const op of YINSEC_OPCODES) {
       if (typeof (inst as Record<string, unknown>)[op] !== 'function') continue;
-      shadowMethod(
-        inst,
-        op,
-        op === 'hasTM' || op === 'hasScript' || op === 'isHijacked' ? () => false : () => {},
-      );
+      const isProbe = op === 'hasTM' || op === 'hasScript' || op === 'isHijacked';
+      shadowMethod(inst, op, isProbe ? () => false : () => {});
+      if (vm && extId && typeof vm === 'object') {
+        lockExtensionPrimitive(vm, extId, op, isProbe ? 'bool' : 'cmd');
+      }
     }
     // 0) 冻结篡改记录字段 `_c`（本族扩展唯一的篡改上报载体：getTamperInfo 直接
     //    返回 JSON.stringify(this._c)，游戏脚本以「非空串 = 有篡改」判定）。
@@ -589,11 +598,20 @@ function hookRegister(extApi: { register: (...args: unknown[]) => unknown }): vo
         for (const arg of args) {
           if (!arg || typeof arg !== 'object') continue;
           const obj = arg as SecureExtensionLike;
+          // 扩展 id：primitives 层的真实键是 `${extId}_${opcode}`，
+          // 无 vm 上下文时只能做实例层钝化；巡检层会补上 primitives 锁。
+          let extId: string | undefined;
+          try {
+            const id = obj.getInfo?.()?.id;
+            if (typeof id === 'string' && id) extId = id;
+          } catch {
+            /* ignore */
+          }
           if (detectInstance(obj)) {
-            frontGuard.adopt(obj);
+            frontGuard.adopt(obj, extId);
           } else if (typeof obj.getInfo === 'function') {
             try {
-              if (detectDescriptor(obj.getInfo())) frontGuard.adopt(obj);
+              if (detectDescriptor(obj.getInfo())) frontGuard.adopt(obj, extId);
             } catch {
               /* ignore */
             }
@@ -1326,11 +1344,16 @@ export class SecureGuard {
   private projectHooked = new WeakSet<object>();
   private tickInstalled = false;
 
-  /** register 前置拦截接管实例（幂等，去重） */
-  adopt(inst: SecureExtensionLike): boolean {
+  /**
+   * register 前置拦截接管实例（幂等，去重）。
+   *
+   * @param extId 扩展 id（用于锁 primitives 层的真实键 `${extId}_${opcode}`）
+   * @param vm    所在 vm（primitives 层锁需要 runtime）
+   */
+  adopt(inst: SecureExtensionLike, extId?: string, vm?: unknown): boolean {
     if (!inst || this.instances.includes(inst)) return false;
     this.instances.push(inst);
-    this.patchInstance(inst);
+    this.patchInstance(inst, vm, extId);
     return true;
   }
 
@@ -1346,13 +1369,13 @@ export class SecureGuard {
     this.hookStartHats(v);
     hookExtensionManager(v, () => {
       const f = this.find(v);
-      if (f) this.adopt(f);
+      if (f) this.adopt(f.inst, f.id, v);
     });
     this.watchProjectLoaded(v);
     this.ensureTick();
     const found = this.find(v);
     if (found) {
-      this.adopt(found);
+      this.adopt(found.inst, found.id, v);
       return;
     }
     if (this.retries > 10) return;
@@ -1373,7 +1396,7 @@ export class SecureGuard {
           restoreExportApis(vm);
           restoreHiddenElements(true);
           const f = this.find(vm);
-          if (f) this.adopt(f);
+          if (f) this.adopt(f.inst, f.id, vm);
         };
         rescan();
         for (const delay of [0, 25, 100, 250, 800, 2000]) setTimeout(rescan, delay);
@@ -1398,10 +1421,10 @@ export class SecureGuard {
       restoreHiddenElements();
       hookExtensionManager(vm, () => {
         const f = this.find(vm);
-        if (f) this.adopt(f);
+        if (f) this.adopt(f.inst, f.id, vm);
       });
       const f = this.findThrottled(vm);
-      if (f) this.adopt(f);
+      if (f) this.adopt(f.inst, f.id, vm);
     });
   }
 
@@ -1410,7 +1433,7 @@ export class SecureGuard {
    *  2s 巡检扫描只是「绕开注册咽喉」的兜底 → 限频只把兜底延迟从 2s 放宽到
    *  6s，防护面不变，省掉每拍对全部扩展实例跑 detect* 的开销。 */
   private lastTickScan = -Infinity;
-  private findThrottled(vm: unknown): SecureExtensionLike | null {
+  private findThrottled(vm: unknown): { inst: SecureExtensionLike; id: string } | null {
     const now = Date.now();
     if (now - this.lastTickScan < 6000) return null;
     this.lastTickScan = now;
@@ -1445,37 +1468,23 @@ export class SecureGuard {
     }
   }
 
-  private find(vm: unknown): SecureExtensionLike | null {
+  /**
+   * 查找敌扩展实例（真实 VM 结构枚举面）。
+   *
+   * 关键修正：真实 CCW VM 里 `runtime.extensions` **不存在**（平台包零命中），
+   * 实例真身是 `runtime.ext_${id}`（compilerRegisterExtension 写入）。
+   * 旧实现只查 runtime.extensions → 恒返回 null → 敌扩展从未被接管、
+   * YinSecurity 六积木的成套替换从未执行。
+   * 现经 ext-registry 的多路枚举面取实例（_blockInfo / ext_${id} /
+   * extensionManager id 集合 / 兼容宿主 runtime.extensions）。
+   *
+   * 返回值带扩展 id —— primitives 层的真实键是 `${extId}_${opcode}`，
+   * 扩展 id 可能含不可打印字符，必须用平台登记的 id 而非猜。
+   */
+  private find(vm: unknown): { inst: SecureExtensionLike; id: string } | null {
     try {
-      const runtime = (vm as { runtime?: { extensions?: unknown } })?.runtime;
-      const extensions = (runtime as { extensions?: unknown })?.extensions;
-      if (!extensions) return null;
-      const candidates: unknown[] = [];
-      if (extensions instanceof Map) {
-        candidates.push(...extensions.values());
-        const direct = extensions.get(EXT_ID_LEGACY);
-        if (direct) return direct as SecureExtensionLike;
-      } else if (typeof extensions === 'object') {
-        const rec = extensions as Record<string, unknown>;
-        const direct = rec[EXT_ID_LEGACY];
-        if (direct && detectInstance(direct)) return direct as SecureExtensionLike;
-        candidates.push(...Object.values(rec));
-      }
-      for (const c of candidates) {
-        if (detectInstance(c)) return c as SecureExtensionLike;
-      }
-      // 深一层：runtime._registeredExtensions / workerExtensions 常见容器
-      const deeper: unknown[] = [
-        (runtime as { _registeredExtensions?: unknown })._registeredExtensions,
-        (runtime as { workerExtensions?: unknown }).workerExtensions,
-      ];
-      for (const d of deeper) {
-        if (!d) continue;
-        if (d instanceof Map) {
-          for (const v of d.values()) if (detectInstance(v)) return v as SecureExtensionLike;
-        } else if (typeof d === 'object') {
-          for (const v of Object.values(d as Record<string, unknown>)) if (detectInstance(v)) return v as SecureExtensionLike;
-        }
+      for (const { id, instance } of enumerateInstances(vm)) {
+        if (detectInstance(instance)) return { inst: instance as SecureExtensionLike, id };
       }
     } catch {
       /* ignore */
@@ -1484,7 +1493,7 @@ export class SecureGuard {
   }
 
   /** 实例净化（幂等：每个实例只净化一次）。清记录 → 抓拍干净视图 → 整体净化。 */
-  private patchInstance(inst: SecureExtensionLike): void {
+  private patchInstance(inst: SecureExtensionLike, vm?: unknown, extId?: string): void {
     if (this.patchedKeys.has(inst)) return;
     this.patchedKeys.add(inst);
     try {
@@ -1494,7 +1503,7 @@ export class SecureGuard {
       /* ignore */
     }
     captureCleanTamperViews(inst);
-    sanitizeInstance(inst);
+    sanitizeInstance(inst, vm, extId);
   }
 
   /** 探测读数字/字符串方法（方法优先，缺失回退本地 XOR） */

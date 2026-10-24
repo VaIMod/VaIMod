@@ -1,0 +1,964 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.trueElementsFromPoint = trueElementsFromPoint;
+exports.isProtected = isProtected;
+exports.isProtectedHost = isProtectedHost;
+exports.getProtectedHosts = getProtectedHosts;
+exports.markNative = markNative;
+exports.markNativeCtor = markNativeCtor;
+exports.markFakeSource = markFakeSource;
+exports.nativeToStringOf = nativeToStringOf;
+exports.installStealth = installStealth;
+exports.uninstallStealth = uninstallStealth;
+exports.protectNode = protectNode;
+exports.unprotectNode = unprotectNode;
+exports.createStealthHost = createStealthHost;
+exports.isStealthHost = isStealthHost;
+exports.getStealthRoots = getStealthRoots;
+const page_visibility_1 = require("./core/page-visibility");
+const NODE_TYPE_ELEMENT = 1;
+const cc = (...n) => String.fromCharCode(...n);
+const HEX = cc(48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102); // 0123456789abcdef
+const FN_PRE = cc(102, 117, 110, 99, 116, 105, 111, 110, 32); // 'function '
+const FN_MID = cc(40, 41, 32, 123, 32); // '() { '
+const FN_END = cc(32, 125); // ' }'
+const NATIVE = cc(91, 110, 97, 116, 105, 118, 101, 32, 99, 111, 100, 101, 93); // '[native code]'
+function rndHex(len) {
+    let s = '';
+    for (let i = 0; i < len; i++)
+        s += HEX[(Math.random() * 16) | 0];
+    return s;
+}
+function markFlag(obj, sym) {
+    try {
+        Object.defineProperty(obj, sym, { configurable: true, value: true });
+    }
+    catch {
+        /* ignore */
+    }
+}
+const PATCHED = Symbol(rndHex(8));
+const TR_PATCHED = Symbol(rndHex(8));
+const MO_PATCHED = Symbol(rndHex(8));
+const TRAV_PROP_PATCHED = Symbol(rndHex(8));
+// 全部支持 attachShadow 的宿主标签池（details/form 等交互元素不允许挂 shadow，抽中即崩溃，禁用）
+const TAG_POOL = ['div', 'div', 'div', 'section', 'article', 'aside', 'main', 'nav', 'header', 'footer'];
+const protectedHosts = new Set();
+// 已创建 Shadow 根登记表：shadow 为 closed 模式，元素上查不到 shadowRoot，
+// 而 document.querySelectorAll 也不穿透 shadow 边界 —— 需要「在 VaIMod 自己 UI 内部
+// 回滚内联隐藏样式」这类跨边界操作时，只能靠创建时登记。
+const stealthRoots = new Set();
+const ALNUM = cc(97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57);
+const ATTR_PREFIX_POOL = [
+    'data-v-',
+    'data-cc-',
+    'data-w-e-',
+    'data-block-',
+    'data-node-',
+    'data-item-',
+    'data-field-',
+    'data-project-',
+    'data-workspace-',
+    'data-stage-',
+    'data-sprite-',
+];
+const ATTR_FULL_POOL = [
+    'data-testid',
+    'data-test',
+    'data-test-id',
+    'data-index',
+    'data-key',
+    'data-id',
+    'data-role',
+    'data-name',
+    'data-type',
+    'data-state',
+    'data-value',
+    'data-node-id',
+    'data-block-id',
+];
+function rndAlphaNum(len) {
+    let s = '';
+    for (let i = 0; i < len; i++)
+        s += ALNUM[(Math.random() * ALNUM.length) | 0];
+    return s;
+}
+function rndUuid() {
+    return rndHex(8) + '-' + rndHex(4) + '-' + rndHex(4) + '-' + rndHex(12);
+}
+const PREFIX_CACHE = [];
+let prefixCacheTime = 0;
+const PREFIX_SCAN_LIMIT = 300;
+const PREFIX_CACHE_TTL = 120000;
+function samplePagePrefixes() {
+    const now = Date.now();
+    if (PREFIX_CACHE.length > 0 && now - prefixCacheTime < PREFIX_CACHE_TTL)
+        return PREFIX_CACHE;
+    prefixCacheTime = now;
+    PREFIX_CACHE.length = 0;
+    try {
+        const all = document.body?.querySelectorAll('[data-]');
+        if (!all)
+            return PREFIX_CACHE;
+        const seen = new Set();
+        const limit = Math.min(all.length, PREFIX_SCAN_LIMIT);
+        for (let i = 0; i < limit; i++) {
+            const attrs = all[i].attributes;
+            for (let j = 0; j < attrs.length; j++) {
+                const name = attrs[j].name;
+                if (name.length < 7 || !name.startsWith('data-'))
+                    continue;
+                const dash = name.indexOf('-', 5);
+                if (dash > 0)
+                    seen.add(name.slice(0, dash + 1));
+            }
+            if (seen.size >= 12)
+                break;
+        }
+        for (const p of seen)
+            PREFIX_CACHE.push(p);
+    }
+    catch {
+        /* ignore */
+    }
+    return PREFIX_CACHE;
+}
+function pickAttrName() {
+    if (((Math.random() * 4) | 0) === 0) {
+        return ATTR_FULL_POOL[(Math.random() * ATTR_FULL_POOL.length) | 0];
+    }
+    const prefixes = samplePagePrefixes();
+    const candidates = prefixes.length > 0 ? prefixes : ATTR_PREFIX_POOL;
+    const prefix = candidates[(Math.random() * candidates.length) | 0];
+    const kind = (Math.random() * 3) | 0;
+    if (kind === 0)
+        return prefix + rndHex(6);
+    if (kind === 1)
+        return prefix + rndAlphaNum(8);
+    return prefix + rndUuid();
+}
+function genAttrValue() {
+    const kind = (Math.random() * 4) | 0;
+    if (kind === 0)
+        return '';
+    if (kind === 1)
+        return rndHex(6 + ((Math.random() * 10) | 0));
+    if (kind === 2)
+        return rndAlphaNum(8 + ((Math.random() * 8) | 0));
+    return rndUuid();
+}
+function buildHostAttrs() {
+    const out = [];
+    const count = 1 + ((Math.random() * 3) | 0);
+    const used = new Set();
+    for (let i = 0; i < count; i++) {
+        const name = pickAttrName();
+        if (used.has(name))
+            continue;
+        used.add(name);
+        out.push([name, genAttrValue()]);
+    }
+    return out;
+}
+function applyHostAttrs(host) {
+    try {
+        const names = host.getAttributeNames();
+        for (let i = 0; i < names.length; i++) {
+            if (names[i].startsWith('data-'))
+                host.removeAttribute(names[i]);
+        }
+        const attrs = buildHostAttrs();
+        for (let i = 0; i < attrs.length; i++)
+            host.setAttribute(attrs[i][0], attrs[i][1]);
+    }
+    catch {
+        /* ignore */
+    }
+}
+const rotationHosts = [];
+let rotationStarted = false;
+function startAttrRotation(host) {
+    rotationHosts.push(host);
+    if (rotationStarted)
+        return;
+    rotationStarted = true;
+    const tick = () => {
+        for (let i = rotationHosts.length - 1; i >= 0; i--) {
+            const h = rotationHosts[i];
+            if (!protectedHosts.has(h)) {
+                rotationHosts.splice(i, 1);
+                continue;
+            }
+            applyHostAttrs(h);
+        }
+        if (rotationHosts.length > 0) {
+            setTimeout(tick, 12000 + ((Math.random() * 16000) | 0));
+        }
+    };
+    setTimeout(tick, 12000 + ((Math.random() * 16000) | 0));
+}
+function randomizeHostCss(css) {
+    // 随机化「离屏偏移」与方向，降低 shadow 宿主被静态特征识别的概率。
+    // z-index 不再降级随机：宿主层级必须恒为最高（用户明确要求「任何情况下都在最顶层」），
+    // 降级到 2147400000 会被页面/其它扩展的 max 层级覆盖 → UI 被盖住看不见。
+    const sign = Math.random() < 0.5 ? -1 : 1;
+    const off = sign * (9990 + ((Math.random() * 60) | 0));
+    return css
+        .replace(/left: -9999px/g, `left: ${off}px`)
+        .replace(/top: -9999px/g, `top: ${off}px`);
+}
+// 原生 elementsFromPoint：必须在 patchQueryApis 之前抓下引用（安装 stealth 时会被包装成
+// 「过滤掉宿主」的版本，包装后拿不到真实命中栈）。模块顶层求值 = 早于 installStealth。
+const ORIG_ELEMENTS_FROM_POINT = typeof Document !== 'undefined' && typeof Document.prototype.elementsFromPoint === 'function'
+    ? Document.prototype.elementsFromPoint
+    : null;
+/** 真实命中栈（含 VaIMod 宿主，未被 stealth 过滤）——UI 层级裁决用 */
+function trueElementsFromPoint(x, y) {
+    if (!ORIG_ELEMENTS_FROM_POINT)
+        return [];
+    try {
+        return Array.from(ORIG_ELEMENTS_FROM_POINT.call(document, x, y));
+    }
+    catch {
+        return [];
+    }
+}
+const ORIG_FN_TO_STRING = Function.prototype.toString;
+const MARKED_FNS = new WeakSet();
+// CSRT AntiCSense 同款：函数级「伪源码」登记表 —— 登记过的函数 toString 返回指定
+// 伪源码（而非默认 native 形态），用于运行时方法伪装（loadProject 等 CCW 方法
+// 原本非 native，伪装成 native 会与站点自身补丁检测冲突时用精确源码更稳）。
+const FAKE_SOURCES = new WeakMap();
+const TOSTRING_PATCHED = Symbol(rndHex(8));
+function isProtected(node) {
+    for (let n = node; n; n = n.parentNode) {
+        if (n.nodeType === NODE_TYPE_ELEMENT && protectedHosts.has(n)) {
+            return true;
+        }
+    }
+    return false;
+}
+function isProtectedFast(node) {
+    return node.nodeType === NODE_TYPE_ELEMENT && protectedHosts.has(node);
+}
+/** 该节点本身是否为 VaIMod 宿主元素（不向上追溯祖先，热路径专用） */
+function isProtectedHost(node) {
+    return !!node && isProtectedFast(node);
+}
+/** 当前已登记的宿主元素（closed shadow 无法反查，按根遍历） */
+function getProtectedHosts() {
+    return Array.from(protectedHosts);
+}
+function markNative(fn, name) {
+    try {
+        Object.defineProperty(fn, 'name', { configurable: true, value: name });
+    }
+    catch {
+        /* ignore */
+    }
+    try {
+        MARKED_FNS.add(fn);
+    }
+    catch {
+        /* ignore */
+    }
+    try {
+        // 普通 function 的 prototype 是 configurable:false —— delete 对它静默无效
+        // （非严格模式返回 false 不抛错），必须走赋值路径：prototype writable:true，
+        // 置 undefined 后检测器的真值判定（fn.prototype 须为空）即通过。
+        const f = fn;
+        if (f.prototype !== undefined)
+            f.prototype = undefined;
+    }
+    catch {
+        /* ignore */
+    }
+}
+/**
+ * 构造器专用标记：进 toString 白名单 + 改名，但**保留 prototype**。
+ * markNative 会 delete fn.prototype——对方法正确，但原生构造器（XMLHttpRequest 等）
+ * 本身就带 prototype，删掉反而自曝且毁掉 instanceof 链。实例级包装构造器用这个。
+ */
+function markNativeCtor(fn, name) {
+    try {
+        Object.defineProperty(fn, 'name', { configurable: true, value: name });
+    }
+    catch {
+        /* ignore */
+    }
+    try {
+        MARKED_FNS.add(fn);
+    }
+    catch {
+        /* ignore */
+    }
+}
+function installNativeToString() {
+    const holder = Function.prototype;
+    if (holder[TOSTRING_PATCHED])
+        return;
+    markFlag(holder, TOSTRING_PATCHED);
+    const patched = function () {
+        if (FAKE_SOURCES.has(this)) {
+            return FAKE_SOURCES.get(this);
+        }
+        if (MARKED_FNS.has(this)) {
+            return FN_PRE + (this.name || 'anonymous') + FN_MID + NATIVE + FN_END;
+        }
+        return ORIG_FN_TO_STRING.call(this);
+    };
+    markNative(patched, 'toString');
+    Function.prototype.toString = patched;
+}
+/**
+ * 登记伪源码（CSRT FAKE_SOURCE 同款）：该函数的 toString 返回指定字符串。
+ * 与 markNative 的区别：markNative 生成 `function X() { [native code] }`，
+ * 伪源码可精确控制返回内容（如带原签名的伪装源码）。
+ */
+function markFakeSource(fn, source) {
+    try {
+        FAKE_SOURCES.set(fn, source);
+    }
+    catch {
+        /* ignore */
+    }
+}
+/** 取函数的**真实**源码（绕过伪装层）——伪装前的快照用 */
+function nativeToStringOf(fn) {
+    try {
+        return ORIG_FN_TO_STRING.call(fn);
+    }
+    catch {
+        return 'function () { [native code] }';
+    }
+}
+function healNativeToString() {
+    const cur = Function.prototype.toString;
+    if (typeof cur === 'function' && MARKED_FNS.has(cur))
+        return;
+    const holder = Function.prototype;
+    delete holder[TOSTRING_PATCHED];
+    installNativeToString();
+}
+function filterSingle(node) {
+    return node && isProtectedFast(node) ? null : node;
+}
+function createNodeList(nodes) {
+    const list = Object.create(NodeList.prototype);
+    const len = nodes.length;
+    Object.defineProperty(list, 'length', {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: len,
+    });
+    const indexed = list;
+    for (let i = 0; i < len; i++)
+        indexed[i] = nodes[i];
+    const mutable = list;
+    mutable.item = function (index) {
+        return nodes[index] ?? null;
+    };
+    mutable.forEach = function (callback, thisArg) {
+        for (let i = 0; i < len; i++)
+            callback.call(thisArg, nodes[i], i, list);
+    };
+    mutable.entries = function () {
+        return nodes.entries();
+    };
+    mutable.keys = function () {
+        return nodes.keys();
+    };
+    mutable.values = function () {
+        return nodes.values();
+    };
+    mutable[Symbol.iterator] = function () {
+        return nodes[Symbol.iterator]();
+    };
+    return list;
+}
+function createHTMLCollection(elements) {
+    const col = Object.create(HTMLCollection.prototype);
+    const len = elements.length;
+    Object.defineProperty(col, 'length', {
+        configurable: false,
+        enumerable: false,
+        writable: false,
+        value: len,
+    });
+    const indexed = col;
+    for (let i = 0; i < len; i++)
+        indexed[i] = elements[i];
+    col.item = function (index) {
+        return elements[index] ?? null;
+    };
+    col.namedItem = function (name) {
+        for (const el of elements) {
+            if (el.getAttribute('id') === name || el.getAttribute('name') === name) {
+                return el;
+            }
+        }
+        return null;
+    };
+    col[Symbol.iterator] = function () {
+        return elements[Symbol.iterator]();
+    };
+    return col;
+}
+function filterNodeList(nodes) {
+    if (protectedHosts.size === 0)
+        return nodes;
+    const out = [];
+    let found = false;
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        if (isProtectedFast(node)) {
+            found = true;
+            continue;
+        }
+        out.push(node);
+    }
+    return found ? createNodeList(out) : nodes;
+}
+function filterHTMLCollection(nodes) {
+    if (protectedHosts.size === 0)
+        return nodes;
+    const out = [];
+    let found = false;
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        if (isProtectedFast(node)) {
+            found = true;
+            continue;
+        }
+        out.push(node);
+    }
+    return found ? createHTMLCollection(out) : nodes;
+}
+function filterElementArray(nodes) {
+    if (protectedHosts.size === 0)
+        return nodes;
+    const out = [];
+    for (let i = 0; i < nodes.length; i++) {
+        const node = nodes[i];
+        if (!isProtectedFast(node))
+            out.push(node);
+    }
+    return out;
+}
+const patchEntries = [];
+function applyPatch(target, prop, factory) {
+    const holder = target;
+    const orig = holder[prop];
+    if (typeof orig !== 'function')
+        return;
+    const wrapped = factory(orig);
+    markNative(wrapped, orig.name || prop);
+    holder[prop] = wrapped;
+    patchEntries.push({ target, prop, factory, active: wrapped, orig });
+}
+let stealthInstalled = false;
+let healTimer = null;
+let healVisBound = false;
+/**
+ * 在浏览器空闲时段修复被页面/其它扩展覆盖掉的原生 patch。
+ * 后台标签页直接不跑：自我修复是兜底手段，没人看界面时晚几秒没有任何影响，
+ * 而页面繁忙时 rIC 本就会自动延后（1s 超时兜底），避免与页面主线程抢时间。
+ */
+function scheduleHeal() {
+    try {
+        // 必须读真值：document.visibilityState 已被 vm-antidetect 伪装为恒 visible，
+        // 直接读会让后台自愈门控失效（后台标签照常跑 rIC 修复）
+        if ((0, page_visibility_1.trueHidden)())
+            return;
+    }
+    catch {
+        /* ignore */
+    }
+    const ric = window.requestIdleCallback;
+    if (typeof ric === 'function')
+        ric(healPatches, { timeout: 1000 });
+    else
+        healPatches();
+}
+function healPatches() {
+    if (!stealthInstalled)
+        return;
+    if (protectedHosts.size > 0) {
+        for (const node of protectedHosts) {
+            if (!node.isConnected)
+                protectedHosts.delete(node);
+        }
+    }
+    for (const entry of patchEntries) {
+        const holder = entry.target;
+        const cur = holder[entry.prop];
+        if (typeof cur === 'function' && cur !== entry.active) {
+            entry.active = entry.factory(cur);
+            markNative(entry.active, cur.name || entry.prop);
+            holder[entry.prop] = entry.active;
+        }
+        else if (typeof cur !== 'function') {
+            const wrapped = entry.factory(entry.orig);
+            markNative(wrapped, entry.orig.name || entry.prop);
+            holder[entry.prop] = wrapped;
+            entry.active = wrapped;
+        }
+    }
+    healAccessors();
+    healNativeToString();
+}
+function patchQueryApis() {
+    const docProto = Document.prototype;
+    if (docProto[PATCHED])
+        return;
+    markFlag(docProto, PATCHED);
+    applyPatch(Document.prototype, 'querySelector', (orig) => function (selectors) {
+        return filterSingle(orig.call(this, selectors));
+    });
+    applyPatch(Document.prototype, 'querySelectorAll', (orig) => function (selectors) {
+        return filterNodeList(orig.call(this, selectors));
+    });
+    applyPatch(Document.prototype, 'elementFromPoint', (orig) => function (x, y) {
+        return filterSingle(orig.call(this, x, y));
+    });
+    applyPatch(Document.prototype, 'elementsFromPoint', (orig) => function (x, y) {
+        return filterElementArray(orig.call(this, x, y));
+    });
+    applyPatch(Document.prototype, 'getElementById', (orig) => function (elementId) {
+        return filterSingle(orig.call(this, elementId));
+    });
+    applyPatch(Document.prototype, 'getElementsByClassName', (orig) => function (classNames) {
+        return filterHTMLCollection(orig.call(this, classNames));
+    });
+    applyPatch(Document.prototype, 'getElementsByTagName', (orig) => function (qualifiedName) {
+        return filterHTMLCollection(orig.call(this, qualifiedName));
+    });
+    applyPatch(Document.prototype, 'getElementsByTagNameNS', (orig) => function (namespaceURI, localName) {
+        return filterHTMLCollection(orig.call(this, namespaceURI, localName));
+    });
+    applyPatch(Document.prototype, 'getElementsByName', (orig) => function (elementName) {
+        return filterNodeList(orig.call(this, elementName));
+    });
+    applyPatch(Element.prototype, 'querySelector', (orig) => function (selectors) {
+        return filterSingle(orig.call(this, selectors));
+    });
+    applyPatch(Element.prototype, 'querySelectorAll', (orig) => function (selectors) {
+        return filterNodeList(orig.call(this, selectors));
+    });
+    applyPatch(Element.prototype, 'getElementsByClassName', (orig) => function (classNames) {
+        return filterHTMLCollection(orig.call(this, classNames));
+    });
+    applyPatch(Element.prototype, 'getElementsByTagName', (orig) => function (qualifiedName) {
+        return filterHTMLCollection(orig.call(this, qualifiedName));
+    });
+    applyPatch(Element.prototype, 'getElementsByTagNameNS', (orig) => function (namespaceURI, localName) {
+        return filterHTMLCollection(orig.call(this, namespaceURI, localName));
+    });
+    applyPatch(Element.prototype, 'closest', (orig) => function (selectors) {
+        return filterSingle(orig.call(this, selectors));
+    });
+}
+function patchMutationObserver() {
+    const win = window;
+    if (win[MO_PATCHED])
+        return;
+    markFlag(win, MO_PATCHED);
+    const sanitize = (records) => {
+        // 快速路径：若本批记录没有任何受保护节点参与，直接返回原数组（零拷贝、零额外分配）。
+        // 打开角色等 DOM 剧变场景下 MutationObserver 回调极频繁，此路径能大幅降低开销、缓解卡顿。
+        let dirty = false;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.type === 'attributes' && isProtectedFast(record.target)) {
+                dirty = true;
+                break;
+            }
+            const added = record.addedNodes;
+            for (let j = 0; j < added.length; j++) {
+                if (isProtected(added[j])) {
+                    dirty = true;
+                    break;
+                }
+            }
+            if (dirty)
+                break;
+            const removed = record.removedNodes;
+            for (let j = 0; j < removed.length; j++) {
+                if (isProtected(removed[j])) {
+                    dirty = true;
+                    break;
+                }
+            }
+            if (dirty)
+                break;
+        }
+        if (!dirty)
+            return records;
+        const out = [];
+        for (const record of records) {
+            // 过滤掉以宿主为目标的属性变更记录（动态属性轮换会触发此类记录）
+            if (record.type === 'attributes' && isProtectedFast(record.target))
+                continue;
+            const added = [];
+            const removed = [];
+            let hasProtected = false;
+            for (let i = 0; i < record.addedNodes.length; i++) {
+                const n = record.addedNodes[i];
+                if (isProtected(n))
+                    hasProtected = true;
+                else
+                    added.push(n);
+            }
+            for (let i = 0; i < record.removedNodes.length; i++) {
+                const n = record.removedNodes[i];
+                if (isProtected(n))
+                    hasProtected = true;
+                else
+                    removed.push(n);
+            }
+            if (!hasProtected) {
+                out.push(record);
+                continue;
+            }
+            if (added.length === 0 && removed.length === 0)
+                continue;
+            out.push({
+                type: record.type,
+                target: record.target,
+                addedNodes: createNodeList(added),
+                removedNodes: createNodeList(removed),
+                previousSibling: record.previousSibling,
+                nextSibling: record.nextSibling,
+                attributeName: record.attributeName,
+                attributeNamespace: record.attributeNamespace,
+                oldValue: record.oldValue,
+            });
+        }
+        return out;
+    };
+    applyPatch(window, 'MutationObserver', (orig) => {
+        const Patched = class extends orig {
+            constructor(callback) {
+                super((records, observer) => {
+                    callback(sanitize(records), observer);
+                });
+            }
+            // takeRecords() 是 callback 之外的**完整旁路**：它直接吐出未清洗的原始记录队列，
+            // 只要在观察者微任务回调之前同步取一次，就能拿到 VaIMod 宿主（sanitize 被绕过）。
+            // 枚举遍历在这里按需映射成过滤后的副本，代价只落在真调用了 takeRecords 的页面上。
+            takeRecords() {
+                return sanitize(super.takeRecords());
+            }
+        };
+        markNative(Patched, orig.name || 'MutationObserver');
+        return Patched;
+    });
+}
+function patchTraversalApis() {
+    const docProto = Document.prototype;
+    if (docProto[TR_PATCHED])
+        return;
+    docProto[TR_PATCHED] = true;
+    const wrapTraversal = (it) => {
+        // 这里**不能**在包装时判「protectedHosts 是否为空」：installStealth 跑在
+        // createStealthHost 之前（宿主尚未登记），此刻为空就直接不包装 →
+        // 页面在这个时间窗里创建的 TreeWalker / NodeIterator 此后永久不过滤宿主
+        //（宿主后来才插入，但 walker 已在裸奔）。改为在迭代时判：空集是 O(1)，
+        // 有宿主才付 isProtected 的逐节点代价 —— 那正是需要过滤的时候。
+        const idle = () => protectedHosts.size === 0;
+        const nNext = it.nextNode.bind(it);
+        const nPrev = it.previousNode.bind(it);
+        it.nextNode = () => {
+            let n;
+            while ((n = nNext())) {
+                if (idle() || !isProtected(n))
+                    return n;
+            }
+            return null;
+        };
+        it.previousNode = () => {
+            let n;
+            while ((n = nPrev())) {
+                if (idle() || !isProtected(n))
+                    return n;
+            }
+            return null;
+        };
+    };
+    applyPatch(Document.prototype, 'createTreeWalker', (orig) => function (root, whatToShow, filter, expandEntityReferences) {
+        const walker = orig.call(this, root, whatToShow, filter, expandEntityReferences);
+        wrapTraversal(walker);
+        return walker;
+    });
+    applyPatch(Document.prototype, 'createNodeIterator', (orig) => function (root, whatToShow, filter, expandEntityReferences) {
+        const it = orig.call(this, root, whatToShow, filter, expandEntityReferences);
+        wrapTraversal(it);
+        return it;
+    });
+}
+const accessorEntries = [];
+function applyAccessorPatch(target, prop, factory) {
+    const desc = Object.getOwnPropertyDescriptor(target, prop);
+    const orig = desc?.get;
+    if (typeof orig !== 'function')
+        return;
+    const wrapped = factory(orig);
+    markNative(wrapped, prop);
+    try {
+        Object.defineProperty(target, prop, {
+            configurable: desc?.configurable !== false,
+            enumerable: Boolean(desc?.enumerable),
+            get: wrapped,
+        });
+        accessorEntries.push({
+            target,
+            prop,
+            factory,
+            active: wrapped,
+            origGet: orig,
+            origDesc: desc ?? { configurable: true, enumerable: false, get: orig },
+        });
+    }
+    catch {
+        /* ignore */
+    }
+}
+function healAccessors() {
+    for (const entry of accessorEntries) {
+        const desc = Object.getOwnPropertyDescriptor(entry.target, entry.prop);
+        const cur = desc?.get;
+        if (typeof cur === 'function' && cur === entry.active)
+            continue;
+        const wrapped = entry.factory(typeof cur === 'function' ? cur : entry.origGet);
+        markNative(wrapped, entry.prop);
+        try {
+            Object.defineProperty(entry.target, entry.prop, {
+                configurable: true,
+                enumerable: false,
+                get: wrapped,
+            });
+            entry.active = wrapped;
+        }
+        catch {
+            /* ignore */
+        }
+    }
+}
+function skipProtectedNode(node, step) {
+    let cur = node;
+    while (cur && isProtectedFast(cur)) {
+        cur = step(cur);
+    }
+    return cur;
+}
+function patchTraversalProperties() {
+    const nodeProto = Node.prototype;
+    if (nodeProto[TRAV_PROP_PATCHED])
+        return;
+    markFlag(nodeProto, TRAV_PROP_PATCHED);
+    applyAccessorPatch(Node.prototype, 'childNodes', (orig) => function () {
+        return filterNodeList(orig.call(this));
+    });
+    applyAccessorPatch(Node.prototype, 'firstChild', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.nextSibling);
+    });
+    applyAccessorPatch(Node.prototype, 'lastChild', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.previousSibling);
+    });
+    applyAccessorPatch(Node.prototype, 'nextSibling', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.nextSibling);
+    });
+    applyAccessorPatch(Node.prototype, 'previousSibling', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.previousSibling);
+    });
+    applyAccessorPatch(Element.prototype, 'children', (orig) => function () {
+        return filterHTMLCollection(orig.call(this));
+    });
+    applyAccessorPatch(Element.prototype, 'childElementCount', (orig) => function () {
+        if (protectedHosts.size === 0)
+            return orig.call(this);
+        return filterHTMLCollection(this.children).length;
+    });
+    applyAccessorPatch(Element.prototype, 'firstElementChild', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.nextElementSibling);
+    });
+    applyAccessorPatch(Element.prototype, 'lastElementChild', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.previousElementSibling);
+    });
+    applyAccessorPatch(Element.prototype, 'nextElementSibling', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.nextElementSibling);
+    });
+    applyAccessorPatch(Element.prototype, 'previousElementSibling', (orig) => function () {
+        return skipProtectedNode(orig.call(this), (n) => n.previousElementSibling);
+    });
+}
+// 补强检测类 API：contains / compareDocumentPosition 常用于探测「某个节点是否挂在页面上」
+function patchDetectionApis() {
+    applyPatch(Node.prototype, 'contains', (orig) => function (other) {
+        if (other && isProtected(other))
+            return false;
+        return orig.call(this, other);
+    });
+    applyPatch(Node.prototype, 'compareDocumentPosition', (orig) => function (other) {
+        if (other && isProtected(other))
+            return 1; // DOCUMENT_POSITION_DISCONNECTED
+        return orig.call(this, other);
+    });
+}
+function installStealth() {
+    if (stealthInstalled)
+        return;
+    stealthInstalled = true;
+    installNativeToString();
+    patchQueryApis();
+    patchMutationObserver();
+    patchTraversalApis();
+    patchTraversalProperties();
+    patchDetectionApis();
+    if (healTimer === null) {
+        healTimer = window.setInterval(scheduleHeal, 4000);
+    }
+    if (!healVisBound) {
+        healVisBound = true;
+        try {
+            // 回到前台立刻补一次（后台期间若被覆盖了 patch，回来第一帧就该是修好的状态）
+            document.addEventListener('visibilitychange', () => {
+                if ((0, page_visibility_1.trueVisible)())
+                    scheduleHeal();
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    }
+}
+function uninstallStealth() {
+    if (!stealthInstalled)
+        return;
+    stealthInstalled = false;
+    for (const entry of patchEntries) {
+        const holder = entry.target;
+        if (holder[entry.prop] === entry.active) {
+            holder[entry.prop] = entry.orig;
+        }
+    }
+    patchEntries.length = 0;
+    for (const entry of accessorEntries) {
+        try {
+            Object.defineProperty(entry.target, entry.prop, entry.origDesc);
+        }
+        catch {
+            /* ignore */
+        }
+    }
+    accessorEntries.length = 0;
+    const curToString = Function.prototype.toString;
+    if (MARKED_FNS.has(curToString)) {
+        Function.prototype.toString = ORIG_FN_TO_STRING;
+    }
+    delete Function.prototype[TOSTRING_PATCHED];
+    const docHolder = Document.prototype;
+    delete docHolder[PATCHED];
+    delete docHolder[TR_PATCHED];
+    delete window[MO_PATCHED];
+    delete Node.prototype[TRAV_PROP_PATCHED];
+    protectedHosts.clear();
+    rotationHosts.length = 0;
+    rotationStarted = false;
+    if (healTimer !== null) {
+        window.clearInterval(healTimer);
+        healTimer = null;
+    }
+}
+function protectNode(node) {
+    protectedHosts.add(node);
+}
+function unprotectNode(node) {
+    protectedHosts.delete(node);
+}
+function createStealthHost(styles, options = {}) {
+    const pickTag = () => options.tag ?? TAG_POOL[(Math.random() * TAG_POOL.length) | 0];
+    let host = document.createElement(pickTag());
+    let root = null;
+    try {
+        root = host.attachShadow({ mode: 'closed' });
+    }
+    catch {
+        // 极端兜底：个别宿主元素实现不允许挂 shadow → 降级为普通 div 重建
+        host = document.createElement('div');
+        root = host.attachShadow({ mode: 'closed' });
+    }
+    protectNode(host);
+    if (root)
+        stealthRoots.add(root);
+    applyHostAttrs(host);
+    startAttrRotation(host);
+    if (styles) {
+        const style = document.createElement('style');
+        style.textContent = randomizeHostCss(styles);
+        root.appendChild(style);
+    }
+    // 父节点延迟到真正插入时再取：document-start 极早期 document.body 与
+    // document.documentElement 可能均为 null（html 根尚未建立），提前取会让
+    // 宿主永远无法插入文档 → UI 挂载在 detached 树上不可见
+    let inserted = false;
+    let retryTimer = null;
+    let domReadyBound = false;
+    const clearRetry = () => {
+        if (retryTimer !== null) {
+            clearInterval(retryTimer);
+            retryTimer = null;
+        }
+    };
+    const tryInsert = () => {
+        if (inserted)
+            return;
+        const parent = document.body ?? document.documentElement;
+        if (parent && parent.isConnected) {
+            inserted = true;
+            clearRetry();
+            const kids = parent.children;
+            const idx = (Math.random() * (kids.length + 1)) | 0;
+            if (idx >= kids.length)
+                parent.appendChild(host);
+            else
+                parent.insertBefore(host, kids[idx]);
+            return;
+        }
+        // 多通道兜底：① 定时重试（400ms，覆盖全部未知时序）
+        // ② DOMContentLoaded / readystatechange 事件通道——DOM 就绪瞬间即插，
+        //    比下一个 400ms 轮询更早更准；inserted 守卫保证多通道只赢一次
+        if (!domReadyBound) {
+            domReadyBound = true;
+            try {
+                document.addEventListener('DOMContentLoaded', () => tryInsert(), { once: true });
+                document.addEventListener('readystatechange', () => {
+                    // interactive = DOM 树就绪（body 可用）；complete 更晚，一并监听防漏
+                    const rs = document.readyState;
+                    if (rs === 'interactive' || rs === 'complete')
+                        tryInsert();
+                }, { once: true });
+            }
+            catch {
+                /* 事件通道不可用时 400ms 轮询仍兜底 */
+            }
+        }
+        if (retryTimer === null) {
+            retryTimer = window.setInterval(() => {
+                tryInsert();
+            }, 400);
+        }
+    };
+    requestAnimationFrame(tryInsert);
+    setTimeout(tryInsert, 64);
+    // try/catch 双路径均成功赋值 root；断言消除可空联合（运行时必非空）
+    return { host, root: root };
+}
+function isStealthHost(node) {
+    return isProtected(node);
+}
+/** 已创建的全部 VaIMod Shadow 根（closed 模式无法从宿主元素反查，必须由创建处登记） */
+function getStealthRoots() {
+    return Array.from(stealthRoots);
+}

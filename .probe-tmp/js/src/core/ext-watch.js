@@ -1,0 +1,186 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.trackVm = trackVm;
+exports.onVmTick = onVmTick;
+exports.hookExtensionManager = hookExtensionManager;
+const dom_utils_1 = require("../dom-utils");
+const page_visibility_1 = require("./page-visibility");
+/** ES2021 WeakRef（tsconfig lib 未包含，从 globalThis 取）；运行时缺失则退化为强引用
+ *  （vm 本就随页面常驻，强引用不产生额外泄漏） */
+const WeakRefImpl = (() => {
+    try {
+        const w = globalThis.WeakRef;
+        return typeof w === 'function' ? w : undefined;
+    }
+    catch {
+        return undefined;
+    }
+})();
+const vmRefs = [];
+const vmCallbacks = new Set();
+// 已挂钩子的原型 → 该原型上的回调集合（多个反制模块共用一份钩子，回调全部保留）
+const hookedProtos = new WeakMap();
+let vmTicker = null;
+let visBound = false;
+/** 页面是否在后台（标签页不可见）。非 DOM 环境（极少数宿主）按可见处理。 */
+function pageHidden() {
+    // 必须走真值口：visibilityState 已被 vm-antidetect 伪装恒 visible，
+    // 直读会让后台扫描门控失效（后台 2s tick 照常消耗主线程）
+    try {
+        return (0, page_visibility_1.trueHidden)();
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * 一趟巡检：回收失活引用 → 依次喂给全部回调。
+ *
+ * 后台标签页直接跳过（真机实测：隐藏状态下每 8s 仍全量遍历变量表 8 圈、
+ * 主线程被占用 1.5%）。巡检做的事——变量名守卫复检、导出 API 复检、UI 复检——
+ * 全是「界面可见才有意义」的防御性复核，人不在屏幕前跑它纯属空转。
+ * 定时器本身照常滴答（成本≈0，也不会让「页面是不是活的」产生可观测差异），
+ * 回到前台由 visibilitychange 立刻补跑一趟，后台期间错过的检查不会丢。
+ */
+function runTick() {
+    if (pageHidden())
+        return;
+    for (let i = vmRefs.length - 1; i >= 0; i--) {
+        if (vmRefs[i].deref() === undefined)
+            vmRefs.splice(i, 1);
+    }
+    if (vmRefs.length === 0)
+        return;
+    for (const cb of [...vmCallbacks]) {
+        for (const ref of vmRefs) {
+            const vm = ref.deref();
+            if (!vm)
+                continue;
+            try {
+                cb(vm);
+            }
+            catch {
+                /* ignore */
+            }
+        }
+    }
+}
+function ensureTicker() {
+    if (vmTicker !== null)
+        return;
+    if (!visBound) {
+        visBound = true;
+        try {
+            document.addEventListener('visibilitychange', () => {
+                if (!pageHidden())
+                    runTick();
+            });
+        }
+        catch {
+            /* ignore */
+        }
+    }
+    vmTicker = setInterval(runTick, 2000);
+}
+/** 把 vm 加入常驻扫描池（幂等；上限 8 个，超出丢最旧 —— 同页 vm 数量级就是个位数） */
+function trackVm(vm) {
+    for (const ref of vmRefs) {
+        if (ref.deref() === vm)
+            return;
+    }
+    if (vmRefs.length >= 8)
+        vmRefs.shift();
+    vmRefs.push(WeakRefImpl ? new WeakRefImpl(vm) : { deref: () => vm });
+    ensureTicker();
+}
+/** 注册每 2s 一次的 vm 巡检回调（幂等集合，多次注册同一 cb 只保留一份） */
+function onVmTick(cb) {
+    vmCallbacks.add(cb);
+    ensureTicker();
+}
+/**
+ * extensionManager 上「可能产出扩展实例」的方法名匹配。
+ *
+ * 真实 CCW VM 的扩展加载链路（逐行核对平台 vendor chunk）：
+ *   ?ext= 参数 → window.tempExt → injectExtensions → extensionManager.injectExtension(id, Class)
+ *     → builtinExtensions[id] = () => Class
+ *   → loadExtensionIdSync(id) → registerExtension(id, Class)
+ *     → _registerInternalExtension → compilerRegisterExtension(id, instance)
+ *     → runtime.ext_${id} = instance   ← 实例真身
+ *
+ * 旧正则 `/register|load|install/i` **漏掉了 `injectExtension`** ——
+ * 而它正是「外部注入扩展」路径的第一站（敌扩展多经此进入）。
+ * 补上 inject/injectExtension 覆盖该入口。
+ */
+const EM_HOOK_METHOD_RE = /register|load|install|inject/i;
+/**
+ * 包住 extensionManager 的 register/load/install/inject 族方法（幂等，按原型去重）。
+ * onAfter 在每次调用后触发（同步立即 + Promise 决议后各一次），
+ * 调用方在里面重扫真实枚举面并 adopt 新出现的敌意实例。
+ */
+function hookExtensionManager(vm, onAfter) {
+    try {
+        if (!vm || typeof vm !== 'object')
+            return;
+        const em = vm.extensionManager;
+        if (!em || typeof em !== 'object')
+            return;
+        // 方法大多挂在类原型上；实例自有方法也要盖到（优先原型，一份钩子覆盖全部实例）
+        const proto = Object.getPrototypeOf(em);
+        const target = proto && typeof proto === 'object' ? proto : em;
+        if (hookedProtos.has(target)) {
+            // 同一原型已被别的反制模块包过：把回调并入同一个钩子集合。
+            // 旧实现直接 return 会把后注册一方的回调丢掉（secure-guard 先注册后，
+            // sig-guard 的注册咽喉就静默失效了，只剩 2s 巡检兜底）。
+            hookedProtos.get(target)?.add(onAfter);
+            return;
+        }
+        const callbacks = new Set([onAfter]);
+        hookedProtos.set(target, callbacks);
+        for (const key of Object.getOwnPropertyNames(target)) {
+            if (!EM_HOOK_METHOD_RE.test(key))
+                continue;
+            const desc = Object.getOwnPropertyDescriptor(target, key);
+            const fn = desc?.value;
+            if (typeof fn !== 'function')
+                continue;
+            const orig = fn;
+            const wrapped = function (...args) {
+                const r = orig.apply(this, args);
+                const fire = () => {
+                    // 快照遍历：回调里可能再注册新回调，避免边遍历边改集合
+                    for (const cb of [...callbacks]) {
+                        try {
+                            cb();
+                        }
+                        catch {
+                            /* ignore */
+                        }
+                    }
+                };
+                fire();
+                // 异步注册（loadExtensionId 等返回 Promise）：实例在决议后才进入 runtime.extensions
+                if (r && typeof r.then === 'function') {
+                    r.then(fire, fire);
+                }
+                return r;
+            };
+            try {
+                Object.defineProperty(wrapped, 'name', { value: key, configurable: true });
+            }
+            catch {
+                /* ignore */
+            }
+            // toString 伪装（审计扩展 YinSecurity 实测会 fn.toString 探测 hook）：
+            // 不伪装的话 register/load 的源码直接暴露包装器本体
+            (0, dom_utils_1.markNative)(wrapped, key);
+            Object.defineProperty(target, key, {
+                ...desc,
+                value: wrapped,
+            });
+        }
+    }
+    catch {
+        /* ignore */
+    }
+}

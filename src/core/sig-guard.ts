@@ -1,4 +1,5 @@
 import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { enumerateInstances } from './ext-registry';
 import { onDomMutations } from './dom-watch';
 import { markNative } from '../dom-utils';
 
@@ -385,24 +386,18 @@ class SigGuard {
     this.rescan(vm);
   }
 
-  /** vm 上直接查找数字签名扩展实例 */
+  /**
+   * vm 上直接查找数字签名扩展实例。
+   *
+   * 关键修正：真实 CCW VM 里 `runtime.extensions` **不存在**（平台包零命中），
+   * 实例真身是 `runtime.ext_${id}`。旧实现只查 runtime.extensions → 恒返回 null
+   * → digSig 家族从未被接管。现经 ext-registry 的真实枚举面取实例。
+   */
   find(vm: unknown): SignExtLike | null {
     try {
-      const runtime = (vm as { runtime?: { extensions?: unknown } })?.runtime;
-      const extensions = (runtime as { extensions?: unknown })?.extensions;
-      if (!extensions) return null;
-      const candidates: unknown[] = [];
-      if (extensions instanceof Map) {
-        const direct = extensions.get(SIGN_EXT_ID);
-        if (direct) return direct as SignExtLike;
-        candidates.push(...extensions.values());
-      } else if (typeof extensions === 'object') {
-        const rec = extensions as Record<string, unknown>;
-        const direct = rec[SIGN_EXT_ID];
-        if (direct) return direct as SignExtLike;
-        candidates.push(...Object.values(rec));
+      for (const { instance } of enumerateInstances(vm)) {
+        if (detectSignInstance(instance)) return instance as SignExtLike;
       }
-      for (const c of candidates) if (detectSignInstance(c)) return c as SignExtLike;
     } catch {
       /* ignore */
     }
