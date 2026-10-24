@@ -98,6 +98,74 @@ export function trackVm(vm: object): void {
   ensureTicker();
 }
 
+// ─────────── 独立 vm 探测器（不依赖 UI 桥接） ───────────
+//
+// 【缺陷修复】反制巡检池此前只有一条入口：secureGuard.init(vm) → trackVm(vm)，
+// 而 init(vm) 由 scratch-vm.ts 的桥接连接流程调用 —— **桥接需要用户手动点击面板连接**。
+// 后果：用户不点连接，通用扩展反制层（ext-sanitize 的枚举面 + primitives 层锁）
+//       整个不运行 —— 敌扩展的检测布尔仍返回 true、跳转/摧毁积木仍可执行。
+// 这与「守护必须在用户任何操作之前生效」的硬约束冲突。
+//
+// 修法：front 安装时独立探测 vm 并直接 trackVm，与 UI 是否连接完全解耦。
+// 探测口径与平台形态对齐：window.Scratch.vm / window.vm / window._vm，
+// 判定用 isVMLike 同样的形状要求（setVariableValue/getVariableValue + runtime.targets）。
+//
+// 探测成本：一次属性读 + 一次形状判定，单拍可忽略；节流 400ms 一拍，
+// 60 拍后转 2s 慢档（与巡检周期对齐），命中即停。
+
+const VM_PROBE_MAX_TICKS = 60;
+
+/** 从宿主全局探测 vm（返回 null 表示还没就绪） */
+function probeVmFromGlobals(): object | null {
+  try {
+    const w = globalThis as unknown as {
+      vm?: unknown;
+      _vm?: unknown;
+      Scratch?: { vm?: unknown; extensionManager?: unknown };
+    };
+    const cands = [w.vm, w._vm, w.Scratch?.vm];
+    for (const c of cands) {
+      if (!c || typeof c !== 'object') continue;
+      const vm = c as { setVariableValue?: unknown; getVariableValue?: unknown; runtime?: { targets?: unknown } };
+      // 与 core/utils.ts 的 isVMLike 同口径（不 import，避免模块环）
+      if (typeof vm.setVariableValue !== 'function' || typeof vm.getVariableValue !== 'function') continue;
+      if (!vm.runtime || typeof vm.runtime.targets === 'undefined') continue;
+      return c as object;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+/**
+ * 启动独立 vm 探测（幂等）。
+ * 探测到即 trackVm → 反制巡检池立刻有货 → 反制层无需等待 UI 连接。
+ */
+export function startVmProbe(): void {
+  if (vmProbeStarted) return;
+  vmProbeStarted = true;
+  let ticks = 0;
+  const probe = (): void => {
+    ticks++;
+    const vm = probeVmFromGlobals();
+    if (vm) {
+      trackVm(vm);
+      return; // 命中即停（后续 vm 变更由桥接侧的 trackVm 兜底）
+    }
+    if (ticks >= VM_PROBE_MAX_TICKS) {
+      // 慢档兜底：前 60 拍（400ms × 60 ≈ 24s）没命中，转 2s 一拍长期守候
+      setTimeout(probe, 2000);
+      return;
+    }
+    setTimeout(probe, 400);
+  };
+  // 立即探一次（宿主已就绪的场合零延迟）
+  probe();
+}
+
+let vmProbeStarted = false;
+
 /** 注册每 2s 一次的 vm 巡检回调（幂等集合，多次注册同一 cb 只保留一份） */
 export function onVmTick(cb: (vm: object) => void): void {
   vmCallbacks.add(cb);

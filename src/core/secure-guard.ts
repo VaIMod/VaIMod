@@ -1,6 +1,6 @@
 import type { ScratchVariable, ScratchValue } from './types';
 import { onDomMutations } from './dom-watch';
-import { hookExtensionManager, onVmTick, trackVm } from './ext-watch';
+import { hookExtensionManager, onVmTick, startVmProbe, trackVm } from './ext-watch';
 import {
   installExtSanitize,
   lockExtensionPrimitive,
@@ -1695,6 +1695,8 @@ export function installSecureGuardFront(): void {
   neuterTampermonkeyMarker();
   // 通用扩展积木反制层：vm 巡检里做 extGet 式全量枚举 + primitives 层锁
   installExtSanitize();
+  // 独立 vm 探测：不依赖 UI 桥接（用户不点「连接」也要让反制层有 vm 可巡检）
+  startVmProbe();
 }
 
 // YinSecurity hasTM 探测反制：Tampermonkey 会在 <html> 上留 data-tampermonkey-id
