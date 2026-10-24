@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -95,6 +95,14 @@ try {
 log('构建完成');
 
 log('git add ...');
+// 清理探针脚本的临时编译产物：它们由 scripts/probe-*.mjs 每次运行重建，
+// 不是源码。若不清理，`git add -A` 会把编译中间件一起提交进仓库。
+try {
+  rmSync(path.join(ROOT, '.probe-tmp'), { recursive: true, force: true });
+  log('已清理探针临时产物 .probe-tmp/');
+} catch {
+  /* 忽略：无临时目录也算正常 */
+}
 try {
   execSync('git add -A', { cwd: ROOT, stdio: 'inherit' });
 } catch {
